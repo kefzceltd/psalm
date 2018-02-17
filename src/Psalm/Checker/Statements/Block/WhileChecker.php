@@ -21,9 +21,8 @@ class WhileChecker
         PhpParser\Node\Stmt\While_ $stmt,
         Context $context
     ) {
-        $while_true = $stmt->cond
-            && ($stmt->cond instanceof PhpParser\Node\Expr\ConstFetch && $stmt->cond->name->parts === ['true'])
-                || ($stmt->cond instanceof PhpParser\Node\Scalar\LNumber && $stmt->cond->value > 0);
+        $while_true = ($stmt->cond instanceof PhpParser\Node\Expr\ConstFetch && $stmt->cond->name->parts === ['true'])
+            || ($stmt->cond instanceof PhpParser\Node\Scalar\LNumber && $stmt->cond->value > 0);
 
         $pre_context = null;
 
@@ -33,12 +32,19 @@ class WhileChecker
 
         $while_context = clone $context;
 
+        $project_checker = $statements_checker->getFileChecker()->project_checker;
+
+        if ($project_checker->alter_code) {
+            $while_context->branch_point = $while_context->branch_point ?: (int) $stmt->getAttribute('startFilePos');
+        }
+
         $loop_scope = new LoopScope($while_context, $context);
+        $loop_scope->protected_var_ids = $context->protected_var_ids;
 
         LoopChecker::analyze(
             $statements_checker,
             $stmt->stmts,
-            $stmt->cond ? [$stmt->cond] : [],
+            [$stmt->cond],
             [],
             $loop_scope,
             $inner_loop_context
@@ -75,6 +81,10 @@ class WhileChecker
             $context->referenced_var_ids,
             $while_context->referenced_var_ids
         );
+
+        if ($context->collect_references) {
+            $context->unreferenced_vars = $while_context->unreferenced_vars;
+        }
 
         return null;
     }

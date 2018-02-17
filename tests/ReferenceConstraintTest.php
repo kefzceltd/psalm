@@ -25,11 +25,61 @@ class ReferenceConstraintTest extends TestCase
                      * @param ?string $str
                      * @psalm-suppress PossiblyNullArgument
                      */
-                    function nullable_ref_modifier(&$str) : void {
+                    function nullable_ref_modifier(&$str): void {
                         if (strlen($str) > 5) {
                             $str = null;
                         }
                     }',
+            ],
+            'trackFunctionReturnRefs' => [
+                '<?php
+                    class A {
+                        /** @var string */
+                        public $foo = "bar";
+
+                        public function &getString() : string {
+                            return $this->foo;
+                        }
+                    }
+
+                    function useString(string &$s) : void {}
+                    $a = new A();
+
+                    useString($a->getString());',
+            ],
+            'makeByRefUseMixed' => [
+                '<?php
+                    function s(?string $p): void {}
+
+                    $var = 1;
+                    $callback = function() use(&$var): void {
+                        s($var);
+                    };
+                    $var = null;
+                    $callback();',
+                'assertions' => [],
+                'error_levels' => ['MixedArgument'],
+            ],
+            'assignByRefToMixed' => [
+                '<?php
+                    function testRef() : array {
+                        $result = [];
+                        foreach ([1, 2, 1] as $v) {
+                            $x = &$result;
+                            if (!isset($x[$v])) {
+                                $x[$v] = 0;
+                            }
+                            $x[$v] ++;
+                        }
+                        return $result;
+                    }',
+                'assertions' => [],
+                'error_levels' => [
+                    'MixedAssignment',
+                    'MixedArrayAccess',
+                    'MixedReturnStatement',
+                    'MixedInferredReturnType',
+                ],
             ],
         ];
     }

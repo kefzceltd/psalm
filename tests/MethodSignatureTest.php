@@ -1,7 +1,7 @@
 <?php
 namespace Psalm\Tests;
 
-use Psalm\Checker\FileChecker;
+use Psalm\Context;
 
 class MethodSignatureTest extends TestCase
 {
@@ -44,9 +44,7 @@ class MethodSignatureTest extends TestCase
                 }'
         );
 
-        $file_checker = new FileChecker('somefile.php', $this->project_checker);
-        $file_checker->visitAndAnalyzeMethods();
-        $this->project_checker->checkClassReferences();
+        $this->analyzeFile('somefile.php', new Context());
     }
 
     /**
@@ -88,9 +86,7 @@ class MethodSignatureTest extends TestCase
                 }'
         );
 
-        $file_checker = new FileChecker('somefile.php', $this->project_checker);
-        $file_checker->visitAndAnalyzeMethods();
-        $this->project_checker->checkClassReferences();
+        $this->analyzeFile('somefile.php', new Context());
     }
 
     /**
@@ -102,22 +98,22 @@ class MethodSignatureTest extends TestCase
             'privateArgs' => [
                 '<?php
                     class A {
-                        private function foo() : void {}
+                        private function foo(): void {}
                     }
                     class B extends A {
-                        private function foo(int $arg) : void {}
+                        private function foo(int $arg): void {}
                     }',
             ],
             'nullableSubclassParam' => [
                 '<?php
                     class A {
-                        public function foo(string $s) : ?string {
+                        public function foo(string $s): ?string {
                             return rand(0, 1) ? $s : null;
                         }
                     }
 
                     class B extends A {
-                        public function foo(?string $s) : string {
+                        public function foo(?string $s): string {
                             return $s ?: "hello";
                         }
                     }
@@ -127,18 +123,126 @@ class MethodSignatureTest extends TestCase
             'nullableSubclassParamWithDefault' => [
                 '<?php
                     class A {
-                        public function foo(string $s) : string {
+                        public function foo(string $s): string {
                             return $s;
                         }
                     }
 
                     class B extends A {
-                        public function foo(string $s = null) : string {
+                        public function foo(string $s = null): string {
                             return $s ?: "hello";
                         }
                     }
 
                     echo (new B)->foo();',
+            ],
+            'allowSubclassesForNonInheritedMethodParams' => [
+                '<?php
+                    class A {}
+                    class B extends A {
+                      public function bar(): void {}
+                    }
+                    class C extends A {
+                      public function bar(): void {}
+                    }
+
+                    /** @param B|C $a */
+                    function foo(A $a): void {
+                      $a->bar();
+                    }',
+            ],
+            'allowNoReturnInSubclassWithNullableReturnType' => [
+                '<?php
+                    class A {
+                        /** @return ?int */
+                        public function foo() {
+                            if (rand(0, 1)) return 5;
+                        }
+                    }
+
+                    class B extends A {
+                        public function foo() {}
+                    }',
+            ],
+            'selfReturnShouldBeParent' => [
+                '<?php
+                    class A {
+                      /** @return self */
+                      public function foo() {
+                        return new A();
+                      }
+                    }
+
+                    class B extends A {
+                      public function foo() {
+                        return new A();
+                      }
+                    }',
+            ],
+            'staticReturnShouldBeStatic' => [
+                '<?php
+                    class A {
+                      /** @return static */
+                      public static function foo() {
+                        return new A();
+                      }
+                    }
+
+                    class B extends A {
+                      public static function foo() {
+                        return new B();
+                      }
+                    }
+
+                    $b = B::foo();',
+                'assertions' => [
+                    '$b' => 'B',
+                ],
+            ],
+            'allowSomeCovariance' => [
+                '<?php
+                    interface I1 {
+                        public function test(string $s) : ?string;
+                        public function testIterable(array $a) : ?iterable;
+                    }
+
+                    class A1 implements I1 {
+                        public function test(?string $s) : string {
+                            return "value";
+                        }
+                        public function testIterable(?iterable $i) : array {
+                            return [];
+                        }
+                    }',
+            ],
+            'allowVoidToNullConversion' => [
+                '<?php
+                    class A {
+                      /** @return ?string */
+                      public function foo() {
+                        return rand(0, 1) ? "hello" : null;
+                      }
+                    }
+
+                    class B extends A {
+                      public function foo(): void {
+                        return;
+                      }
+                    }
+
+                    class C extends A {
+                      /** @return void */
+                      public function foo() {
+                        return;
+                      }
+                    }
+
+                    class D extends A {
+                      /** @return null */
+                      public function foo() {
+                        return null;
+                      }
+                    }',
             ],
         ];
     }
@@ -152,13 +256,13 @@ class MethodSignatureTest extends TestCase
             'moreArguments' => [
                 '<?php
                     class A {
-                        public function fooFoo(int $a, bool $b) : void {
+                        public function fooFoo(int $a, bool $b): void {
 
                         }
                     }
 
                     class B extends A {
-                        public function fooFoo(int $a, bool $b, array $c) : void {
+                        public function fooFoo(int $a, bool $b, array $c): void {
 
                         }
                     }',
@@ -167,13 +271,13 @@ class MethodSignatureTest extends TestCase
             'fewerArguments' => [
                 '<?php
                     class A {
-                        public function fooFoo(int $a, bool $b) : void {
+                        public function fooFoo(int $a, bool $b): void {
 
                         }
                     }
 
                     class B extends A {
-                        public function fooFoo(int $a) : void {
+                        public function fooFoo(int $a): void {
 
                         }
                     }',
@@ -182,33 +286,33 @@ class MethodSignatureTest extends TestCase
             'differentArguments' => [
                 '<?php
                     class A {
-                        public function fooFoo(int $a, bool $b) : void {
+                        public function fooFoo(int $a, bool $b): void {
 
                         }
                     }
 
                     class B extends A {
-                        public function fooFoo(bool $b, int $a) : void {
+                        public function fooFoo(bool $b, int $a): void {
 
                         }
                     }',
                 'error_message' => 'Argument 1 of B::fooFoo has wrong type \'bool\', expecting \'int\' as defined ' .
-                    'by A::foo',
+                    'by A::fooFoo',
             ],
             'nonNullableSubclassParam' => [
                 '<?php
                     class A {
-                        public function foo(?string $s) : string {
+                        public function foo(?string $s): string {
                             return $s ?: "hello";
                         }
                     }
 
                     class B extends A {
-                        public function foo(string $s) : string {
+                        public function foo(string $s): string {
                             return $s;
                         }
                     }',
-                'error_message' => 'Argument 1 of B::foo has wrong type \'string\', expecting \'string|null\'',
+                'error_message' => 'Argument 1 of B::foo has wrong type \'string\', expecting \'string|null\' as',
             ],
             'mismatchingCovariantReturn' => [
                 '<?php
@@ -237,6 +341,62 @@ class MethodSignatureTest extends TestCase
                         function foo(): self {
                             return new B();
                         }
+                    }',
+                'error_message' => 'MethodSignatureMismatch',
+            ],
+            'misplacedRequiredParam' => [
+                '<?php
+                    function foo($bar = null, $bat): void {}',
+                'error_message' => 'MisplacedRequiredParam',
+            ],
+            'clasginByRef' => [
+                '<?php
+                    class A {
+                      public function foo(string $a): void {
+                        echo $a;
+                      }
+                    }
+                    class B extends A {
+                      public function foo(string &$a): void {
+                        echo $a;
+                      }
+                    }',
+                'error_message' => 'MethodSignatureMismatch',
+            ],
+            'disallowSubclassesForNonInheritedMethodParams' => [
+                '<?php
+                    class A {}
+                    class B extends A {
+                      public function bar(): void {}
+                    }
+                    class C extends A {
+                      public function bar(): void {}
+                    }
+
+                    class D {
+                      public function foo(A $a): void {}
+                    }
+
+                    class E extends D {
+                      /** @param B|C $a */
+                      public function foo(A $a): void {
+                        $a->bar();
+                      }
+                    }',
+                'error_message' => 'MoreSpecificImplementedParamType',
+            ],
+            'disallowVoidToNullConversionSignature' => [
+                '<?php
+                    class A {
+                      public function foo(): ?string {
+                        return rand(0, 1) ? "hello" : null;
+                      }
+                    }
+
+                    class B extends A {
+                      public function foo(): void {
+                        return;
+                      }
                     }',
                 'error_message' => 'MethodSignatureMismatch',
             ],

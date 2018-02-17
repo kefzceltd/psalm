@@ -2,50 +2,30 @@
 namespace Psalm\Checker\Statements\Expression;
 
 use PhpParser;
-use Psalm\Checker\AlgebraChecker;
-use Psalm\Checker\ClassChecker;
 use Psalm\Checker\ClassLikeChecker;
-use Psalm\Checker\FunctionChecker;
 use Psalm\Checker\FunctionLikeChecker;
 use Psalm\Checker\MethodChecker;
-use Psalm\Checker\ProjectChecker;
 use Psalm\Checker\Statements\ExpressionChecker;
 use Psalm\Checker\StatementsChecker;
 use Psalm\Checker\TypeChecker;
+use Psalm\Codebase\CallMap;
 use Psalm\CodeLocation;
-use Psalm\Config;
 use Psalm\Context;
 use Psalm\FunctionLikeParameter;
-use Psalm\Issue\AbstractInstantiation;
-use Psalm\Issue\DeprecatedClass;
-use Psalm\Issue\ForbiddenCode;
 use Psalm\Issue\ImplicitToStringCast;
 use Psalm\Issue\InvalidArgument;
-use Psalm\Issue\InvalidFunctionCall;
-use Psalm\Issue\InvalidMethodCall;
 use Psalm\Issue\InvalidPassByReference;
 use Psalm\Issue\InvalidScalarArgument;
-use Psalm\Issue\InvalidScope;
 use Psalm\Issue\MixedArgument;
-use Psalm\Issue\MixedMethodCall;
 use Psalm\Issue\MixedTypeCoercion;
 use Psalm\Issue\NullArgument;
-use Psalm\Issue\NullFunctionCall;
-use Psalm\Issue\NullReference;
-use Psalm\Issue\ParentNotFound;
 use Psalm\Issue\PossiblyFalseArgument;
-use Psalm\Issue\PossiblyFalseReference;
 use Psalm\Issue\PossiblyInvalidArgument;
-use Psalm\Issue\PossiblyInvalidMethodCall;
 use Psalm\Issue\PossiblyNullArgument;
-use Psalm\Issue\PossiblyNullFunctionCall;
-use Psalm\Issue\PossiblyNullReference;
-use Psalm\Issue\PossiblyUndefinedMethod;
 use Psalm\Issue\TooFewArguments;
 use Psalm\Issue\TooManyArguments;
 use Psalm\Issue\TypeCoercion;
 use Psalm\Issue\UndefinedFunction;
-use Psalm\Issue\UndefinedMethod;
 use Psalm\IssueBuffer;
 use Psalm\Storage\ClassLikeStorage;
 use Psalm\Storage\FunctionLikeStorage;
@@ -53,1088 +33,10 @@ use Psalm\Type;
 use Psalm\Type\Atomic\ObjectLike;
 use Psalm\Type\Atomic\TArray;
 use Psalm\Type\Atomic\TCallable;
-use Psalm\Type\Atomic\TGenericObject;
-use Psalm\Type\Atomic\TMixed;
 use Psalm\Type\Atomic\TNamedObject;
-use Psalm\Type\Atomic\TNull;
 
 class CallChecker
 {
-    /**
-     * @param   StatementsChecker               $statements_checker
-     * @param   PhpParser\Node\Expr\FuncCall    $stmt
-     * @param   Context                         $context
-     *
-     * @return  false|null
-     */
-    public static function analyzeFunctionCall(
-        ProjectChecker $project_checker,
-        StatementsChecker $statements_checker,
-        PhpParser\Node\Expr\FuncCall $stmt,
-        Context $context
-    ) {
-        $method = $stmt->name;
-
-        if ($method instanceof PhpParser\Node\Name) {
-            $first_arg = isset($stmt->args[0]) ? $stmt->args[0] : null;
-
-            if ($method->parts === ['method_exists']) {
-                $context->check_methods = false;
-            } elseif ($method->parts === ['class_exists']) {
-                if ($first_arg && $first_arg->value instanceof PhpParser\Node\Scalar\String_) {
-                    $context->addPhantomClass($first_arg->value->value);
-                } else {
-                    $context->check_classes = false;
-                }
-            } elseif ($method->parts === ['function_exists']) {
-                $context->check_functions = false;
-            } elseif ($method->parts === ['is_callable']) {
-                $context->check_methods = false;
-                $context->check_functions = false;
-            } elseif ($method->parts === ['defined']) {
-                $context->check_consts = false;
-            } elseif ($method->parts === ['extract']) {
-                $context->check_variables = false;
-            } elseif ($method->parts === ['var_dump'] || $method->parts === ['shell_exec']) {
-                if (IssueBuffer::accepts(
-                    new ForbiddenCode(
-                        'Unsafe ' . implode('', $method->parts),
-                        new CodeLocation($statements_checker->getSource(), $stmt)
-                    ),
-                    $statements_checker->getSuppressedIssues()
-                )) {
-                    return false;
-                }
-            } elseif ($method->parts === ['define']) {
-                if ($first_arg && $first_arg->value instanceof PhpParser\Node\Scalar\String_) {
-                    $second_arg = $stmt->args[1];
-                    ExpressionChecker::analyze($statements_checker, $second_arg->value, $context);
-                    $const_name = $first_arg->value->value;
-
-                    $statements_checker->setConstType(
-                        $const_name,
-                        isset($second_arg->value->inferredType) ? $second_arg->value->inferredType : Type::getMixed(),
-                        $context
-                    );
-                } else {
-                    $context->check_consts = false;
-                }
-            }
-        }
-
-        $method_id = null;
-        $function_params = null;
-        $in_call_map = false;
-
-        $is_stubbed = false;
-
-        $function_storage = null;
-
-        $code_location = new CodeLocation($statements_checker->getSource(), $stmt);
-        $defined_constants = [];
-
-        $function_exists = false;
-
-        if ($stmt->name instanceof PhpParser\Node\Expr) {
-            if (ExpressionChecker::analyze($statements_checker, $stmt->name, $context) === false) {
-                return false;
-            }
-
-            if (isset($stmt->name->inferredType)) {
-                if ($stmt->name->inferredType->isNull()) {
-                    if (IssueBuffer::accepts(
-                        new NullFunctionCall(
-                            'Cannot call function on null value',
-                            new CodeLocation($statements_checker->getSource(), $stmt)
-                        ),
-                        $statements_checker->getSuppressedIssues()
-                    )) {
-                        return false;
-                    }
-
-                    return;
-                }
-
-                if ($stmt->name->inferredType->isNullable()) {
-                    if (IssueBuffer::accepts(
-                        new PossiblyNullFunctionCall(
-                            'Cannot call function on possibly null value',
-                            new CodeLocation($statements_checker->getSource(), $stmt)
-                        ),
-                        $statements_checker->getSuppressedIssues()
-                    )) {
-                        // fall through
-                    }
-                }
-
-                foreach ($stmt->name->inferredType->types as $var_type_part) {
-                    if ($var_type_part instanceof Type\Atomic\Fn) {
-                        $function_params = $var_type_part->params;
-
-                        if (isset($stmt->inferredType)) {
-                            $stmt->inferredType = Type::combineUnionTypes(
-                                $stmt->inferredType,
-                                $var_type_part->return_type
-                            );
-                        } else {
-                            $stmt->inferredType = $var_type_part->return_type;
-                        }
-
-                        $function_exists = true;
-                    } elseif ($var_type_part instanceof TMixed) {
-                        // @todo maybe emit issue here
-                    } elseif (($var_type_part instanceof TNamedObject && $var_type_part->value === 'Closure') ||
-                        $var_type_part instanceof TCallable
-                    ) {
-                        // this is fine
-                    } elseif ($var_type_part instanceof TNull) {
-                        // handled above
-                    } elseif (!$var_type_part instanceof TNamedObject ||
-                        !ClassLikeChecker::classOrInterfaceExists(
-                            $project_checker,
-                            $var_type_part->value
-                        ) ||
-                        !MethodChecker::methodExists(
-                            $project_checker,
-                            $var_type_part->value . '::__invoke'
-                        )
-                    ) {
-                        $var_id = ExpressionChecker::getVarId(
-                            $stmt->name,
-                            $statements_checker->getFQCLN(),
-                            $statements_checker
-                        );
-
-                        if (IssueBuffer::accepts(
-                            new InvalidFunctionCall(
-                                'Cannot treat ' . $var_id . ' of type ' . $var_type_part . ' as function',
-                                new CodeLocation($statements_checker->getSource(), $stmt)
-                            ),
-                            $statements_checker->getSuppressedIssues()
-                        )) {
-                            return false;
-                        }
-                    }
-                }
-            }
-
-            if (!isset($stmt->inferredType)) {
-                $stmt->inferredType = Type::getMixed();
-            }
-        } else {
-            $method_id = implode('\\', $stmt->name->parts);
-
-            $in_call_map = FunctionChecker::inCallMap($method_id);
-            $is_stubbed = isset(FunctionChecker::$stubbed_functions[strtolower($method_id)]);
-
-            $is_predefined = true;
-
-            if (!$in_call_map) {
-                $predefined_functions = Config::getInstance()->getPredefinedFunctions();
-                $is_predefined = isset($predefined_functions[$method_id]);
-            }
-
-            if (!$in_call_map && !$stmt->name instanceof PhpParser\Node\Name\FullyQualified) {
-                $method_id = FunctionChecker::getFQFunctionNameFromString($method_id, $statements_checker);
-            }
-
-            if (!$in_call_map && !$is_stubbed) {
-                if ($context->check_functions) {
-                    if (self::checkFunctionExists(
-                        $statements_checker,
-                        $method_id,
-                        $code_location
-                    ) === false
-                    ) {
-                        return false;
-                    }
-                }
-
-                $function_exists = FunctionChecker::functionExists(
-                    $statements_checker,
-                    strtolower($method_id)
-                );
-            } else {
-                $function_exists = true;
-            }
-
-            if ($function_exists) {
-                if (!$in_call_map || $is_stubbed) {
-                    $function_storage = FunctionChecker::getStorage(
-                        $statements_checker,
-                        strtolower($method_id)
-                    );
-
-                    $function_params = $function_storage->params;
-
-                    if (!$is_predefined) {
-                        $defined_constants = $function_storage->defined_constants;
-                    }
-                }
-
-                if ($in_call_map && !$is_stubbed) {
-                    $function_params = FunctionLikeChecker::getFunctionParamsFromCallMapById(
-                        $statements_checker->getFileChecker()->project_checker,
-                        $method_id,
-                        $stmt->args
-                    );
-                }
-            }
-        }
-
-        if (self::checkFunctionArguments(
-            $statements_checker,
-            $stmt->args,
-            $function_params,
-            $method_id,
-            $context
-        ) === false) {
-            // fall through
-        }
-
-        $config = Config::getInstance();
-
-        if ($function_exists) {
-            $generic_params = null;
-
-            if ($stmt->name instanceof PhpParser\Node\Name && $method_id) {
-                if (!$is_stubbed && $in_call_map) {
-                    $function_params = FunctionLikeChecker::getFunctionParamsFromCallMapById(
-                        $statements_checker->getFileChecker()->project_checker,
-                        $method_id,
-                        $stmt->args
-                    );
-                }
-            }
-
-            // do this here to allow closure param checks
-            if (self::checkFunctionArgumentsMatch(
-                $statements_checker,
-                $stmt->args,
-                $method_id,
-                $function_params ?: [],
-                $function_storage,
-                null,
-                $generic_params,
-                $code_location,
-                $context
-            ) === false) {
-                // fall through
-            }
-
-            if ($stmt->name instanceof PhpParser\Node\Name && $method_id) {
-                if (!$in_call_map || $is_stubbed) {
-                    if ($function_storage && $function_storage->template_types) {
-                        foreach ($function_storage->template_types as $template_name => $_) {
-                            if (!isset($generic_params[$template_name])) {
-                                $generic_params[$template_name] = Type::getMixed();
-                            }
-                        }
-                    }
-
-                    try {
-                        if ($function_storage && $function_storage->return_type) {
-                            $return_type = clone $function_storage->return_type;
-
-                            if ($generic_params && $function_storage->template_types) {
-                                $return_type->replaceTemplateTypesWithArgTypes(
-                                    $generic_params
-                                );
-                            }
-
-                            $return_type_location = $function_storage->return_type_location;
-
-                            $stmt->inferredType = $return_type;
-
-                            // only check the type locally if it's defined externally
-                            if ($return_type_location &&
-                                !$is_stubbed && // makes lookups or array_* functions quicker
-                                !$config->isInProjectDirs($return_type_location->file_path)
-                            ) {
-                                $return_type->check(
-                                    $statements_checker,
-                                    new CodeLocation($statements_checker->getSource(), $stmt),
-                                    $statements_checker->getSuppressedIssues(),
-                                    $context->getPhantomClasses()
-                                );
-                            }
-                        }
-                    } catch (\InvalidArgumentException $e) {
-                        // this can happen when the function was defined in the Config startup script
-                        $stmt->inferredType = Type::getMixed();
-                    }
-                } else {
-                    $stmt->inferredType = FunctionChecker::getReturnTypeFromCallMapWithArgs(
-                        $statements_checker,
-                        $method_id,
-                        $stmt->args,
-                        $code_location,
-                        $statements_checker->getSuppressedIssues()
-                    );
-                }
-            }
-
-            foreach ($defined_constants as $const_name => $const_type) {
-                $context->constants[$const_name] = clone $const_type;
-                $context->vars_in_scope[$const_name] = clone $const_type;
-            }
-
-            if (Config::getInstance()->use_assert_for_type &&
-                $method instanceof PhpParser\Node\Name &&
-                $method->parts === ['assert'] &&
-                isset($stmt->args[0])
-            ) {
-                $assert_clauses = AlgebraChecker::getFormula(
-                    $stmt->args[0]->value,
-                    $statements_checker->getFQCLN(),
-                    $statements_checker
-                );
-
-                $simplified_clauses = AlgebraChecker::simplifyCNF(array_merge($context->clauses, $assert_clauses));
-
-                $assert_type_assertions = AlgebraChecker::getTruthsFromFormula($simplified_clauses);
-
-                $changed_vars = [];
-
-                // while in an and, we allow scope to boil over to support
-                // statements of the form if ($x && $x->foo())
-                $op_vars_in_scope = TypeChecker::reconcileKeyedTypes(
-                    $assert_type_assertions,
-                    $context->vars_in_scope,
-                    $changed_vars,
-                    [],
-                    $statements_checker,
-                    new CodeLocation($statements_checker->getSource(), $stmt),
-                    $statements_checker->getSuppressedIssues()
-                );
-
-                if ($op_vars_in_scope === false) {
-                    return false;
-                }
-
-                foreach ($changed_vars as $changed_var) {
-                    if (isset($op_vars_in_scope[$changed_var])) {
-                        $op_vars_in_scope[$changed_var]->from_docblock = true;
-                    }
-                }
-
-                $context->vars_in_scope = $op_vars_in_scope;
-            }
-        }
-
-        if (!$config->remember_property_assignments_after_call && !$context->collect_initializations) {
-            $context->removeAllObjectVars();
-        }
-
-        if ($stmt->name instanceof PhpParser\Node\Name &&
-            ($stmt->name->parts === ['get_class'] || $stmt->name->parts === ['gettype']) &&
-            $stmt->args
-        ) {
-            $var = $stmt->args[0]->value;
-
-            if ($var instanceof PhpParser\Node\Expr\Variable && is_string($var->name)) {
-                $atomic_type = $stmt->name->parts === ['get_class']
-                    ? new Type\Atomic\GetClassT('$' . $var->name)
-                    : new Type\Atomic\GetTypeT('$' . $var->name);
-
-                $stmt->inferredType = new Type\Union([$atomic_type]);
-            }
-        }
-
-        return null;
-    }
-
-    /**
-     * @param   StatementsChecker           $statements_checker
-     * @param   PhpParser\Node\Expr\New_    $stmt
-     * @param   Context                     $context
-     *
-     * @return  false|null
-     */
-    public static function analyzeNew(
-        StatementsChecker $statements_checker,
-        PhpParser\Node\Expr\New_ $stmt,
-        Context $context
-    ) {
-        $fq_class_name = null;
-
-        $project_checker = $statements_checker->getFileChecker()->project_checker;
-
-        $late_static = false;
-
-        if ($stmt->class instanceof PhpParser\Node\Name) {
-            if (!in_array(strtolower($stmt->class->parts[0]), ['self', 'static', 'parent'], true)) {
-                $fq_class_name = ClassLikeChecker::getFQCLNFromNameObject(
-                    $stmt->class,
-                    $statements_checker->getAliases()
-                );
-
-                if ($context->check_classes) {
-                    if ($context->isPhantomClass($fq_class_name)) {
-                        return null;
-                    }
-
-                    if (ClassLikeChecker::checkFullyQualifiedClassLikeName(
-                        $project_checker,
-                        $fq_class_name,
-                        new CodeLocation($statements_checker->getSource(), $stmt->class),
-                        $statements_checker->getSuppressedIssues()
-                    ) === false) {
-                        return false;
-                    }
-                }
-            } else {
-                switch ($stmt->class->parts[0]) {
-                    case 'self':
-                        $fq_class_name = $context->self;
-                        break;
-
-                    case 'parent':
-                        $fq_class_name = $context->parent;
-                        break;
-
-                    case 'static':
-                        // @todo maybe we can do better here
-                        $fq_class_name = $context->self;
-                        $late_static = true;
-                        break;
-                }
-            }
-        } elseif ($stmt->class instanceof PhpParser\Node\Stmt\Class_) {
-            $statements_checker->analyze([$stmt->class], $context);
-            $fq_class_name = ClassChecker::getAnonymousClassName($stmt->class, $statements_checker->getFilePath());
-        } else {
-            ExpressionChecker::analyze($statements_checker, $stmt->class, $context);
-        }
-
-        if ($fq_class_name) {
-            $stmt->inferredType = new Type\Union([new TNamedObject($fq_class_name)]);
-
-            if (strtolower($fq_class_name) !== 'stdclass' &&
-                $context->check_classes &&
-                ClassChecker::classExists($project_checker, $fq_class_name)
-            ) {
-                $storage = $project_checker->classlike_storage_provider->get($fq_class_name);
-
-                // if we're not calling this constructor via new static()
-                if ($storage->abstract && !$late_static) {
-                    if (IssueBuffer::accepts(
-                        new AbstractInstantiation(
-                            'Unable to instantiate a abstract class ' . $fq_class_name,
-                            new CodeLocation($statements_checker->getSource(), $stmt)
-                        ),
-                        $statements_checker->getSuppressedIssues()
-                    )) {
-                        return false;
-                    }
-                }
-
-                if ($storage->deprecated) {
-                    if (IssueBuffer::accepts(
-                        new DeprecatedClass(
-                            $fq_class_name . ' is marked deprecated',
-                            new CodeLocation($statements_checker->getSource(), $stmt)
-                        ),
-                        $statements_checker->getSuppressedIssues()
-                    )) {
-                        // fall through
-                    }
-                }
-
-                if (MethodChecker::methodExists(
-                    $project_checker,
-                    $fq_class_name . '::__construct',
-                    $context->collect_references ? new CodeLocation($statements_checker->getSource(), $stmt) : null
-                )) {
-                    $method_id = $fq_class_name . '::__construct';
-
-                    if (self::checkMethodArgs(
-                        $method_id,
-                        $stmt->args,
-                        $found_generic_params,
-                        $context,
-                        new CodeLocation($statements_checker->getSource(), $stmt),
-                        $statements_checker
-                    ) === false) {
-                        return false;
-                    }
-
-                    if (MethodChecker::checkMethodVisibility(
-                        $method_id,
-                        $context->self,
-                        $statements_checker->getSource(),
-                        new CodeLocation($statements_checker->getSource(), $stmt),
-                        $statements_checker->getSuppressedIssues()
-                    ) === false) {
-                        return false;
-                    }
-
-                    $generic_params = null;
-
-                    if ($storage->template_types) {
-                        foreach ($storage->template_types as $template_name => $_) {
-                            if (isset($found_generic_params[$template_name])) {
-                                $generic_params[] = $found_generic_params[$template_name];
-                            } else {
-                                $generic_params[] = Type::getMixed();
-                            }
-                        }
-                    }
-
-                    if ($fq_class_name === 'ArrayIterator' && isset($stmt->args[0]->value->inferredType)) {
-                        /** @var Type\Union */
-                        $first_arg_type = $stmt->args[0]->value->inferredType;
-
-                        if ($first_arg_type->hasGeneric()) {
-                            $key_type = null;
-                            $value_type = null;
-
-                            foreach ($first_arg_type->types as $type) {
-                                if ($type instanceof Type\Atomic\TArray) {
-                                    $first_type_param = count($type->type_params) ? $type->type_params[0] : null;
-                                    $last_type_param = $type->type_params[count($type->type_params) - 1];
-
-                                    if ($value_type === null) {
-                                        $value_type = clone $last_type_param;
-                                    } else {
-                                        $value_type = Type::combineUnionTypes($value_type, $last_type_param);
-                                    }
-
-                                    if (!$key_type || !$first_type_param) {
-                                        $key_type = $first_type_param ? clone $first_type_param : Type::getMixed();
-                                    } else {
-                                        $key_type = Type::combineUnionTypes($key_type, $first_type_param);
-                                    }
-                                }
-                            }
-
-                            if ($key_type === null) {
-                                throw new \UnexpectedValueException('$key_type cannot be null');
-                            }
-
-                            if ($value_type === null) {
-                                throw new \UnexpectedValueException('$value_type cannot be null');
-                            }
-
-                            $stmt->inferredType = new Type\Union([
-                                new Type\Atomic\TGenericObject(
-                                    $fq_class_name,
-                                    [
-                                        $key_type,
-                                        $value_type,
-                                    ]
-                                ),
-                            ]);
-                        }
-                    } elseif ($generic_params) {
-                        $stmt->inferredType = new Type\Union([
-                            new Type\Atomic\TGenericObject(
-                                $fq_class_name,
-                                $generic_params
-                            ),
-                        ]);
-                    }
-                } elseif ($stmt->args) {
-                    if (IssueBuffer::accepts(
-                        new TooManyArguments(
-                            'Class ' . $fq_class_name . ' has no __construct, but arguments were passed',
-                            new CodeLocation($statements_checker->getSource(), $stmt)
-                        ),
-                        $statements_checker->getSuppressedIssues()
-                    )) {
-                        // fall through
-                    }
-                }
-            }
-        }
-
-        $config = Config::getInstance();
-
-        if (!$config->remember_property_assignments_after_call && !$context->collect_initializations) {
-            $context->removeAllObjectVars();
-        }
-
-        return null;
-    }
-
-    /**
-     * @param   StatementsChecker               $statements_checker
-     * @param   PhpParser\Node\Expr\MethodCall  $stmt
-     * @param   Context                         $context
-     *
-     * @return  false|null
-     */
-    public static function analyzeMethodCall(
-        StatementsChecker $statements_checker,
-        PhpParser\Node\Expr\MethodCall $stmt,
-        Context $context
-    ) {
-        if (ExpressionChecker::analyze($statements_checker, $stmt->var, $context) === false) {
-            return false;
-        }
-
-        $class_type = null;
-        $method_id = null;
-
-        if ($stmt->var instanceof PhpParser\Node\Expr\Variable) {
-            if (is_string($stmt->var->name) && $stmt->var->name === 'this' && !$statements_checker->getClassName()) {
-                if (IssueBuffer::accepts(
-                    new InvalidScope(
-                        'Use of $this in non-class context',
-                        new CodeLocation($statements_checker->getSource(), $stmt)
-                    ),
-                    $statements_checker->getSuppressedIssues()
-                )) {
-                    return false;
-                }
-            }
-        }
-
-        $var_id = ExpressionChecker::getVarId(
-            $stmt->var,
-            $statements_checker->getFQCLN(),
-            $statements_checker
-        );
-
-        $class_type = $var_id && $context->hasVariable($var_id) ? $context->vars_in_scope[$var_id] : null;
-
-        if (isset($stmt->var->inferredType)) {
-            /** @var Type\Union */
-            $class_type = $stmt->var->inferredType;
-        } elseif (!$class_type) {
-            $stmt->inferredType = Type::getMixed();
-        }
-
-        $source = $statements_checker->getSource();
-
-        if (!$context->check_methods || !$context->check_classes) {
-            return null;
-        }
-
-        $has_mock = false;
-
-        if ($class_type && is_string($stmt->name) && $class_type->isNull()) {
-            if (IssueBuffer::accepts(
-                new NullReference(
-                    'Cannot call method ' . $stmt->name . ' on null variable ' . $var_id,
-                    new CodeLocation($statements_checker->getSource(), $stmt->var)
-                ),
-                $statements_checker->getSuppressedIssues()
-            )) {
-                return false;
-            }
-
-            return null;
-        }
-
-        if ($class_type &&
-            is_string($stmt->name) &&
-            $class_type->isNullable() &&
-            !$class_type->ignore_nullable_issues
-        ) {
-            if (IssueBuffer::accepts(
-                new PossiblyNullReference(
-                    'Cannot call method ' . $stmt->name . ' on possibly null variable ' . $var_id,
-                    new CodeLocation($statements_checker->getSource(), $stmt->var)
-                ),
-                $statements_checker->getSuppressedIssues()
-            )) {
-                return false;
-            }
-        }
-
-        if ($class_type &&
-            is_string($stmt->name) &&
-            $class_type->isFalsable()
-        ) {
-            if (IssueBuffer::accepts(
-                new PossiblyFalseReference(
-                    'Cannot call method ' . $stmt->name . ' on possibly false variable ' . $var_id,
-                    new CodeLocation($statements_checker->getSource(), $stmt->var)
-                ),
-                $statements_checker->getSuppressedIssues()
-            )) {
-                return false;
-            }
-        }
-
-        $config = Config::getInstance();
-        $project_checker = $statements_checker->getFileChecker()->project_checker;
-
-        $non_existent_method_ids = [];
-        $existent_method_ids = [];
-
-        $invalid_method_call_types = [];
-        $has_valid_method_call_type = false;
-
-        $code_location = new CodeLocation($source, $stmt);
-
-        if ($class_type && is_string($stmt->name)) {
-            $return_type = null;
-            $method_name_lc = strtolower($stmt->name);
-
-            foreach ($class_type->types as $class_type_part) {
-                if (!$class_type_part instanceof TNamedObject) {
-                    switch (get_class($class_type_part)) {
-                        case 'Psalm\\Type\\Atomic\\TNull':
-                        case 'Psalm\\Type\\Atomic\\TFalse':
-                            // handled above
-                            break;
-
-                        case 'Psalm\\Type\\Atomic\\TInt':
-                        case 'Psalm\\Type\\Atomic\\TBool':
-                        case 'Psalm\\Type\\Atomic\\TTrue':
-                        case 'Psalm\\Type\\Atomic\\TArray':
-                        case 'Psalm\\Type\\Atomic\\TString':
-                        case 'Psalm\\Type\\Atomic\\TNumericString':
-                            $invalid_method_call_types[] = (string)$class_type_part;
-                            break;
-
-                        case 'Psalm\\Type\\Atomic\\TMixed':
-                        case 'Psalm\\Type\\Atomic\\TObject':
-                            if (IssueBuffer::accepts(
-                                new MixedMethodCall(
-                                    'Cannot call method ' . $stmt->name . ' on a mixed variable ' . $var_id,
-                                    $code_location
-                                ),
-                                $statements_checker->getSuppressedIssues()
-                            )) {
-                                return false;
-                            }
-                            break;
-                    }
-
-                    continue;
-                }
-
-                $has_valid_method_call_type = true;
-
-                $fq_class_name = $class_type_part->value;
-
-                $intersection_types = $class_type_part->getIntersectionTypes();
-
-                $is_mock = ExpressionChecker::isMock($fq_class_name);
-
-                $has_mock = $has_mock || $is_mock;
-
-                if ($fq_class_name === 'static') {
-                    $fq_class_name = (string) $context->self;
-                }
-
-                if ($is_mock ||
-                    $context->isPhantomClass($fq_class_name)
-                ) {
-                    $return_type = Type::getMixed();
-                    continue;
-                }
-
-                if ($var_id === '$this') {
-                    $does_class_exist = true;
-                } else {
-                    $does_class_exist = ClassLikeChecker::checkFullyQualifiedClassLikeName(
-                        $project_checker,
-                        $fq_class_name,
-                        $code_location,
-                        $statements_checker->getSuppressedIssues()
-                    );
-                }
-
-                if (!$does_class_exist) {
-                    return $does_class_exist;
-                }
-
-                if ($fq_class_name === 'iterable') {
-                    if (IssueBuffer::accepts(
-                        new UndefinedMethod(
-                            $fq_class_name . ' has no defined methods',
-                            $code_location
-                        ),
-                        $statements_checker->getSuppressedIssues()
-                    )) {
-                        return false;
-                    }
-
-                    return;
-                }
-
-                $method_id = $fq_class_name . '::' . $method_name_lc;
-
-                if (MethodChecker::methodExists(
-                    $project_checker,
-                    $fq_class_name . '::__call'
-                )
-                ) {
-                    if (!MethodChecker::methodExists($project_checker, $method_id)
-                        || !MethodChecker::isMethodVisible(
-                            $method_id,
-                            $context->self,
-                            $statements_checker->getSource()
-                        )
-                    ) {
-                        $return_type = Type::getMixed();
-                        continue;
-                    }
-                }
-
-                if ($var_id === '$this' &&
-                    $context->self &&
-                    $fq_class_name !== $context->self &&
-                    MethodChecker::methodExists($project_checker, $context->self . '::' . $method_name_lc)
-                ) {
-                    $method_id = $context->self . '::' . $method_name_lc;
-                    $fq_class_name = $context->self;
-                }
-
-                if ($intersection_types && !MethodChecker::methodExists($project_checker, $method_id)) {
-                    foreach ($intersection_types as $intersection_type) {
-                        $method_id = $intersection_type->value . '::' . $method_name_lc;
-                        $fq_class_name = $intersection_type->value;
-
-                        if (MethodChecker::methodExists($project_checker, $method_id)) {
-                            break;
-                        }
-                    }
-                }
-
-                $cased_method_id = $fq_class_name . '::' . $stmt->name;
-
-                if (!MethodChecker::methodExists($project_checker, $method_id, $code_location)) {
-                    $non_existent_method_ids[] = $method_id;
-                    continue;
-                }
-
-                $existent_method_ids[] = $method_id;
-
-                $class_template_params = null;
-
-                if ($stmt->var instanceof PhpParser\Node\Expr\Variable &&
-                    ($context->collect_initializations || $context->collect_mutations) &&
-                    $stmt->var->name === 'this' &&
-                    is_string($stmt->name) &&
-                    $source instanceof FunctionLikeChecker
-                ) {
-                    self::collectSpecialInformation($source, $stmt->name, $context);
-                }
-
-                $class_storage = $project_checker->classlike_storage_provider->get($fq_class_name);
-
-                if ($class_storage->template_types) {
-                    $class_template_params = [];
-
-                    if ($class_type_part instanceof TGenericObject) {
-                        $reversed_class_template_types = array_reverse(array_keys($class_storage->template_types));
-
-                        $provided_type_param_count = count($class_type_part->type_params);
-
-                        foreach ($reversed_class_template_types as $i => $type_name) {
-                            if (isset($class_type_part->type_params[$provided_type_param_count - 1 - $i])) {
-                                $class_template_params[$type_name] =
-                                    $class_type_part->type_params[$provided_type_param_count - 1 - $i];
-                            } else {
-                                $class_template_params[$type_name] = Type::getMixed();
-                            }
-                        }
-                    } else {
-                        foreach ($class_storage->template_types as $type_name => $_) {
-                            $class_template_params[$type_name] = Type::getMixed();
-                        }
-                    }
-                }
-
-                if (self::checkMethodArgs(
-                    $method_id,
-                    $stmt->args,
-                    $class_template_params,
-                    $context,
-                    $code_location,
-                    $statements_checker
-                ) === false) {
-                    return false;
-                }
-
-                $return_type_location = null;
-                $project_checker = $source->getFileChecker()->project_checker;
-
-                switch (strtolower($stmt->name)) {
-                    case '__tostring':
-                        $return_type = Type::getString();
-                        continue;
-                }
-
-                if ($method_name_lc === '__tostring') {
-                    $return_type_candidate = Type::getString();
-                } elseif (FunctionChecker::inCallMap($cased_method_id)) {
-                    $return_type_candidate = FunctionChecker::getReturnTypeFromCallMap($method_id);
-                } else {
-                    if (MethodChecker::checkMethodVisibility(
-                        $method_id,
-                        $context->self,
-                        $statements_checker->getSource(),
-                        $code_location,
-                        $statements_checker->getSuppressedIssues()
-                    ) === false) {
-                        return false;
-                    }
-
-                    if (MethodChecker::checkMethodNotDeprecated(
-                        $project_checker,
-                        $method_id,
-                        $code_location,
-                        $statements_checker->getSuppressedIssues()
-                    ) === false) {
-                        return false;
-                    }
-
-                    $return_type_candidate = MethodChecker::getMethodReturnType($project_checker, $method_id);
-
-                    if ($return_type_candidate) {
-                        $return_type_candidate = clone $return_type_candidate;
-
-                        if ($class_template_params) {
-                            $return_type_candidate->replaceTemplateTypesWithArgTypes(
-                                $class_template_params
-                            );
-                        }
-
-                        $return_type_candidate = ExpressionChecker::fleshOutType(
-                            $project_checker,
-                            $return_type_candidate,
-                            $fq_class_name,
-                            $method_id
-                        );
-
-                        $return_type_location = MethodChecker::getMethodReturnTypeLocation(
-                            $project_checker,
-                            $method_id,
-                            $secondary_return_type_location
-                        );
-
-                        if ($secondary_return_type_location) {
-                            $return_type_location = $secondary_return_type_location;
-                        }
-
-                        // only check the type locally if it's defined externally
-                        if ($return_type_location && !$config->isInProjectDirs($return_type_location->file_path)) {
-                            $return_type_candidate->check(
-                                $statements_checker,
-                                new CodeLocation($source, $stmt),
-                                $statements_checker->getSuppressedIssues(),
-                                $context->getPhantomClasses()
-                            );
-                        }
-                    }
-                }
-
-                if ($return_type_candidate) {
-                    if (!$return_type) {
-                        $return_type = $return_type_candidate;
-                    } else {
-                        $return_type = Type::combineUnionTypes($return_type_candidate, $return_type);
-                    }
-                } else {
-                    $return_type = Type::getMixed();
-                }
-            }
-
-            if ($invalid_method_call_types) {
-                $invalid_class_type = $invalid_method_call_types[0];
-
-                if ($has_valid_method_call_type) {
-                    if (IssueBuffer::accepts(
-                        new PossiblyInvalidMethodCall(
-                            'Cannot call method on possible ' . $invalid_class_type . ' variable ' . $var_id,
-                            $code_location
-                        ),
-                        $statements_checker->getSuppressedIssues()
-                    )) {
-                        return false;
-                    }
-                } else {
-                    if (IssueBuffer::accepts(
-                        new InvalidMethodCall(
-                            'Cannot call method on ' . $invalid_class_type . ' variable ' . $var_id,
-                            $code_location
-                        ),
-                        $statements_checker->getSuppressedIssues()
-                    )) {
-                        return false;
-                    }
-                }
-            }
-
-            if ($non_existent_method_ids) {
-                if ($existent_method_ids) {
-                    if (IssueBuffer::accepts(
-                        new PossiblyUndefinedMethod(
-                            'Method ' . $non_existent_method_ids[0] . ' does not exist',
-                            $code_location
-                        ),
-                        $statements_checker->getSuppressedIssues()
-                    )) {
-                        return false;
-                    }
-                } else {
-                    if (IssueBuffer::accepts(
-                        new UndefinedMethod(
-                            'Method ' . $non_existent_method_ids[0] . ' does not exist',
-                            $code_location
-                        ),
-                        $statements_checker->getSuppressedIssues()
-                    )) {
-                        return false;
-                    }
-                }
-
-                return null;
-            }
-
-            $stmt->inferredType = $return_type;
-        }
-
-        if ($method_id === null) {
-            return self::checkMethodArgs(
-                $method_id,
-                $stmt->args,
-                $found_generic_params,
-                $context,
-                new CodeLocation($statements_checker->getSource(), $stmt),
-                $statements_checker
-            );
-        }
-
-        if (!$config->remember_property_assignments_after_call && !$context->collect_initializations) {
-            $context->removeAllObjectVars();
-        }
-
-        // if we called a method on this nullable variable, remove the nullable status here
-        // because any further calls must have worked
-        if ($var_id
-            && $class_type
-            && $has_valid_method_call_type
-            && !$invalid_method_call_types
-            && $existent_method_ids
-            && ($class_type->from_docblock || $class_type->isNullable())
-        ) {
-            $keys_to_remove = [];
-
-            foreach ($class_type->types as $key => $type) {
-                if (!$type instanceof TNamedObject) {
-                    $keys_to_remove[] = $key;
-                } else {
-                    $type->from_docblock = false;
-                }
-            }
-
-            foreach ($keys_to_remove as $key) {
-                unset($class_type->types[$key]);
-            }
-
-            $class_type->from_docblock = false;
-
-            $context->removeVarFromConflictingClauses($var_id, null, $statements_checker);
-        }
-    }
-
     /**
      * @param   FunctionLikeChecker $source
      * @param   string              $method_name
@@ -1150,13 +52,13 @@ class CallChecker
         $fq_class_name = (string)$source->getFQCLN();
 
         $project_checker = $source->getFileChecker()->project_checker;
+        $codebase = $project_checker->codebase;
 
         if ($context->collect_mutations &&
             $context->self &&
             (
                 $context->self === $fq_class_name ||
-                ClassChecker::classExtends(
-                    $project_checker,
+                $codebase->classExtends(
                     $context->self,
                     $fq_class_name
                 )
@@ -1164,13 +66,26 @@ class CallChecker
         ) {
             $method_id = $fq_class_name . '::' . strtolower($method_name);
 
-            $project_checker->getMethodMutations($method_id, $context);
+            if ($method_id !== $source->getMethodId()) {
+                if ($context->collect_initializations) {
+                    if (isset($context->initialized_methods[$method_id])) {
+                        return;
+                    }
+
+                    if ($context->initialized_methods === null) {
+                        $context->initialized_methods = [];
+                    }
+
+                    $context->initialized_methods[$method_id] = true;
+                }
+
+                $project_checker->getMethodMutations($method_id, $context);
+            }
         } elseif ($context->collect_initializations &&
             $context->self &&
             (
                 $context->self === $fq_class_name ||
-                ClassChecker::classExtends(
-                    $project_checker,
+                $codebase->classlikes->classExtends(
                     $context->self,
                     $fq_class_name
                 )
@@ -1179,9 +94,19 @@ class CallChecker
         ) {
             $method_id = $fq_class_name . '::' . strtolower($method_name);
 
-            $declaring_method_id = MethodChecker::getDeclaringMethodId($project_checker, $method_id);
+            $declaring_method_id = (string) $codebase->methods->getDeclaringMethodId($method_id);
 
-            $method_storage = MethodChecker::getStorage($project_checker, (string)$declaring_method_id);
+            if (isset($context->initialized_methods[$declaring_method_id])) {
+                return;
+            }
+
+            if ($context->initialized_methods === null) {
+                $context->initialized_methods = [];
+            }
+
+            $context->initialized_methods[$declaring_method_id] = true;
+
+            $method_storage = $codebase->methods->getStorage($declaring_method_id);
 
             $class_checker = $source->getSource();
 
@@ -1191,13 +116,13 @@ class CallChecker
                 $local_vars_in_scope = [];
                 $local_vars_possibly_in_scope = [];
 
-                foreach ($context->vars_in_scope as $var => $type) {
+                foreach ($context->vars_in_scope as $var => $_) {
                     if (strpos($var, '$this->') !== 0 && $var !== '$this') {
                         $local_vars_in_scope[$var] = $context->vars_in_scope[$var];
                     }
                 }
 
-                foreach ($context->vars_possibly_in_scope as $var => $type) {
+                foreach ($context->vars_possibly_in_scope as $var => $_) {
                     if (strpos($var, '$this->') !== 0 && $var !== '$this') {
                         $local_vars_possibly_in_scope[$var] = $context->vars_possibly_in_scope[$var];
                     }
@@ -1209,329 +134,10 @@ class CallChecker
                     $context->vars_in_scope[$var] = $type;
                 }
 
-                foreach ($local_vars_possibly_in_scope as $var => $type) {
+                foreach ($local_vars_possibly_in_scope as $var => $_) {
                     $context->vars_possibly_in_scope[$var] = true;
                 }
             }
-        }
-    }
-
-    /**
-     * @param   StatementsChecker               $statements_checker
-     * @param   PhpParser\Node\Expr\StaticCall  $stmt
-     * @param   Context                         $context
-     *
-     * @return  false|null
-     */
-    public static function analyzeStaticCall(
-        StatementsChecker $statements_checker,
-        PhpParser\Node\Expr\StaticCall $stmt,
-        Context $context
-    ) {
-        $method_id = null;
-        $fq_class_name = null;
-
-        $lhs_type = null;
-
-        $file_checker = $statements_checker->getFileChecker();
-        $project_checker = $file_checker->project_checker;
-        $source = $statements_checker->getSource();
-
-        if ($stmt->class instanceof PhpParser\Node\Name) {
-            $fq_class_name = null;
-
-            if (count($stmt->class->parts) === 1
-                && in_array(strtolower($stmt->class->parts[0]), ['self', 'static', 'parent'], true)
-            ) {
-                if ($stmt->class->parts[0] === 'parent') {
-                    $fq_class_name = $statements_checker->getParentFQCLN();
-
-                    if ($fq_class_name === null) {
-                        if (IssueBuffer::accepts(
-                            new ParentNotFound(
-                                'Cannot call method on parent as this class does not extend another',
-                                new CodeLocation($statements_checker->getSource(), $stmt)
-                            ),
-                            $statements_checker->getSuppressedIssues()
-                        )) {
-                            return false;
-                        }
-
-                        return;
-                    }
-
-                    $class_storage = $project_checker->classlike_storage_provider->get($fq_class_name);
-
-                    if (is_string($stmt->name) && $class_storage->user_defined) {
-                        $method_id = $fq_class_name . '::' . strtolower($stmt->name);
-
-                        $old_context_include_location = $context->include_location;
-                        $old_self = $context->self;
-                        $context->include_location = new CodeLocation($statements_checker->getSource(), $stmt);
-                        $context->self = $fq_class_name;
-
-                        if ($context->collect_mutations) {
-                            $file_checker->getMethodMutations($method_id, $context);
-                        } elseif ($context->collect_initializations) {
-                            $local_vars_in_scope = [];
-                            $local_vars_possibly_in_scope = [];
-
-                            foreach ($context->vars_in_scope as $var => $type) {
-                                if (strpos($var, '$this->') !== 0 && $var !== '$this') {
-                                    $local_vars_in_scope[$var] = $context->vars_in_scope[$var];
-                                }
-                            }
-
-                            foreach ($context->vars_possibly_in_scope as $var => $type) {
-                                if (strpos($var, '$this->') !== 0 && $var !== '$this') {
-                                    $local_vars_possibly_in_scope[$var] = $context->vars_possibly_in_scope[$var];
-                                }
-                            }
-
-                            $file_checker->getMethodMutations($method_id, $context);
-
-                            foreach ($local_vars_in_scope as $var => $type) {
-                                $context->vars_in_scope[$var] = $type;
-                            }
-
-                            foreach ($local_vars_possibly_in_scope as $var => $type) {
-                                $context->vars_possibly_in_scope[$var] = $type;
-                            }
-                        }
-
-                        $context->include_location = $old_context_include_location;
-                        $context->self = $old_self;
-                    }
-                } else {
-                    $namespace = $statements_checker->getNamespace()
-                        ? $statements_checker->getNamespace() . '\\'
-                        : '';
-
-                    $fq_class_name = $context->self ?: $namespace . $statements_checker->getClassName();
-                }
-
-                if ($context->isPhantomClass($fq_class_name)) {
-                    return null;
-                }
-            } elseif ($context->check_classes) {
-                $fq_class_name = ClassLikeChecker::getFQCLNFromNameObject(
-                    $stmt->class,
-                    $statements_checker->getAliases()
-                );
-
-                if ($context->isPhantomClass($fq_class_name)) {
-                    return null;
-                }
-
-                $does_class_exist = false;
-
-                if ($context->self) {
-                    $self_storage = $project_checker->classlike_storage_provider->get($context->self);
-
-                    if (isset($self_storage->used_traits[strtolower($fq_class_name)])) {
-                        $fq_class_name = $context->self;
-                        $does_class_exist = true;
-                    }
-                }
-
-                if (!$does_class_exist) {
-                    $does_class_exist = ClassLikeChecker::checkFullyQualifiedClassLikeName(
-                        $project_checker,
-                        $fq_class_name,
-                        new CodeLocation($source, $stmt->class),
-                        $statements_checker->getSuppressedIssues(),
-                        false
-                    );
-                }
-
-                if (!$does_class_exist) {
-                    return $does_class_exist;
-                }
-            }
-
-            if ($fq_class_name) {
-                $lhs_type = new Type\Union([new TNamedObject($fq_class_name)]);
-            }
-        } else {
-            ExpressionChecker::analyze($statements_checker, $stmt->class, $context);
-
-            /** @var Type\Union */
-            $lhs_type = $stmt->class->inferredType;
-
-            if (!isset($lhs_type) || $lhs_type->hasString()) {
-                return null;
-            }
-        }
-
-        if (!$context->check_methods || !$lhs_type) {
-            return null;
-        }
-
-        $has_mock = false;
-
-        $config = Config::getInstance();
-
-        foreach ($lhs_type->types as $lhs_type_part) {
-            if (!$lhs_type_part instanceof TNamedObject) {
-                // @todo deal with it
-                continue;
-            }
-
-            $fq_class_name = $lhs_type_part->value;
-
-            $is_mock = ExpressionChecker::isMock($fq_class_name);
-
-            $has_mock = $has_mock || $is_mock;
-
-            $method_id = null;
-
-            if (is_string($stmt->name) &&
-                !MethodChecker::methodExists($project_checker, $fq_class_name . '::__callStatic') &&
-                !$is_mock
-            ) {
-                $method_id = $fq_class_name . '::' . strtolower($stmt->name);
-                $cased_method_id = $fq_class_name . '::' . $stmt->name;
-
-                $does_method_exist = MethodChecker::checkMethodExists(
-                    $project_checker,
-                    $cased_method_id,
-                    new CodeLocation($source, $stmt),
-                    $statements_checker->getSuppressedIssues()
-                );
-
-                if (!$does_method_exist) {
-                    return $does_method_exist;
-                }
-
-                $class_storage = $project_checker->classlike_storage_provider->get($fq_class_name);
-
-                if ($class_storage->deprecated) {
-                    if (IssueBuffer::accepts(
-                        new DeprecatedClass(
-                            $fq_class_name . ' is marked deprecated',
-                            new CodeLocation($statements_checker->getSource(), $stmt)
-                        ),
-                        $statements_checker->getSuppressedIssues()
-                    )) {
-                        // fall through
-                    }
-                }
-
-                if (MethodChecker::checkMethodVisibility(
-                    $method_id,
-                    $context->self,
-                    $statements_checker->getSource(),
-                    new CodeLocation($source, $stmt),
-                    $statements_checker->getSuppressedIssues()
-                ) === false) {
-                    return false;
-                }
-
-                if ($stmt->class instanceof PhpParser\Node\Name
-                    && ($stmt->class->parts[0] !== 'parent' || $statements_checker->isStatic())
-                    && (
-                        !$context->self
-                        || $statements_checker->isStatic()
-                        || !ClassChecker::classExtends($project_checker, $context->self, $fq_class_name)
-                    )
-                ) {
-                    if (MethodChecker::checkStatic(
-                        $method_id,
-                        $stmt->class instanceof PhpParser\Node\Name && strtolower($stmt->class->parts[0]) === 'self',
-                        $project_checker,
-                        new CodeLocation($source, $stmt),
-                        $statements_checker->getSuppressedIssues()
-                    ) === false) {
-                        // fall through
-                    }
-                }
-
-                if (MethodChecker::checkMethodNotDeprecated(
-                    $project_checker,
-                    $method_id,
-                    new CodeLocation($statements_checker->getSource(), $stmt),
-                    $statements_checker->getSuppressedIssues()
-                ) === false) {
-                    // fall through
-                }
-
-                if (self::checkMethodArgs(
-                    $method_id,
-                    $stmt->args,
-                    $found_generic_params,
-                    $context,
-                    new CodeLocation($statements_checker->getSource(), $stmt),
-                    $statements_checker
-                ) === false) {
-                    return false;
-                }
-
-                $fq_class_name = $stmt->class instanceof PhpParser\Node\Name && $stmt->class->parts === ['parent']
-                    ? $statements_checker->getFQCLN()
-                    : $fq_class_name;
-
-                $return_type_candidate = MethodChecker::getMethodReturnType($project_checker, $method_id);
-
-                if ($return_type_candidate) {
-                    $return_type_candidate = clone $return_type_candidate;
-
-                    if ($found_generic_params) {
-                        $return_type_candidate->replaceTemplateTypesWithArgTypes(
-                            $found_generic_params
-                        );
-                    }
-
-                    $return_type_candidate = ExpressionChecker::fleshOutType(
-                        $project_checker,
-                        $return_type_candidate,
-                        $fq_class_name,
-                        $method_id
-                    );
-
-                    $return_type_location = MethodChecker::getMethodReturnTypeLocation(
-                        $project_checker,
-                        $method_id,
-                        $secondary_return_type_location
-                    );
-
-                    if ($secondary_return_type_location) {
-                        $return_type_location = $secondary_return_type_location;
-                    }
-
-                    // only check the type locally if it's defined externally
-                    if ($return_type_location && !$config->isInProjectDirs($return_type_location->file_path)) {
-                        $return_type_candidate->check(
-                            $statements_checker,
-                            new CodeLocation($source, $stmt),
-                            $statements_checker->getSuppressedIssues(),
-                            $context->getPhantomClasses()
-                        );
-                    }
-                }
-
-                if ($return_type_candidate) {
-                    if (isset($stmt->inferredType)) {
-                        $stmt->inferredType = Type::combineUnionTypes($stmt->inferredType, $return_type_candidate);
-                    } else {
-                        $stmt->inferredType = $return_type_candidate;
-                    }
-                }
-            }
-        }
-
-        if ($method_id === null) {
-            return self::checkMethodArgs(
-                $method_id,
-                $stmt->args,
-                $found_generic_params,
-                $context,
-                new CodeLocation($statements_checker->getSource(), $stmt),
-                $statements_checker
-            );
-        }
-
-        if (!$config->remember_property_assignments_after_call && !$context->collect_initializations) {
-            $context->removeAllObjectVars();
         }
     }
 
@@ -1606,7 +212,7 @@ class CallChecker
             );
         }
 
-        if (self::checkFunctionArgumentsMatch(
+        if (self::checkFunctionLikeArgumentsMatch(
             $statements_checker,
             $args,
             $method_id,
@@ -1657,10 +263,10 @@ class CallChecker
 
             if (isset($array_arg->inferredType) && $array_arg->inferredType->hasArray()) {
                 /** @var TArray|ObjectLike */
-                $array_type = $array_arg->inferredType->types['array'];
+                $array_type = $array_arg->inferredType->getTypes()['array'];
 
                 if ($array_type instanceof ObjectLike) {
-                    $array_type = new TArray([Type::getString(), $array_type->getGenericTypeParam()]);
+                    $array_type = $array_type->getGenericArrayType();
                 }
 
                 $by_ref_type = new Type\Union([clone $array_type]);
@@ -1680,7 +286,7 @@ class CallChecker
 
                     $by_ref_type = Type::combineUnionTypes(
                         $by_ref_type,
-                        $by_ref_type = new Type\Union(
+                        new Type\Union(
                             [
                                 new TArray(
                                     [
@@ -1725,7 +331,14 @@ class CallChecker
                     $by_ref_type = $by_ref_type ? clone $by_ref_type : Type::getMixed();
                 }
 
-                if ($by_ref && $by_ref_type) {
+                if ($by_ref
+                    && $by_ref_type
+                    && !(
+                        $arg->value instanceof PhpParser\Node\Expr\ConstFetch
+                        || $arg->value instanceof PhpParser\Node\Expr\FuncCall
+                        || $arg->value instanceof PhpParser\Node\Expr\MethodCall
+                    )
+                ) {
                     // special handling for array sort
                     if ($argument_offset === 0
                         && $method_id
@@ -1770,10 +383,10 @@ class CallChecker
                             && $arg->value->inferredType->hasArray()
                         ) {
                             /** @var TArray|ObjectLike */
-                            $array_type = $arg->value->inferredType->types['array'];
+                            $array_type = $arg->value->inferredType->getTypes()['array'];
 
                             if ($array_type instanceof ObjectLike) {
-                                $array_type = new TArray([Type::getString(), $array_type->getGenericTypeParam()]);
+                                $array_type = $array_type->getGenericArrayType();
                             }
 
                             if (in_array($method_id, ['shuffle', 'sort', 'rsort', 'usort'], true)) {
@@ -1805,27 +418,8 @@ class CallChecker
                         }
                     }
                 } else {
-                    if ($arg->value instanceof PhpParser\Node\Expr\Variable) {
-                        if (ExpressionChecker::analyzeVariable(
-                            $statements_checker,
-                            $arg->value,
-                            $context
-                        ) === false) {
-                            return false;
-                        }
-                    } elseif ($arg->value instanceof PhpParser\Node\Expr\PropertyFetch) {
-                        if (FetchChecker::analyzePropertyFetch(
-                            $statements_checker,
-                            $arg->value,
-                            $context
-                        ) === false
-                        ) {
-                            return false;
-                        }
-                    } else {
-                        if (ExpressionChecker::analyze($statements_checker, $arg->value, $context) === false) {
-                            return false;
-                        }
+                    if (ExpressionChecker::analyze($statements_checker, $arg->value, $context) === false) {
+                        return false;
                     }
                 }
             } else {
@@ -1839,17 +433,44 @@ class CallChecker
                     );
                 }
 
-                if ($var_id &&
-                    (!$context->hasVariable($var_id) || $context->vars_in_scope[$var_id]->isNull())
-                ) {
-                    // we don't know if it exists, assume it's passed by reference
-                    $context->vars_in_scope[$var_id] = Type::getMixed();
-                    $context->vars_possibly_in_scope[$var_id] = true;
-                    if (!$statements_checker->hasVariable($var_id)) {
-                        $statements_checker->registerVariable(
+                if ($var_id) {
+                    if (!$context->hasVariable($var_id, $statements_checker)
+                        || $context->vars_in_scope[$var_id]->isNull()
+                    ) {
+                        // we don't know if it exists, assume it's passed by reference
+                        $context->vars_in_scope[$var_id] = Type::getMixed();
+                        $context->vars_possibly_in_scope[$var_id] = true;
+
+                        if (strpos($var_id, '-') === false
+                            && strpos($var_id, '[') === false
+                            && !$statements_checker->hasVariable($var_id)
+                        ) {
+                            $location = new CodeLocation($statements_checker, $arg->value);
+                            $statements_checker->registerVariable(
+                                $var_id,
+                                $location,
+                                null
+                            );
+
+                            $statements_checker->registerVariableUse($location);
+                        }
+                    } else {
+                        $context->removeVarFromConflictingClauses(
                             $var_id,
-                            new CodeLocation($statements_checker, $arg->value)
+                            $context->vars_in_scope[$var_id],
+                            $statements_checker
                         );
+
+                        foreach ($context->vars_in_scope[$var_id]->getTypes() as $key => &$type) {
+                            if ($type instanceof TArray && $type->type_params[1]->isEmpty()) {
+                                $context->vars_in_scope[$var_id]->removeType('array');
+                                $context->vars_in_scope[$var_id]->addType(
+                                    new TArray(
+                                        [Type::getMixed(), Type::getMixed()]
+                                    )
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -1871,7 +492,7 @@ class CallChecker
      *
      * @return  false|null
      */
-    protected static function checkFunctionArgumentsMatch(
+    protected static function checkFunctionLikeArgumentsMatch(
         StatementsChecker $statements_checker,
         array $args,
         $method_id,
@@ -1882,7 +503,7 @@ class CallChecker
         CodeLocation $code_location,
         Context $context
     ) {
-        $in_call_map = $method_id ? FunctionChecker::inCallMap($method_id) : false;
+        $in_call_map = $method_id ? CallMap::inCallMap($method_id) : false;
 
         $cased_method_id = $method_id;
 
@@ -1891,22 +512,34 @@ class CallChecker
         $fq_class_name = null;
 
         $project_checker = $statements_checker->getFileChecker()->project_checker;
+        $codebase = $project_checker->codebase;
 
         if ($method_id) {
             if ($in_call_map || !strpos($method_id, '::')) {
-                $is_variadic = FunctionChecker::isVariadic(
+                $is_variadic = $codebase->functions->isVariadic(
                     $project_checker,
                     strtolower($method_id),
                     $statements_checker->getFilePath()
                 );
             } else {
                 $fq_class_name = explode('::', $method_id)[0];
-                $is_variadic = MethodChecker::isVariadic($project_checker, $method_id);
+                $is_variadic = $codebase->methods->isVariadic($method_id);
             }
         }
 
         if ($method_id && strpos($method_id, '::') && !$in_call_map) {
-            $cased_method_id = MethodChecker::getCasedMethodId($project_checker, $method_id);
+            $cased_method_id = $codebase->methods->getCasedMethodId($method_id);
+        } elseif ($function_storage) {
+            $cased_method_id = $function_storage->cased_name;
+        }
+
+        if ($method_id && strpos($method_id, '::')) {
+            $declaring_method_id = $codebase->methods->getDeclaringMethodId($method_id);
+
+            if ($declaring_method_id && $declaring_method_id !== $method_id) {
+                list($fq_class_name) = explode('::', $declaring_method_id);
+                $class_storage = $project_checker->classlike_storage_provider->get($fq_class_name);
+            }
         }
 
         if ($function_params) {
@@ -1947,10 +580,18 @@ class CallChecker
                 && $function_param->by_ref
             ) {
                 if ($arg->value instanceof PhpParser\Node\Scalar
+                    || $arg->value instanceof PhpParser\Node\Expr\Array_
                     || $arg->value instanceof PhpParser\Node\Expr\ClassConstFetch
-                    || $arg->value instanceof PhpParser\Node\Expr\ConstFetch
-                    || $arg->value instanceof PhpParser\Node\Expr\FuncCall
-                    || $arg->value instanceof PhpParser\Node\Expr\MethodCall
+                    || (
+                        (
+                        $arg->value instanceof PhpParser\Node\Expr\ConstFetch
+                            || $arg->value instanceof PhpParser\Node\Expr\FuncCall
+                            || $arg->value instanceof PhpParser\Node\Expr\MethodCall
+                        ) && (
+                            !isset($arg->value->inferredType)
+                            || !$arg->value->inferredType->by_ref
+                        )
+                    )
                 ) {
                     if (IssueBuffer::accepts(
                         new InvalidPassByReference(
@@ -2002,7 +643,7 @@ class CallChecker
                         $arg->value,
                         $by_ref_type,
                         $context,
-                        $method_id && (strpos($method_id, '::') !== false || !FunctionChecker::inCallMap($method_id))
+                        $method_id && (strpos($method_id, '::') !== false || !CallMap::inCallMap($method_id))
                     );
                 }
             }
@@ -2012,11 +653,17 @@ class CallChecker
                     $param_type = clone $function_param->type;
 
                     if ($function_param->is_variadic) {
-                        if (!$param_type->hasArray() || !$param_type->types['array'] instanceof TArray) {
+                        if (!$param_type->hasArray()) {
                             continue;
                         }
 
-                        $param_type = clone $param_type->types['array']->type_params[1];
+                        $array_atomic_type = $param_type->getTypes()['array'];
+
+                        if (!$array_atomic_type instanceof TArray) {
+                            continue;
+                        }
+
+                        $param_type = clone $array_atomic_type->type_params[1];
                     }
 
                     if ($function_storage) {
@@ -2041,11 +688,11 @@ class CallChecker
                             }
 
                             if ($offset_value_type) {
-                                foreach ($offset_value_type->types as $offset_value_type_part) {
+                                foreach ($offset_value_type->getTypes() as $offset_value_type_part) {
                                     // register class if the class exists
                                     if ($offset_value_type_part instanceof TNamedObject) {
                                         ClassLikeChecker::checkFullyQualifiedClassLikeName(
-                                            $project_checker,
+                                            $statements_checker,
                                             $offset_value_type_part->value,
                                             new CodeLocation($statements_checker->getSource(), $arg->value),
                                             $statements_checker->getSuppressedIssues()
@@ -2083,7 +730,7 @@ class CallChecker
                         $project_checker,
                         $param_type,
                         $fq_class_name,
-                        $method_id
+                        $fq_class_name
                     );
 
                     if ($context->check_variables) {
@@ -2144,7 +791,8 @@ class CallChecker
         ) {
             if (IssueBuffer::accepts(
                 new TooManyArguments(
-                    'Too many arguments for method ' . ($cased_method_id ?: $method_id),
+                    'Too many arguments for method ' . ($cased_method_id ?: $method_id)
+                        . ' - expecting ' . count($function_params) . ' but saw ' . count($args),
                     $code_location
                 ),
                 $statements_checker->getSuppressedIssues()
@@ -2156,13 +804,14 @@ class CallChecker
         }
 
         if (!$has_packed_var && count($args) < count($function_params)) {
-            for ($i = count($args); $i < count($function_params); ++$i) {
+            for ($i = count($args), $j = count($function_params); $i < $j; ++$i) {
                 $param = $function_params[$i];
 
                 if (!$param->is_optional && !$param->is_variadic) {
                     if (IssueBuffer::accepts(
                         new TooFewArguments(
-                            'Too few arguments for method ' . $cased_method_id,
+                            'Too few arguments for method ' . $cased_method_id
+                                . ' - expecting ' . count($function_params) . ' but saw ' . count($args),
                             $code_location
                         ),
                         $statements_checker->getSuppressedIssues()
@@ -2206,18 +855,18 @@ class CallChecker
             /** @var ObjectLike|TArray|null */
             $array_arg_type = $array_arg
                     && isset($array_arg->inferredType)
-                    && isset($array_arg->inferredType->types['array'])
-                ? $array_arg->inferredType->types['array']
+                    && isset($array_arg->inferredType->getTypes()['array'])
+                ? $array_arg->inferredType->getTypes()['array']
                 : null;
 
             if ($array_arg_type instanceof ObjectLike) {
-                $array_arg_type = new TArray([Type::getString(), $array_arg_type->getGenericTypeParam()]);
+                $array_arg_type = $array_arg_type->getGenericArrayType();
             }
 
             $array_arg_types[] = $array_arg_type;
         }
 
-        /** @var ?PhpParser\Node\Arg */
+        /** @var null|PhpParser\Node\Arg */
         $closure_arg = isset($args[$closure_index]) ? $args[$closure_index] : null;
 
         /** @var Type\Union|null */
@@ -2236,7 +885,7 @@ class CallChecker
                 $max_closure_param_count = count($args) > 2 ? 2 : 1;
             }
 
-            foreach ($closure_arg_type->types as $closure_type) {
+            foreach ($closure_arg_type->getTypes() as $closure_type) {
                 if (!$closure_type instanceof Type\Atomic\Fn) {
                     continue;
                 }
@@ -2296,18 +945,18 @@ class CallChecker
                     }
 
                     $type_match_found = TypeChecker::isContainedBy(
-                        $project_checker,
+                        $project_checker->codebase,
                         $input_type,
                         $closure_param_type,
                         false,
                         false,
                         $scalar_type_match_found,
-                        $coerced_type,
-                        $coerced_type_from_mixed
+                        $type_coerced,
+                        $type_coerced_from_mixed
                     );
 
-                    if ($coerced_type) {
-                        if ($coerced_type_from_mixed) {
+                    if ($type_coerced) {
+                        if ($type_coerced_from_mixed) {
                             if (IssueBuffer::accepts(
                                 new MixedTypeCoercion(
                                     'First parameter of closure passed to function ' . $method_id . ' expects ' .
@@ -2332,9 +981,9 @@ class CallChecker
                         }
                     }
 
-                    if (!$coerced_type && !$type_match_found) {
+                    if (!$type_coerced && !$type_match_found) {
                         $types_can_be_identical = TypeChecker::canBeIdenticalTo(
-                            $project_checker,
+                            $project_checker->codebase,
                             $input_type,
                             $closure_param_type
                         );
@@ -2406,6 +1055,7 @@ class CallChecker
         }
 
         $project_checker = $statements_checker->getFileChecker()->project_checker;
+        $codebase = $project_checker->codebase;
 
         $method_identifier = $cased_method_id ? ' of ' . $cased_method_id : '';
 
@@ -2422,6 +1072,8 @@ class CallChecker
         }
 
         if ($input_type->isMixed()) {
+            $codebase->analyzer->incrementMixedCount($statements_checker->getCheckedFilePath());
+
             if (IssueBuffer::accepts(
                 new MixedArgument(
                     'Argument ' . ($argument_offset + 1) . $method_identifier . ' cannot be mixed, expecting ' .
@@ -2435,6 +1087,8 @@ class CallChecker
 
             return null;
         }
+
+        $codebase->analyzer->incrementNonMixedCount($statements_checker->getCheckedFilePath());
 
         if (!$param_type->isNullable() && $cased_method_id !== 'echo') {
             if ($input_type->isNull()) {
@@ -2466,7 +1120,7 @@ class CallChecker
             }
         }
 
-        if ($input_type->isFalsable() && !$param_type->hasBool()) {
+        if ($input_type->isFalsable() && !$param_type->hasBool() && !$input_type->ignore_falsable_issues) {
             if (IssueBuffer::accepts(
                 new PossiblyFalseArgument(
                     'Argument ' . ($argument_offset + 1) . $method_identifier . ' cannot be false, possibly ' .
@@ -2480,24 +1134,24 @@ class CallChecker
         }
 
         $param_type = TypeChecker::simplifyUnionType(
-            $project_checker,
+            $project_checker->codebase,
             $param_type
         );
 
         $type_match_found = TypeChecker::isContainedBy(
-            $project_checker,
+            $codebase,
             $input_type,
             $param_type,
             true,
             true,
             $scalar_type_match_found,
-            $coerced_type,
-            $coerced_type_from_mixed,
+            $type_coerced,
+            $type_coerced_from_mixed,
             $to_string_cast
         );
 
-        if ($coerced_type) {
-            if ($coerced_type_from_mixed) {
+        if ($type_coerced) {
+            if ($type_coerced_from_mixed) {
                 if (IssueBuffer::accepts(
                     new MixedTypeCoercion(
                         'Argument ' . ($argument_offset + 1) . $method_identifier . ' expects ' . $param_type .
@@ -2535,9 +1189,9 @@ class CallChecker
             }
         }
 
-        if (!$type_match_found && !$coerced_type) {
+        if (!$type_match_found && !$type_coerced) {
             $types_can_be_identical = TypeChecker::canBeIdenticalTo(
-                $project_checker,
+                $codebase,
                 $param_type,
                 $input_type
             );
@@ -2579,7 +1233,7 @@ class CallChecker
         } elseif ($input_expr instanceof PhpParser\Node\Scalar\String_
             || $input_expr instanceof PhpParser\Node\Expr\Array_
         ) {
-            foreach ($param_type->types as $param_type_part) {
+            foreach ($param_type->getTypes() as $param_type_part) {
                 if ($param_type_part instanceof TCallable) {
                     $function_ids = self::getFunctionIdsFromCallableArg(
                         $statements_checker,
@@ -2592,31 +1246,31 @@ class CallChecker
 
                             if (!in_array(strtolower($callable_fq_class_name), ['self', 'static', 'parent'], true)) {
                                 if (ClassLikeChecker::checkFullyQualifiedClassLikeName(
-                                        $project_checker,
-                                        $callable_fq_class_name,
-                                        $code_location,
-                                        $statements_checker->getSuppressedIssues()
-                                    ) === false
+                                    $statements_checker,
+                                    $callable_fq_class_name,
+                                    $code_location,
+                                    $statements_checker->getSuppressedIssues()
+                                ) === false
                                 ) {
                                     return false;
                                 }
 
                                 if (MethodChecker::checkMethodExists(
-                                        $project_checker,
-                                        $function_id,
-                                        $code_location,
-                                        $statements_checker->getSuppressedIssues()
-                                    ) === false
+                                    $project_checker,
+                                    $function_id,
+                                    $code_location,
+                                    $statements_checker->getSuppressedIssues()
+                                ) === false
                                 ) {
                                     return false;
                                 }
                             }
                         } else {
                             if (self::checkFunctionExists(
-                                    $statements_checker,
-                                    $function_id,
-                                    $code_location
-                                ) === false
+                                $statements_checker,
+                                $function_id,
+                                $code_location
+                            ) === false
                             ) {
                                 return false;
                             }
@@ -2639,14 +1293,20 @@ class CallChecker
 
             if ($var_id) {
                 if ($input_type->isNullable() && !$param_type->isNullable()) {
-                    unset($input_type->types['null']);
+                    $input_type->removeType('null');
                 }
 
                 if ($input_type->getId() === $param_type->getId()) {
                     $input_type->from_docblock = false;
+
+                    foreach ($input_type->getTypes() as $atomic_type) {
+                        $atomic_type->from_docblock = false;
+                    }
                 }
 
                 $context->removeVarFromConflictingClauses($var_id, null, $statements_checker);
+
+                $context->vars_in_scope[$var_id] = $input_type;
             }
         }
 
@@ -2668,6 +1328,10 @@ class CallChecker
 
         if (count($callable_arg->items) !== 2) {
             return [];
+        }
+
+        if (!isset($callable_arg->items[0]) || !isset($callable_arg->items[1])) {
+            throw new \UnexpectedValueException('These should never be unset');
         }
 
         $class_arg = $callable_arg->items[0]->value;
@@ -2700,7 +1364,7 @@ class CallChecker
 
         $method_ids = [];
 
-        foreach ($class_arg->inferredType->types as $type_part) {
+        foreach ($class_arg->inferredType->getTypes() as $type_part) {
             if ($type_part instanceof TNamedObject) {
                 $method_ids[] = $type_part . '::' . $method_name_arg->value;
             }
@@ -2724,11 +1388,13 @@ class CallChecker
         $cased_function_id = $function_id;
         $function_id = strtolower($function_id);
 
-        if (!FunctionChecker::functionExists($statements_checker, $function_id)) {
+        $codebase = $statements_checker->getFileChecker()->project_checker->codebase;
+
+        if (!$codebase->functions->functionExists($statements_checker, $function_id)) {
             $root_function_id = preg_replace('/.*\\\/', '', $function_id);
 
-            if ($function_id !== $root_function_id &&
-                FunctionChecker::functionExists($statements_checker, $root_function_id)
+            if ($function_id !== $root_function_id
+                && $codebase->functions->functionExists($statements_checker, $root_function_id)
             ) {
                 $function_id = $root_function_id;
             } else {

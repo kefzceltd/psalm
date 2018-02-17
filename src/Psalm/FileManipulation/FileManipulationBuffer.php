@@ -26,16 +26,18 @@ class FileManipulationBuffer
      */
     public static function getForFile($file_path)
     {
-        return isset(self::$file_manipulations[$file_path])
-            ? self::$file_manipulations[$file_path]
-            : [];
+        if (!isset(self::$file_manipulations[$file_path])) {
+            return [];
+        }
+
+        return self::$file_manipulations[$file_path];
     }
 
     /**
-     * @return array<string, FileManipulation[]>
+     * @return void
      */
-    public static function getAll()
+    public static function clearCache()
     {
-        return self::$file_manipulations;
+        self::$file_manipulations = [];
     }
 }

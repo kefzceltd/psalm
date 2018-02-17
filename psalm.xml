@@ -1,12 +1,11 @@
 <?xml version="1.0"?>
 <psalm
     name="Psalm for Psalm"
-    stopOnFirstError="false"
     useDocblockTypes="true"
     totallyTyped="true"
     strictBinaryOperands="false"
     rememberPropertyAssignmentsAfterCall="true"
-    throwExceptionOnError="false"
+    throwExceptionOnError="0"
 >
     <projectFiles>
         <directory name="src" />
@@ -25,27 +24,47 @@
         <MissingConstructor errorLevel="suppress" />
         <DeprecatedProperty errorLevel="suppress" />
 
-        <PossiblyUnusedVariable>
+        <UnusedParam>
             <errorLevel type="suppress">
                 <file name="src/Psalm/Plugin.php" />
+                <directory name="examples" />
             </errorLevel>
-        </PossiblyUnusedVariable>
+        </UnusedParam>
 
-        <UnusedMethod>
+        <PossiblyUnusedParam>
             <errorLevel type="suppress">
-                <directory name="tests" />
+                <file name="src/Psalm/Plugin.php" />
+                <directory name="examples" />
             </errorLevel>
-        </UnusedMethod>
+        </PossiblyUnusedParam>
 
         <UnusedClass>
             <errorLevel type="suppress">
+                <directory name="examples" />
                 <directory name="tests" />
             </errorLevel>
         </UnusedClass>
 
+        <UnusedProperty>
+            <errorLevel type="info">
+                <file name="src/Psalm/FileManipulation/FunctionDocblockManipulator.php" />
+            </errorLevel>
+        </UnusedProperty>
+
+        <PossiblyUnusedProperty>
+            <errorLevel type="info">
+                <file name="src/Psalm/Storage/FunctionLikeStorage.php" />
+            </errorLevel>
+        </PossiblyUnusedProperty>
+
         <PossiblyUnusedMethod>
             <errorLevel type="suppress">
                 <directory name="tests" />
+                <file name="src/Psalm/Type/Atomic/GenericTrait.php" />
+                <file name="src/Psalm/Plugin.php" />
+            </errorLevel>
+            <errorLevel type="info">
+                <file name="src/Psalm/Codebase.php" />
             </errorLevel>
         </PossiblyUnusedMethod>
 
@@ -97,6 +116,12 @@
                 <directory name="tests" />
             </errorLevel>
         </NullArgument>
+
+        <PossiblyFalseArgument>
+            <errorLevel type="suppress">
+                <directory name="tests" />
+            </errorLevel>
+        </PossiblyFalseArgument>
 
         <TypeCoercion>
             <errorLevel type="suppress">

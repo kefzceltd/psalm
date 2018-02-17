@@ -21,7 +21,7 @@ class ReturnTypeTest extends TestCase
                          * @return One|null
                          */
                         public function barBar() {
-                            $baz = rand(0,100) > 50 ? new One() : null;
+                            $baz = rand(0,100) > 50 ? new One(): null;
 
                             // should have no effect
                             if ($baz === null) {
@@ -367,7 +367,7 @@ class ReturnTypeTest extends TestCase
             'resourceParamType' => [
                 '<?php
                     /** @param resource $res */
-                    function doSomething($res) : void {
+                    function doSomething($res): void {
                     }',
             ],
             'returnArrayOfNullable' => [
@@ -408,7 +408,7 @@ class ReturnTypeTest extends TestCase
                         /**
                          * @return static
                          */
-                        public function getMe() : self
+                        public function getMe(): self
                         {
                             return $this;
                         }
@@ -419,7 +419,7 @@ class ReturnTypeTest extends TestCase
                         /**
                          * @return static
                          */
-                        public function getMeAgain() : self {
+                        public function getMeAgain(): self {
                             return $this->getMe();
                         }
                     }',
@@ -427,9 +427,42 @@ class ReturnTypeTest extends TestCase
             'returnTrueFromBool' => [
                 '<?php
                     /** @return bool */
-                    function foo() : bool {
+                    function foo(): bool {
                         return true;
                     }',
+            ],
+            'iteratorReturnTypeFromGenerator' => [
+                '<?php
+                    function foo1(): Generator {
+                        foreach ([1, 2, 3] as $i) {
+                            yield $i;
+                        }
+                    }
+
+                    function foo2(): Iterator {
+                        foreach ([1, 2, 3] as $i) {
+                            yield $i;
+                        }
+                    }
+
+                    function foo3(): Traversable {
+                        foreach ([1, 2, 3] as $i) {
+                            yield $i;
+                        }
+                    }
+
+                    function foo4(): iterable {
+                        foreach ([1, 2, 3] as $i) {
+                            yield $i;
+                        }
+                    }
+
+                    foreach (foo1() as $i) echo $i;
+                    foreach (foo2() as $i) echo $i;
+                    foreach (foo3() as $i) echo $i;
+                    foreach (foo4() as $i) echo $i;',
+                'assertions' => [],
+                'error_levels' => ['MixedAssignment', 'MixedArgument'],
             ],
         ];
     }
@@ -442,23 +475,23 @@ class ReturnTypeTest extends TestCase
         return [
             'wrongReturnType1' => [
                 '<?php
-                    function fooFoo() : string {
+                    function fooFoo(): string {
                         return 5;
                     }',
                 'error_message' => 'InvalidReturnStatement',
             ],
             'wrongReturnType2' => [
                 '<?php
-                    function fooFoo() : string {
+                    function fooFoo(): string {
                         return rand(0, 5) ? "hello" : null;
                     }',
-                'error_message' => 'InvalidReturnStatement',
+                'error_message' => 'NullableReturnStatement',
             ],
             'wrongReturnTypeInNamespace1' => [
                 '<?php
                     namespace bar;
 
-                    function fooFoo() : string {
+                    function fooFoo(): string {
                         return 5;
                     }',
                 'error_message' => 'InvalidReturnStatement',
@@ -467,10 +500,10 @@ class ReturnTypeTest extends TestCase
                 '<?php
                     namespace bar;
 
-                    function fooFoo() : string {
+                    function fooFoo(): string {
                         return rand(0, 5) ? "hello" : null;
                     }',
-                'error_message' => 'InvalidReturnStatement',
+                'error_message' => 'NullableReturnStatement',
             ],
             'missingReturnType' => [
                 '<?php
@@ -481,14 +514,22 @@ class ReturnTypeTest extends TestCase
             ],
             'mixedInferredReturnType' => [
                 '<?php
-                    function fooFoo(array $arr) : string {
+                    function fooFoo(array $arr): string {
+                        /** @psalm-suppress MixedReturnStatement */
                         return array_pop($arr);
                     }',
                 'error_message' => 'MixedInferredReturnType',
             ],
+            'mixedInferredReturnStatement' => [
+                '<?php
+                    function fooFoo(array $arr): string {
+                        return array_pop($arr);
+                    }',
+                'error_message' => 'MixedReturnStatement',
+            ],
             'invalidReturnTypeClass' => [
                 '<?php
-                    function fooFoo() : A {
+                    function fooFoo(): A {
                         return new A;
                     }',
                 'error_message' => 'UndefinedClass',
@@ -500,7 +541,7 @@ class ReturnTypeTest extends TestCase
                      * @psalm-suppress UndefinedClass
                      * @psalm-suppress MixedInferredReturnType
                      */
-                    function fooFoo() : A {
+                    function fooFoo(): A {
                         return array_pop([]);
                     }
 
@@ -521,7 +562,7 @@ class ReturnTypeTest extends TestCase
             ],
             'resourceReturnType' => [
                 '<?php
-                    function getOutput() : resource {
+                    function getOutput(): resource {
                         $res = fopen("php://output", "w");
 
                         if ($res === false) {
@@ -534,18 +575,114 @@ class ReturnTypeTest extends TestCase
             ],
             'resourceParamType' => [
                 '<?php
-                    function doSomething(resource $res) : void {
+                    function doSomething(resource $res): void {
                     }',
+                'error_message' => 'ReservedWord',
+            ],
+            'voidParamType' => [
+                '<?php
+                    function f(void $p): void {}',
+                'error_message' => 'ReservedWord',
+            ],
+            'voidClass' => [
+                '<?php
+                    class void {}',
                 'error_message' => 'ReservedWord',
             ],
             'disallowReturningExplicitVoid' => [
                 '<?php
-                    function returnsVoid() : void {}
+                    function returnsVoid(): void {}
 
-                    function alsoReturnsVoid() : void {
+                    function alsoReturnsVoid(): void {
                       return returnsVoid();
                     }',
                 'error_message' => 'InvalidReturnStatement',
+            ],
+            'complainAboutObjectLikeWhenArrayIsFound' => [
+                '<?php
+                    /** @return array{a:string,b:string,c:string} */
+                    function foo(): array {
+                      $arr = [];
+                      foreach (["a", "b"] as $key) {
+                        $arr[$key] = "foo";
+                      }
+                      return $arr;
+                    }',
+                'error_message' => 'LessSpecificReturnStatement',
+            ],
+            'invalidVoidStatementWhenMixedInferred' => [
+                '<?php
+                    /**
+                     * @return mixed
+                     */
+                    function a()
+                    {
+                        return 1;
+                    }
+
+                    function b(): void
+                    {
+                        return a();
+                    }',
+                'error_message' => 'InvalidReturnStatement',
+            ],
+            'moreSpecificReturnType' => [
+                '<?php
+                    class A {}
+                    class B extends A {}
+                    interface I {
+                        /** @return B[] */
+                        public function foo();
+                    }
+                    class D implements I {
+                        /** @return A[] */
+                        public function foo() {
+                            return [new A, new A];
+                        }
+                    }',
+                'error_message' => 'MoreSpecificImplementedReturnType',
+            ],
+            'returnTypehintRequiresExplicitReturn' => [
+                '<?php
+                    function foo(): ?string {
+                      if (rand(0, 1)) return "hello";
+                    }',
+                'error_message' => 'InvalidReturnType',
+            ],
+            'returnTypehintWithVoidReturnType' => [
+                '<?php
+                    function foo(): ?string {
+                      if (rand(0, 1)) {
+                        return;
+                      }
+
+                      return "hello";
+                    }',
+                'error_message' => 'InvalidReturnStatement',
+            ],
+            'invalidReturnStatementMoreAccurateThanFalsable' => [
+                '<?php
+                    class A1{}
+                    class B1{}
+
+                    function testFalseable() : A1 {
+                        return (rand() % 2 === 0) ? (new B1()) : false;
+                    }',
+                'error_message' => 'InvalidReturnStatement',
+            ],
+            'invalidReturnTypeMoreAccurateThanFalsable' => [
+                '<?php
+                    class A1{}
+                    class B1{}
+
+                    function testFalseable() : A1 {
+                        /**
+                         * @psalm-suppress InvalidReturnStatement
+                         * @psalm-suppress FalsableReturnStatement
+                         */
+                        return (rand() % 2 === 0) ? (new B1()) : false;
+                    }',
+                'error_message' => 'InvalidReturnType',
             ],
         ];
     }

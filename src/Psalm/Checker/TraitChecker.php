@@ -2,60 +2,54 @@
 namespace Psalm\Checker;
 
 use PhpParser;
-use Psalm\TraitSource;
+use Psalm\Aliases;
+use Psalm\StatementsSource;
 
 class TraitChecker extends ClassLikeChecker
 {
     /**
-     * @var array<string, string>
+     * @var Aliases
      */
-    private $method_map = [];
+    private $aliases;
 
     /**
-     * @param  PhpParser\Node\Stmt\Trait_ $class
-     * @param  TraitSource                $trait_source
-     * @param  string                     $fq_class_name
+     * @param string $fq_class_name
      */
-    public function __construct(PhpParser\Node\Stmt\Trait_ $class, TraitSource $trait_source, $fq_class_name)
-    {
-        $this->source = $trait_source;
-        $this->file_checker = $trait_source->getFileChecker();
+    public function __construct(
+        PhpParser\Node\Stmt\Trait_ $class,
+        StatementsSource $source,
+        $fq_class_name,
+        Aliases $aliases
+    ) {
+        $this->source = $source;
+        $this->file_checker = $source->getFileChecker();
         $this->class = $class;
         $this->fq_class_name = $fq_class_name;
         $this->storage = $this->file_checker->project_checker->classlike_storage_provider->get($fq_class_name);
-
-        self::$trait_checkers[strtolower($fq_class_name)] = $this;
+        $this->aliases = $aliases;
     }
 
     /**
-     * @param   array<string, string> $method_map
-     *
-     * @return  void
+     * @return null|string
      */
-    public function setMethodMap(array $method_map)
+    public function getNamespace()
     {
-        $this->method_map = $method_map;
+        return $this->aliases->namespace;
     }
 
     /**
-     * @param  string       $fq_trait_name
-     * @param  FileChecker  $file_checker
-     *
-     * @return bool
+     * @return Aliases
      */
-    public static function traitExists($fq_trait_name, FileChecker $file_checker)
+    public function getAliases()
     {
-        return $file_checker->project_checker->hasFullyQualifiedTraitName($fq_trait_name);
+        return $this->aliases;
     }
 
     /**
-     * @param  string       $fq_trait_name
-     * @param  FileChecker  $file_checker
-     *
-     * @return bool
+     * @return array<string, string>
      */
-    public static function hasCorrectCase($fq_trait_name, FileChecker $file_checker)
+    public function getAliasedClassesFlipped()
     {
-        return isset($file_checker->project_checker->existing_traits[$fq_trait_name]);
+        return [];
     }
 }

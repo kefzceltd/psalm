@@ -1,7 +1,7 @@
 <?php
 namespace Psalm\Type;
 
-use Psalm\Checker\ProjectChecker;
+use Psalm\Codebase;
 use Psalm\CodeLocation;
 use Psalm\StatementsSource;
 use Psalm\Type;
@@ -11,7 +11,7 @@ class Union
     /**
      * @var array<string, Atomic>
      */
-    public $types = [];
+    private $types = [];
 
     /**
      * Whether the type originated in a docblock
@@ -47,6 +47,23 @@ class Union
     public $ignore_nullable_issues = false;
 
     /**
+     * Whether or not to ignore issues with possibly-false values
+     *
+     * @var bool
+     */
+    public $ignore_falsable_issues = false;
+
+    /**
+     * Whether or not the type was passed by reference
+     *
+     * @var bool
+     */
+    public $by_ref = false;
+
+    /** @var null|string */
+    private $id;
+
+    /**
      * Constructs an Union instance
      *
      * @param array<int, Atomic>     $types
@@ -58,6 +75,23 @@ class Union
         }
     }
 
+    /**
+     * @return array<string, Atomic>
+     */
+    public function getTypes()
+    {
+        return $this->types;
+    }
+
+    /**
+     * @return void
+     */
+    public function addType(Atomic $type)
+    {
+        $this->types[$type->getKey()] = $type;
+        $this->id = null;
+    }
+
     public function __clone()
     {
         foreach ($this->types as &$type) {
@@ -67,6 +101,9 @@ class Union
 
     public function __toString()
     {
+        if (empty($this->types)) {
+            return '';
+        }
         $s = '';
         foreach ($this->types as $type) {
             $s .= $type . '|';
@@ -80,22 +117,31 @@ class Union
      */
     public function getId()
     {
+        if ($this->id) {
+            return $this->id;
+        }
+
         $s = '';
         foreach ($this->types as $type) {
             $s .= $type->getId() . '|';
         }
 
-        return substr($s, 0, -1);
+        $id = substr($s, 0, -1);
+
+        $this->id = $id;
+
+        return $id;
     }
 
     /**
+     * @param  string|null   $namespace
      * @param  array<string> $aliased_classes
      * @param  string|null   $this_class
      * @param  bool          $use_phpdoc_format
      *
      * @return string
      */
-    public function toNamespacedString(array $aliased_classes, $this_class, $use_phpdoc_format)
+    public function toNamespacedString($namespace, array $aliased_classes, $this_class, $use_phpdoc_format)
     {
         return implode(
             '|',
@@ -103,12 +149,99 @@ class Union
                 /**
                  * @return string
                  */
-                function (Atomic $type) use ($aliased_classes, $this_class, $use_phpdoc_format) {
-                    return $type->toNamespacedString($aliased_classes, $this_class, $use_phpdoc_format);
+                function (Atomic $type) use ($namespace, $aliased_classes, $this_class, $use_phpdoc_format) {
+                    return $type->toNamespacedString($namespace, $aliased_classes, $this_class, $use_phpdoc_format);
                 },
                 $this->types
             )
         );
+    }
+
+    /**
+     * @param  string|null   $namespace
+     * @param  array<string> $aliased_classes
+     * @param  string|null   $this_class
+     * @param  int           $php_major_version
+     * @param  int           $php_minor_version
+     *
+     * @return null|string
+     */
+    public function toPhpString(
+        $namespace,
+        array $aliased_classes,
+        $this_class,
+        $php_major_version,
+        $php_minor_version
+    ) {
+        $nullable = false;
+
+        if (count($this->types) > 2
+            || (
+                count($this->types) === 2
+                && (!isset($this->types['null'])
+                    || $php_major_version < 7
+                    || $php_minor_version < 1)
+            )
+        ) {
+            return null;
+        }
+
+        $types = $this->types;
+
+        if (isset($types['null'])) {
+            unset($types['null']);
+
+            $nullable = true;
+        }
+
+        if (!$types) {
+            return null;
+        }
+
+        $atomic_type = array_values($types)[0];
+
+        $atomic_type_string = $atomic_type->toPhpString(
+            $namespace,
+            $aliased_classes,
+            $this_class,
+            $php_major_version,
+            $php_minor_version
+        );
+
+        if ($atomic_type_string) {
+            return ($nullable ? '?' : '') . $atomic_type_string;
+        }
+
+        return null;
+    }
+
+    /**
+     * @return bool
+     */
+    public function canBeFullyExpressedInPhp()
+    {
+        if (count($this->types) > 2
+            || (
+                count($this->types) === 2
+                && !isset($this->types['null'])
+            )
+        ) {
+            return false;
+        }
+
+        $types = $this->types;
+
+        if (isset($types['null'])) {
+            unset($types['null']);
+        }
+
+        if (!$types) {
+            return false;
+        }
+
+        $atomic_type = array_values($types)[0];
+
+        return $atomic_type->canBeFullyExpressedInPhp();
     }
 
     /**
@@ -131,6 +264,7 @@ class Union
     public function removeType($type_string)
     {
         unset($this->types[$type_string]);
+        $this->id = null;
     }
 
     /**
@@ -149,7 +283,7 @@ class Union
     public function hasGeneric()
     {
         foreach ($this->types as $type) {
-            if ($type instanceof Atomic\Generic) {
+            if ($type instanceof Atomic\TGenericObject || $type instanceof Atomic\TArray) {
                 return true;
             }
         }
@@ -168,18 +302,24 @@ class Union
     /**
      * @return bool
      */
-    public function hasObjectLike()
+    public function hasObjectType()
     {
-        return isset($this->types['array']) && $this->types['array'] instanceof Atomic\ObjectLike;
+        foreach ($this->types as $type) {
+            if ($type->isObjectType()) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
      * @return bool
      */
-    public function hasObjectType()
+    public function hasObject()
     {
         foreach ($this->types as $type) {
-            if ($type->isObjectType()) {
+            if ($type instanceof Type\Atomic\TObject) {
                 return true;
             }
         }
@@ -304,18 +444,6 @@ class Union
     /**
      * @return void
      */
-    public function removeObjects()
-    {
-        foreach ($this->types as $key => $type) {
-            if ($type instanceof Atomic\TNamedObject) {
-                unset($this->types[$key]);
-            }
-        }
-    }
-
-    /**
-     * @return void
-     */
     public function substitute(Union $old_type, Union $new_type = null)
     {
         if ($this->isMixed()) {
@@ -324,6 +452,10 @@ class Union
 
         if ($new_type && $new_type->ignore_nullable_issues) {
             $this->ignore_nullable_issues = true;
+        }
+
+        if ($new_type && $new_type->ignore_falsable_issues) {
+            $this->ignore_falsable_issues = true;
         }
 
         foreach ($old_type->types as $old_type_part) {
@@ -345,6 +477,8 @@ class Union
         } elseif (count($this->types) === 0) {
             $this->types['mixed'] = new Atomic\TMixed();
         }
+
+        $this->id = null;
     }
 
     /**
@@ -382,6 +516,8 @@ class Union
         foreach ($keys_to_unset as $key) {
             unset($this->types[$key]);
         }
+
+        $this->id = null;
     }
 
     /**
@@ -417,6 +553,8 @@ class Union
                 $atomic_type->replaceTemplateTypesWithArgTypes($template_types);
             }
         }
+
+        $this->id = null;
 
         if ($is_mixed) {
             $this->types = $new_types;
@@ -477,20 +615,19 @@ class Union
     }
 
     /**
-     * @param  ProjectChecker $project_checker
      * @param  string $referencing_file_path
      * @param  array<string, mixed> $phantom_classes
      *
      * @return void
      */
     public function queueClassLikesForScanning(
-        ProjectChecker $project_checker,
+        Codebase $codebase,
         $referencing_file_path = null,
         array $phantom_classes = []
     ) {
         foreach ($this->types as $atomic_type) {
             $atomic_type->queueClassLikesForScanning(
-                $project_checker,
+                $codebase,
                 $referencing_file_path,
                 $phantom_classes
             );

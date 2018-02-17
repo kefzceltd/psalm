@@ -1,110 +1,10 @@
 <?php
 namespace Psalm\Tests;
 
-use Psalm\Checker\FileChecker;
-use Psalm\Context;
-
 class FunctionCallTest extends TestCase
 {
     use Traits\FileCheckerInvalidCodeParseTestTrait;
     use Traits\FileCheckerValidCodeParseTestTrait;
-
-    /**
-     * @return void
-     */
-    public function testArrayFilter()
-    {
-        $this->addFile(
-            'somefile.php',
-            '<?php
-                $d = array_filter(["a" => 5, "b" => 12, "c" => null]);
-                $e = array_filter(["a" => 5, "b" => 12, "c" => null], function(?int $i) : bool { return true; });'
-        );
-
-        $file_checker = new FileChecker('somefile.php', $this->project_checker);
-        $context = new Context();
-        $file_checker->visitAndAnalyzeMethods($context);
-        $this->project_checker->checkClassReferences();
-
-        $this->assertSame('array<string, int>', (string) $context->vars_in_scope['$d']);
-        $this->assertSame('array<string, null|int>', (string) $context->vars_in_scope['$e']);
-    }
-
-    /**
-     * @return void
-     */
-    public function testArrayFilterAdvanced()
-    {
-        if (version_compare((string)PHP_VERSION, '5.6.0', '>=')) {
-            $this->addFile(
-                'somefile.php',
-                '<?php
-                    $f = array_filter(["a" => 5, "b" => 12, "c" => null], function(?int $val, string $key) : bool {
-                        return true;
-                    }, ARRAY_FILTER_USE_BOTH);
-                    $g = array_filter(["a" => 5, "b" => 12, "c" => null], function(string $val) : bool {
-                        return true;
-                    }, ARRAY_FILTER_USE_KEY);
-
-                    $bar = "bar";
-
-                    $foo = [
-                        $bar => function () : string {
-                            return "baz";
-                        },
-                    ];
-
-                    $foo = array_filter(
-                        $foo,
-                        function (string $key) : bool {
-                            return $key === "bar";
-                        },
-                        ARRAY_FILTER_USE_KEY
-                    );'
-            );
-
-            $file_checker = new FileChecker('somefile.php', $this->project_checker);
-            $context = new Context();
-            $file_checker->visitAndAnalyzeMethods($context);
-            $this->project_checker->checkClassReferences();
-
-            $this->assertSame('array<string, null|int>', (string) $context->vars_in_scope['$f']);
-            $this->assertSame('array<string, null|int>', (string) $context->vars_in_scope['$g']);
-        }
-    }
-
-    /**
-     * @return void
-     */
-    public function testArrayFilterUseKey()
-    {
-        if (version_compare((string)PHP_VERSION, '5.6.0', '>=')) {
-            $this->addFile(
-                getcwd() . '/src/somefile.php',
-                '<?php
-                    $bar = "bar";
-
-                    $foo = [
-                        $bar => function () : string {
-                            return "baz";
-                        },
-                    ];
-
-                    $foo = array_filter(
-                        $foo,
-                        function (string $key) : bool {
-                            return $key === "bar";
-                        },
-                        ARRAY_FILTER_USE_KEY
-                    );'
-            );
-
-            $file_checker = new FileChecker(getcwd() . '/src/somefile.php', $this->project_checker);
-            $context = new Context();
-            $file_checker->visitAndAnalyzeMethods($context);
-            $this->project_checker->checkClassReferences();
-        }
-    }
 
     /**
      * @return array
@@ -112,16 +12,59 @@ class FunctionCallTest extends TestCase
     public function providerFileCheckerValidCodeParse()
     {
         return [
+            'arrayFilter' => [
+                '<?php
+                    $d = array_filter(["a" => 5, "b" => 12, "c" => null]);
+                    $e = array_filter(
+                        ["a" => 5, "b" => 12, "c" => null],
+                        function(?int $i): bool {
+                            return true;
+                        }
+                    );',
+                'assertions' => [
+                    '$d' => 'array<string, int>',
+                    '$e' => 'array<string, null|int>',
+                ],
+            ],
+            'arrayFilterAdvanced' => [
+                '<?php
+                    $f = array_filter(["a" => 5, "b" => 12, "c" => null], function(?int $val, string $key): bool {
+                        return true;
+                    }, ARRAY_FILTER_USE_BOTH);
+                    $g = array_filter(["a" => 5, "b" => 12, "c" => null], function(string $val): bool {
+                        return true;
+                    }, ARRAY_FILTER_USE_KEY);
+
+                    $bar = "bar";
+
+                    $foo = [
+                        $bar => function (): string {
+                            return "baz";
+                        },
+                    ];
+
+                    $foo = array_filter(
+                        $foo,
+                        function (string $key): bool {
+                            return $key === "bar";
+                        },
+                        ARRAY_FILTER_USE_KEY
+                    );',
+                'assertions' => [
+                    '$f' => 'array<string, null|int>',
+                    '$g' => 'array<string, null|int>',
+                ],
+            ],
             'typedArrayWithDefault' => [
                 '<?php
                     class A {}
 
                     /** @param array<A> $a */
-                    function fooFoo(array $a = []) : void {
+                    function fooFoo(array $a = []): void {
 
                     }',
             ],
-            'typedArrayWithDefault' => [
+            'abs' => [
                 '<?php
                     $a = abs(-5);
                     $b = abs(-7.5);',
@@ -140,7 +83,7 @@ class FunctionCallTest extends TestCase
             ],
             'byRef' => [
                 '<?php
-                    function fooFoo(string &$v) : void {}
+                    function fooFoo(string &$v): void {}
                     fooFoo($a);',
             ],
             'namespaced' => [
@@ -208,6 +151,20 @@ class FunctionCallTest extends TestCase
                 '<?php
                     $d = array_merge(["a", "b", "c"], [1, 2, 3]);',
                 'assertions' => [
+                    '$d' => 'array{0:string, 1:string, 2:string, 3:int, 4:int, 5:int}',
+                ],
+            ],
+            'arrayReverse' => [
+                '<?php
+                    $d = array_reverse(["a", "b", 1]);',
+                'assertions' => [
+                    '$d' => 'array<int, int|string>',
+                ],
+            ],
+            'arrayReversePreserveKey' => [
+                '<?php
+                    $d = array_reverse(["a", "b", 1], true);',
+                'assertions' => [
                     '$d' => 'array<int, int|string>',
                 ],
             ],
@@ -238,7 +195,12 @@ class FunctionCallTest extends TestCase
                       }
                     );',
                 'assertions' => [],
-                'error_levels' => ['MixedArrayAccess', 'MixedArgument', 'UntypedParam', 'MissingClosureReturnType'],
+                'error_levels' => [
+                    'MixedArrayAccess',
+                    'MixedArgument',
+                    'MissingClosureParamType',
+                    'MissingClosureReturnType',
+                ],
             ],
             'byRefAfterCallable' => [
                 '<?php
@@ -255,11 +217,30 @@ class FunctionCallTest extends TestCase
                 'error_levels' => [
                     'MixedAssignment',
                     'MixedArrayAccess',
+                    'RedundantConditionGivenDocblockType',
                 ],
+            ],
+            'ignoreNullablePregReplace' => [
+                '<?php
+                    function foo(string $s): string {
+                        $s = preg_replace("/hello/", "", $s);
+                        if ($s === null) {
+                            return "hello";
+                        }
+                        return $s;
+                    }
+                    function bar(string $s): string {
+                        $s = preg_replace("/hello/", "", $s);
+                        return $s;
+                    }
+                    function bat(string $s): ?string {
+                        $s = preg_replace("/hello/", "", $s);
+                        return $s;
+                    }',
             ],
             'extractVarCheck' => [
                 '<?php
-                    function takesString(string $str) : void {}
+                    function takesString(string $str): void {}
 
                     $foo = null;
                     $a = ["$foo" => "bar"];
@@ -288,7 +269,7 @@ class FunctionCallTest extends TestCase
 
                   foo($a3);',
                 'assertions' => [
-                    '$a3' => 'array{bye:int, hi:int}',
+                    '$a3' => 'array{hi:int, bye:int}',
                 ],
             ],
             'goodByRef' => [
@@ -301,7 +282,7 @@ class FunctionCallTest extends TestCase
                     $a = new A();
                     $b = "goodbye";
 
-                    function fooFoo(string &$v) : void {}
+                    function fooFoo(string &$v): void {}
 
                     fooFoo($a->foo);
                     fooFoo($b);',
@@ -310,12 +291,16 @@ class FunctionCallTest extends TestCase
                 '<?php
                     $vars = ["x" => "a", "y" => "b"];
                     $c = array_rand($vars);
-                    $d = $vars[$c];',
+                    $d = $vars[$c];
+                    $more_vars = ["a", "b"];
+                    $e = array_rand($more_vars);',
 
                 'assertions' => [
                     '$vars' => 'array{x:string, y:string}',
                     '$c' => 'string',
                     '$d' => 'string',
+                    '$more_vars' => 'array{0:string, 1:string}',
+                    '$e' => 'int',
                 ],
             ],
             'arrayRandMultiple' => [
@@ -336,11 +321,11 @@ class FunctionCallTest extends TestCase
             ],
             'arrayKeysNoEmpty' => [
                 '<?php
-                    function expect_string(string $x) : void {
+                    function expect_string(string $x): void {
                         echo $x;
                     }
 
-                    function test() : void {
+                    function test(): void {
                         foreach (array_keys([]) as $key) {
                             expect_string($key);
                         }
@@ -350,7 +335,7 @@ class FunctionCallTest extends TestCase
             ],
             'compact' => [
                 '<?php
-                    function test() : array {
+                    function test(): array {
                         return compact(["val"]);
                     }',
             ],
@@ -359,7 +344,7 @@ class FunctionCallTest extends TestCase
                     /**
                      * @param array<string, string> $b
                      */
-                    function a($b) : string
+                    function a($b): string
                     {
                       return $b["a"];
                     }
@@ -371,12 +356,128 @@ class FunctionCallTest extends TestCase
                     /**
                      * @param array{a: string} $b
                      */
-                    function a($b) : string
+                    function a($b): string
                     {
                       return $b["a"];
                     }
 
                     a(["a" => "hello"]);',
+            ],
+            'getenv' => [
+                '<?php
+                    $a = getenv();
+                    $b = getenv("some_key");',
+                'assertions' => [
+                    '$a' => 'array<mixed, string>',
+                    '$b' => 'string|false',
+                ],
+            ],
+            'arrayPopIgnoreNullable' => [
+                '<?php
+                    function expectsInt(int $a) : void {}
+
+                    /**
+                     * @param array<mixed, array{item:int}> $list
+                     */
+                    function test(array $list) : void
+                    {
+                        while (!empty($list)) {
+                            $tmp = array_pop($list);
+                            expectsInt($tmp["item"]);
+                        }
+                    }',
+            ],
+            'arrayFilterWithAssert' => [
+                '<?php
+                    $a = array_filter(
+                        [1, "hello", 6, "goodbye"],
+                        function ($s): bool {
+                            return is_string($s);
+                        }
+                    );',
+                'assertions' => [
+                    '$a' => 'array<int, string>',
+                ],
+                'error_levels' => [
+                    'MissingClosureParamType',
+                ],
+            ],
+            'arrayFilterUseKey' => [
+                '<?php
+                    $bar = "bar";
+
+                    $foo = [
+                        $bar => function (): string {
+                            return "baz";
+                        },
+                    ];
+
+                    $foo = array_filter(
+                        $foo,
+                        function (string $key): bool {
+                            return $key === "bar";
+                        },
+                        ARRAY_FILTER_USE_KEY
+                    );',
+                'assertions' => [
+                    '$foo' => 'array<string, Closure>',
+                ],
+            ],
+            'ignoreFalsableCurrent' => [
+                '<?php
+                    /** @param string[] $arr */
+                    function foo(array $arr): string {
+                        return current($arr);
+                    }
+                    /** @param string[] $arr */
+                    function bar(array $arr): string {
+                        $a = current($arr);
+                        if ($a === false) {
+                            return "hello";
+                        }
+                        return $a;
+                    }
+                    /**
+                     * @param string[] $arr
+                     * @return string|false
+                     */
+                    function bat(array $arr) {
+                        return current($arr);
+                    }',
+            ],
+            'ignoreFalsableFileGetContents' => [
+                '<?php
+                    function foo(string $s): string {
+                        return file_get_contents($s);
+                    }
+                    function bar(string $s): string {
+                        $a = file_get_contents($s);
+                        if ($a === false) {
+                            return "hello";
+                        }
+                        return $a;
+                    }
+                    /**
+                     * @return string|false
+                     */
+                    function bat(string $s) {
+                        return file_get_contents($s);
+                    }',
+            ],
+            'byRefString' => [
+                '<?php
+                    $arr = [];
+                    function fooFoo(array &$v): void {}
+                    $function = "fooFoo";
+                    $function($arr);
+                    if ($arr) {}',
+            ],
+            'arraySumEmpty' => [
+                '<?php
+                    $foo = array_sum([]) + 1;',
+                'assertions' => [
+                    '$foo' => 'numeric',
+                ],
             ],
         ];
     }
@@ -389,13 +490,13 @@ class FunctionCallTest extends TestCase
         return [
             'invalidScalarArgument' => [
                 '<?php
-                    function fooFoo(int $a) : void {}
+                    function fooFoo(int $a): void {}
                     fooFoo("string");',
                 'error_message' => 'InvalidScalarArgument',
             ],
             'mixedArgument' => [
                 '<?php
-                    function fooFoo(int $a) : void {}
+                    function fooFoo(int $a): void {}
                     /** @var mixed */
                     $a = "hello";
                     fooFoo($a);',
@@ -404,21 +505,22 @@ class FunctionCallTest extends TestCase
             ],
             'nullArgument' => [
                 '<?php
-                    function fooFoo(int $a) : void {}
+                    function fooFoo(int $a): void {}
                     fooFoo(null);',
                 'error_message' => 'NullArgument',
             ],
             'tooFewArguments' => [
                 '<?php
-                    function fooFoo(int $a) : void {}
+                    function fooFoo(int $a): void {}
                     fooFoo();',
                 'error_message' => 'TooFewArguments',
             ],
             'tooManyArguments' => [
                 '<?php
-                    function fooFoo(int $a) : void {}
+                    function fooFoo(int $a): void {}
                     fooFoo(5, "dfd");',
-                'error_message' => 'TooManyArguments',
+                'error_message' => 'TooManyArguments - src/somefile.php:3 - Too many arguments for method fooFoo '
+                    . '- expecting 1 but saw 2',
             ],
             'tooManyArgumentsForConstructor' => [
                 '<?php
@@ -431,7 +533,7 @@ class FunctionCallTest extends TestCase
                     class A {}
                     class B extends A{}
 
-                    function fooFoo(B $b) : void {}
+                    function fooFoo(B $b): void {}
                     fooFoo(new A());',
                 'error_message' => 'TypeCoercion',
             ],
@@ -455,7 +557,7 @@ class FunctionCallTest extends TestCase
                      */
                     function f($p, $p) {}',
                 'error_message' => 'DuplicateParam',
-                'error_levels' => ['UntypedParam'],
+                'error_levels' => ['MissingParamType'],
             ],
             'invalidParamDefault' => [
                 '<?php
@@ -473,8 +575,14 @@ class FunctionCallTest extends TestCase
             ],
             'badByRef' => [
                 '<?php
-                    function fooFoo(string &$v) : void {}
+                    function fooFoo(string &$v): void {}
                     fooFoo("a");',
+                'error_message' => 'InvalidPassByReference',
+            ],
+            'badArrayByRef' => [
+                '<?php
+                    function fooFoo(array &$a): void {}
+                    fooFoo([1, 2, 3]);',
                 'error_message' => 'InvalidPassByReference',
             ],
             'invalidArgAfterCallable' => [
@@ -493,6 +601,7 @@ class FunctionCallTest extends TestCase
                 'error_levels' => [
                     'MixedAssignment',
                     'MixedArrayAccess',
+                    'RedundantConditionGivenDocblockType',
                 ],
             ],
             'undefinedFunctionInArrayMap' => [
@@ -508,7 +617,7 @@ class FunctionCallTest extends TestCase
                     /**
                      * @param array<string, int> $b
                      */
-                    function a($b) : int
+                    function a($b): int
                     {
                       return $b["a"];
                     }
@@ -521,13 +630,25 @@ class FunctionCallTest extends TestCase
                     /**
                      * @param array{a: int} $b
                      */
-                    function a($b) : int
+                    function a($b): int
                     {
                       return $b["a"];
                     }
 
                     a(["a" => "hello"]);',
-                'error_message' => 'InvalidScalarArgument',
+                'error_message' => 'InvalidArgument',
+            ],
+            'possiblyNullFunctionCall' => [
+                '<?php
+                    $a = rand(0, 1) ? function(): void {} : null;
+                    $a();',
+                'error_message' => 'PossiblyNullFunctionCall',
+            ],
+            'possiblyInvalidFunctionCall' => [
+                '<?php
+                    $a = rand(0, 1) ? function(): void {} : 23515;
+                    $a();',
+                'error_message' => 'PossiblyInvalidFunctionCall',
             ],
         ];
     }

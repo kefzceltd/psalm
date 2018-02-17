@@ -22,20 +22,40 @@ class ForChecker
         PhpParser\Node\Stmt\For_ $stmt,
         Context $context
     ) {
+        $pre_assigned_var_ids = $context->assigned_var_ids;
+        $context->assigned_var_ids = [];
+
         foreach ($stmt->init as $init) {
             if (ExpressionChecker::analyze($statements_checker, $init, $context) === false) {
                 return false;
             }
         }
 
+        $assigned_var_ids = $context->assigned_var_ids;
+
+        $context->assigned_var_ids = array_merge(
+            $pre_assigned_var_ids,
+            $assigned_var_ids
+        );
+
         $while_true = !$stmt->cond && !$stmt->init && !$stmt->loop;
 
         $pre_context = $while_true ? clone $context : null;
 
         $for_context = clone $context;
-        $for_context->inside_loop = true;
+
+        $project_checker = $statements_checker->getFileChecker()->project_checker;
+
+        if ($project_checker->alter_code) {
+            $for_context->branch_point = $for_context->branch_point ?: (int) $stmt->getAttribute('startFilePos');
+        }
 
         $loop_scope = new LoopScope($for_context, $context);
+
+        $loop_scope->protected_var_ids = array_merge(
+            $assigned_var_ids,
+            $context->protected_var_ids
+        );
 
         LoopChecker::analyze(
             $statements_checker,
@@ -77,6 +97,13 @@ class ForChecker
             $for_context->referenced_var_ids,
             $context->referenced_var_ids
         );
+
+        if ($context->collect_references) {
+            $context->unreferenced_vars = array_intersect_key(
+                $for_context->unreferenced_vars,
+                $context->unreferenced_vars
+            );
+        }
 
         return null;
     }

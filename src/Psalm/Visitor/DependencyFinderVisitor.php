@@ -6,13 +6,11 @@ use Psalm\Aliases;
 use Psalm\Checker\ClassChecker;
 use Psalm\Checker\ClassLikeChecker;
 use Psalm\Checker\CommentChecker;
-use Psalm\Checker\FileChecker;
-use Psalm\Checker\FunctionChecker;
-use Psalm\Checker\FunctionLikeChecker;
-use Psalm\Checker\MethodChecker;
-use Psalm\Checker\ProjectChecker;
+use Psalm\Checker\Statements\Expression\IncludeChecker;
 use Psalm\Checker\StatementsChecker;
-use Psalm\Checker\TraitChecker;
+use Psalm\Codebase;
+use Psalm\Codebase\CallMap;
+use Psalm\Codebase\PropertyMap;
 use Psalm\CodeLocation;
 use Psalm\Config;
 use Psalm\Exception\DocblockParseException;
@@ -25,88 +23,79 @@ use Psalm\Issue\InvalidDocblock;
 use Psalm\Issue\MisplacedRequiredParam;
 use Psalm\Issue\MissingDocblockType;
 use Psalm\IssueBuffer;
+use Psalm\Scanner\FileScanner;
 use Psalm\Storage\ClassLikeStorage;
 use Psalm\Storage\FileStorage;
 use Psalm\Storage\FunctionLikeStorage;
 use Psalm\Storage\MethodStorage;
 use Psalm\Storage\PropertyStorage;
-use Psalm\TraitSource;
 use Psalm\Type;
 
 class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements PhpParser\NodeVisitor
 {
     /** @var Aliases */
-    protected $aliases;
+    private $aliases;
 
     /** @var Aliases */
-    protected $file_aliases;
-
-    /**
-     * @var bool
-     */
-    protected $in_classlike = false;
+    private $file_aliases;
 
     /**
      * @var string[]
      */
-    protected $fq_classlike_names = [];
+    private $fq_classlike_names = [];
 
-    /** @var ProjectChecker */
-    protected $project_checker;
+    /** @var FileScanner */
+    private $file_scanner;
 
-    /** @var FileChecker */
-    protected $file_checker;
+    /** @var Codebase */
+    private $codebase;
 
     /** @var string */
-    protected $file_path;
+    private $file_path;
 
     /** @var bool */
-    protected $scan_deep;
+    private $scan_deep;
 
     /** @var Config */
-    protected $config;
+    private $config;
 
     /** @var bool */
-    protected $queue_strings_as_possible_type = false;
+    private $queue_strings_as_possible_type = false;
 
     /** @var array<string, string> */
-    protected $class_template_types = [];
+    private $class_template_types = [];
 
     /** @var array<string, string> */
-    protected $function_template_types = [];
+    private $function_template_types = [];
 
     /** @var FunctionLikeStorage[] */
-    protected $functionlike_storages = [];
+    private $functionlike_storages = [];
 
     /** @var FileStorage */
-    protected $file_storage;
+    private $file_storage;
 
     /** @var ClassLikeStorage[] */
-    protected $classlike_storages = [];
+    private $classlike_storages = [];
 
-    /** @var \Psalm\Plugin[] */
-    protected $plugins;
+    /** @var string[] */
+    private $after_classlike_check_plugins;
 
-    /**
-     * @param ProjectChecker $project_checker
-     * @param FileChecker    $file_checker
-     */
-    public function __construct(ProjectChecker $project_checker, FileChecker $file_checker)
+    public function __construct(Codebase $codebase, FileStorage $file_storage, FileScanner $file_scanner)
     {
-        $this->project_checker = $project_checker;
-        $this->file_checker = $file_checker;
-        $this->file_path = $file_checker->getFilePath();
-        $this->scan_deep = $file_checker->will_analyze;
-        $this->config = Config::getInstance();
+        $this->codebase = $codebase;
+        $this->file_scanner = $file_scanner;
+        $this->file_path = $file_scanner->file_path;
+        $this->scan_deep = $file_scanner->will_analyze;
+        $this->config = $codebase->config;
         $this->aliases = $this->file_aliases = new Aliases();
-        $this->file_storage = $project_checker->file_storage_provider->get($this->file_path);
-        $this->plugins = $this->config->getPlugins();
+        $this->file_storage = $file_storage;
+        $this->after_classlike_check_plugins = $this->config->after_visit_classlikes;
     }
 
     /**
      * @param  PhpParser\Node $node
      *
-     * @return ?int
+     * @return null|int
      */
     public function enterNode(PhpParser\Node $node)
     {
@@ -163,19 +152,19 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
                 }
 
                 $fq_classlike_name = ClassChecker::getAnonymousClassName($node, $this->file_path);
-                $fq_classlike_name_lc = strtolower($fq_classlike_name);
             } else {
                 $fq_classlike_name = ($this->aliases->namespace ? $this->aliases->namespace . '\\' : '') . $node->name;
                 $fq_classlike_name_lc = strtolower($fq_classlike_name);
-                $this->file_storage->classes_in_file[] = $fq_classlike_name_lc;
+                $this->file_storage->classes_in_file[$fq_classlike_name_lc] = $fq_classlike_name;
             }
 
             $this->fq_classlike_names[] = $fq_classlike_name;
 
-            $storage = $this->project_checker->classlike_storage_provider->create($fq_classlike_name);
+            $storage = $this->codebase->createClassLikeStorage($fq_classlike_name);
 
-            $storage->location = new CodeLocation($this->file_checker, $node, null, true);
-            $storage->user_defined = true;
+            $storage->location = new CodeLocation($this->file_scanner, $node, null, true);
+            $storage->user_defined = !$this->codebase->register_global_functions;
+            $storage->stubbed = $this->codebase->register_global_functions;
 
             $doc_comment = $node->getDocComment();
 
@@ -192,7 +181,7 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
                     IssueBuffer::accepts(
                         new InvalidDocblock(
                             $e->getMessage() . ' in docblock for ' . implode('.', $this->fq_classlike_names),
-                            new CodeLocation($this->file_checker, $node, null, true)
+                            new CodeLocation($this->file_scanner, $node, null, true)
                         )
                     );
                 }
@@ -203,7 +192,7 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
 
                         foreach ($docblock_info->template_types as $template_type) {
                             if (count($template_type) === 3) {
-                                $as_type_string = ClassLikeChecker::getFQCLNFromString(
+                                $as_type_string = Type::getFQCLNFromString(
                                     $template_type[2],
                                     $this->aliases
                                 );
@@ -218,12 +207,18 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
 
                     if ($docblock_info->properties) {
                         foreach ($docblock_info->properties as $property) {
-                            $pseudo_property_type = Type::parseString($property['type']);
+                            $pseudo_property_type_string = Type::fixUpLocalType(
+                                $property['type'],
+                                $this->aliases
+                            );
+
+                            $pseudo_property_type = Type::parseString($pseudo_property_type_string);
                             $pseudo_property_type->setFromDocblock();
 
                             if ($property['tag'] !== 'property-read') {
                                 $storage->pseudo_property_set_types[$property['name']] = $pseudo_property_type;
                             }
+
                             if ($property['tag'] !== 'property-write') {
                                 $storage->pseudo_property_get_types[$property['name']] = $pseudo_property_type;
                             }
@@ -242,39 +237,52 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
                 $storage->abstract = (bool)$node->isAbstract();
                 $storage->final = (bool)$node->isFinal();
 
-                $this->project_checker->addFullyQualifiedClassName($fq_classlike_name, $this->file_path);
+                $this->codebase->classlikes->addFullyQualifiedClassName($fq_classlike_name, $this->file_path);
 
                 if ($node->extends) {
                     $parent_fqcln = ClassLikeChecker::getFQCLNFromNameObject($node->extends, $this->aliases);
-                    $this->project_checker->queueClassLikeForScanning(
+                    $this->codebase->scanner->queueClassLikeForScanning(
                         $parent_fqcln,
                         $this->file_path,
                         $this->scan_deep
                     );
-                    $storage->parent_classes[] = strtolower($parent_fqcln);
+                    $parent_fqcln_lc = strtolower($parent_fqcln);
+                    $storage->parent_classes[$parent_fqcln_lc] = $parent_fqcln_lc;
                 }
 
                 foreach ($node->implements as $interface) {
                     $interface_fqcln = ClassLikeChecker::getFQCLNFromNameObject($interface, $this->aliases);
-                    $this->project_checker->queueClassLikeForScanning($interface_fqcln, $this->file_path);
+                    $this->codebase->scanner->queueClassLikeForScanning($interface_fqcln, $this->file_path);
                     $storage->class_implements[strtolower($interface_fqcln)] = $interface_fqcln;
                 }
             } elseif ($node instanceof PhpParser\Node\Stmt\Interface_) {
-                $this->project_checker->addFullyQualifiedInterfaceName($fq_classlike_name, $this->file_path);
+                $this->codebase->classlikes->addFullyQualifiedInterfaceName($fq_classlike_name, $this->file_path);
 
                 foreach ($node->extends as $interface) {
                     $interface_fqcln = ClassLikeChecker::getFQCLNFromNameObject($interface, $this->aliases);
-                    $this->project_checker->queueClassLikeForScanning($interface_fqcln, $this->file_path);
+                    $this->codebase->scanner->queueClassLikeForScanning($interface_fqcln, $this->file_path);
                     $storage->parent_interfaces[strtolower($interface_fqcln)] = $interface_fqcln;
                 }
             } elseif ($node instanceof PhpParser\Node\Stmt\Trait_) {
                 $storage->is_trait = true;
-                $this->project_checker->addFullyQualifiedTraitName($fq_classlike_name, $this->file_path);
-                ClassLikeChecker::$trait_checkers[$fq_classlike_name_lc] = new TraitChecker(
+                $this->codebase->classlikes->addFullyQualifiedTraitName($fq_classlike_name, $this->file_path);
+                $this->codebase->classlikes->addTraitNode(
+                    $fq_classlike_name,
                     $node,
-                    new TraitSource($this->file_checker, $this->aliases),
-                    $fq_classlike_name
+                    $this->aliases
                 );
+            }
+
+            foreach ($node->stmts as $node_stmt) {
+                if ($node_stmt instanceof PhpParser\Node\Stmt\ClassConst) {
+                    $this->visitClassConstDeclaration($node_stmt, $storage);
+                }
+            }
+
+            foreach ($node->stmts as $node_stmt) {
+                if ($node_stmt instanceof PhpParser\Node\Stmt\Property) {
+                    $this->visitPropertyDeclaration($node_stmt, $this->config, $storage);
+                }
             }
         } elseif (($node instanceof PhpParser\Node\Expr\New_
                 || $node instanceof PhpParser\Node\Expr\Instanceof_
@@ -286,7 +294,7 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
             $fq_classlike_name = ClassLikeChecker::getFQCLNFromNameObject($node->class, $this->aliases);
 
             if (!in_array(strtolower($fq_classlike_name), ['self', 'static', 'parent'], true)) {
-                $this->project_checker->queueClassLikeForScanning($fq_classlike_name, $this->file_path);
+                $this->codebase->scanner->queueClassLikeForScanning($fq_classlike_name, $this->file_path);
             }
         } elseif ($node instanceof PhpParser\Node\Stmt\TryCatch) {
             foreach ($node->catches as $catch) {
@@ -294,7 +302,7 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
                     $catch_fqcln = ClassLikeChecker::getFQCLNFromNameObject($catch_type, $this->aliases);
 
                     if (!in_array(strtolower($catch_fqcln), ['self', 'static', 'parent'], true)) {
-                        $this->project_checker->queueClassLikeForScanning($catch_fqcln, $this->file_path);
+                        $this->codebase->scanner->queueClassLikeForScanning($catch_fqcln, $this->file_path);
                     }
                 }
             }
@@ -306,15 +314,15 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
             }
         } elseif ($node instanceof PhpParser\Node\Expr\FuncCall && $node->name instanceof PhpParser\Node\Name) {
             $function_id = implode('\\', $node->name->parts);
-            if (FunctionChecker::inCallMap($function_id)) {
-                $function_params = FunctionChecker::getParamsFromCallMap($function_id);
+            if (CallMap::inCallMap($function_id)) {
+                $function_params = CallMap::getParamsFromCallMap($function_id);
 
                 if ($function_params) {
                     foreach ($function_params as $function_param_group) {
                         foreach ($function_param_group as $function_param) {
                             if ($function_param->type) {
                                 $function_param->type->queueClassLikesForScanning(
-                                    $this->project_checker,
+                                    $this->codebase,
                                     $this->file_path
                                 );
                             }
@@ -322,9 +330,9 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
                     }
                 }
 
-                $return_type = FunctionChecker::getReturnTypeFromCallMap($function_id);
+                $return_type = CallMap::getReturnTypeFromCallMap($function_id);
 
-                $return_type->queueClassLikesForScanning($this->project_checker, $this->file_path);
+                $return_type->queueClassLikesForScanning($this->codebase, $this->file_path);
 
                 if ($function_id === 'get_class') {
                     $this->queue_strings_as_possible_type = true;
@@ -380,30 +388,26 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
 
             foreach ($node->traits as $trait) {
                 $trait_fqcln = ClassLikeChecker::getFQCLNFromNameObject($trait, $this->aliases);
-                $this->project_checker->queueClassLikeForScanning($trait_fqcln, $this->file_path, $this->scan_deep);
+                $this->codebase->scanner->queueClassLikeForScanning($trait_fqcln, $this->file_path, $this->scan_deep);
                 $storage->used_traits[strtolower($trait_fqcln)] = $trait_fqcln;
             }
-        } elseif ($node instanceof PhpParser\Node\Stmt\Property) {
-            $this->visitPropertyDeclaration($node, $this->config);
-        } elseif ($node instanceof PhpParser\Node\Stmt\ClassConst) {
-            $this->visitClassConstDeclaration($node);
         } elseif ($node instanceof PhpParser\Node\Expr\Include_) {
             $this->visitInclude($node);
         } elseif ($node instanceof PhpParser\Node\Scalar\String_ && $this->queue_strings_as_possible_type) {
             if (preg_match('/^[a-zA-Z_\x7f-\xff][a-zA-Z0-9_\x7f-\xff]*$/', $node->value)) {
-                $this->project_checker->queueClassLikeForScanning($node->value, $this->file_path, false, false);
+                $this->codebase->scanner->queueClassLikeForScanning($node->value, $this->file_path, false, false);
             }
         } elseif ($node instanceof PhpParser\Node\Expr\Assign
             || $node instanceof PhpParser\Node\Expr\AssignOp
             || $node instanceof PhpParser\Node\Expr\AssignRef
         ) {
             if ($doc_comment = $node->getDocComment()) {
-                $var_comment = null;
+                $var_comments = [];
 
                 try {
-                    $var_comment = CommentChecker::getTypeFromComment(
+                    $var_comments = CommentChecker::getTypeFromComment(
                         (string)$doc_comment,
-                        $this->file_checker,
+                        $this->file_scanner,
                         $this->aliases,
                         null,
                         null
@@ -412,18 +416,17 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
                     // do nothing
                 }
 
-                if ($var_comment) {
-                    $var_type = Type::parseString($var_comment->type);
-
-                    $var_type->queueClassLikesForScanning($this->project_checker, $this->file_path);
+                foreach ($var_comments as $var_comment) {
+                    $var_type = $var_comment->type;
+                    $var_type->queueClassLikesForScanning($this->codebase, $this->file_path);
                 }
             }
         } elseif ($node instanceof PhpParser\Node\Stmt\Const_) {
             foreach ($node->consts as $const) {
                 $const_type = StatementsChecker::getSimpleType($const->value) ?: Type::getMixed();
 
-                if ($this->project_checker->register_global_functions) {
-                    StatementsChecker::$stub_constants[$const->name] = $const_type;
+                if ($this->codebase->register_global_functions) {
+                    $this->codebase->addStubbedConstantType($const->name, $const_type);
                 } else {
                     $this->file_storage->constants[$const->name] = $const_type;
                     $this->file_storage->declaring_constants[$const->name] = $this->file_path;
@@ -448,8 +451,8 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
 
             $fq_classlike_name = array_pop($this->fq_classlike_names);
 
-            if (ClassLikeChecker::inPropertyMap($fq_classlike_name)) {
-                $public_mapped_properties = ClassLikeChecker::getPropertyMap()[strtolower($fq_classlike_name)];
+            if (PropertyMap::inPropertyMap($fq_classlike_name)) {
+                $public_mapped_properties = PropertyMap::getPropertyMap()[strtolower($fq_classlike_name)];
 
                 if (!$this->classlike_storages) {
                     throw new \UnexpectedValueException('$this->classlike_storages cannot be empty');
@@ -460,7 +463,7 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
                 foreach ($public_mapped_properties as $property_name => $public_mapped_property) {
                     $property_type = Type::parseString($public_mapped_property);
 
-                    $property_type->queueClassLikesForScanning($this->project_checker, $this->file_path);
+                    $property_type->queueClassLikesForScanning($this->codebase, $this->file_path);
 
                     if (!isset($storage->properties[$property_name])) {
                         $storage->properties[$property_name] = new PropertyStorage();
@@ -480,20 +483,17 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
 
             $this->class_template_types = [];
 
-            if ($this->plugins) {
+            if ($this->after_classlike_check_plugins) {
                 $file_manipulations = [];
 
-                foreach ($this->plugins as $plugin) {
-                    $plugin->visitClassLike(
+                foreach ($this->after_classlike_check_plugins as $plugin_fq_class_name) {
+                    $plugin_fq_class_name::afterVisitClassLike(
                         $node,
                         $classlike_storage,
-                        $this->file_checker,
+                        $this->file_scanner,
                         $this->aliases,
                         $file_manipulations
                     );
-                }
-
-                if ($file_manipulations) {
                 }
             }
         } elseif ($node instanceof PhpParser\Node\Stmt\Function_
@@ -522,10 +522,9 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
             $cased_function_id = ($this->aliases->namespace ? $this->aliases->namespace . '\\' : '') . $stmt->name;
             $function_id = strtolower($cased_function_id);
 
-            $project_checker = $this->project_checker;
-
-            if ($project_checker->register_global_functions) {
-                $storage = FunctionChecker::$stubbed_functions[$function_id] = new FunctionLikeStorage();
+            if ($this->codebase->register_global_functions) {
+                $storage = new FunctionLikeStorage();
+                $this->codebase->functions->addStubbedFunction($function_id, $storage);
             } else {
                 if (isset($this->file_storage->functions[$function_id])) {
                     return;
@@ -563,13 +562,11 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
                 !isset($class_storage->methods['__construct']) &&
                 strpos($fq_classlike_name, '\\') === false
             ) {
-                MethodChecker::setDeclaringMethodId(
-                    $this->project_checker,
+                $this->codebase->methods->setDeclaringMethodId(
                     $fq_classlike_name . '::__construct',
                     $function_id
                 );
-                MethodChecker::setAppearingMethodId(
-                    $this->project_checker,
+                $this->codebase->methods->setAppearingMethodId(
                     $fq_classlike_name . '::__construct',
                     $function_id
                 );
@@ -613,7 +610,7 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
             $storage->cased_name = $stmt->name;
         }
 
-        $storage->location = new CodeLocation($this->file_checker, $stmt, null, true);
+        $storage->location = new CodeLocation($this->file_scanner, $stmt, null, true);
 
         $required_param_count = 0;
         $i = 0;
@@ -629,7 +626,7 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
                 if (IssueBuffer::accepts(
                     new DuplicateParam(
                         'Duplicate param $' . $param->name . ' in docblock for ' . $cased_function_id,
-                        new CodeLocation($this->file_checker, $param, null, true)
+                        new CodeLocation($this->file_scanner, $param, null, true)
                     )
                 )) {
                     continue;
@@ -648,7 +645,7 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
                         new MisplacedRequiredParam(
                             'Required param $' . $param->name . ' should come before any optional params in ' .
                             $cased_function_id,
-                            new CodeLocation($this->file_checker, $param, null, true)
+                            new CodeLocation($this->file_scanner, $param, null, true)
                         )
                     )) {
                         // fall through
@@ -729,7 +726,7 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
                 );
 
                 if (!in_array(strtolower($return_type_fq_classlike_name), ['self', 'parent'], true)) {
-                    $this->project_checker->queueClassLikeForScanning(
+                    $this->codebase->scanner->queueClassLikeForScanning(
                         $return_type_fq_classlike_name,
                         $this->file_path
                     );
@@ -738,17 +735,25 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
                 $return_type_string = $return_type_fq_classlike_name . $suffix;
             }
 
-            $storage->return_type = Type::parseString($return_type_string);
+            $storage->return_type = Type::parseString($return_type_string, true);
             $storage->return_type_location = new CodeLocation(
-                $this->file_checker,
+                $this->file_scanner,
                 $stmt,
                 null,
                 false,
-                FunctionLikeChecker::RETURN_TYPE_REGEX
+                CodeLocation::FUNCTION_RETURN_TYPE
             );
+
+            if ($stmt->returnsByRef()) {
+                $storage->return_type->by_ref = true;
+            }
 
             $storage->signature_return_type = $storage->return_type;
             $storage->signature_return_type_location = $storage->return_type_location;
+        }
+
+        if ($stmt->returnsByRef()) {
+            $storage->returns_by_ref = true;
         }
 
         $doc_comment = $stmt->getDocComment();
@@ -766,7 +771,7 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
             if (IssueBuffer::accepts(
                 new MissingDocblockType(
                     $e->getMessage() . ' in docblock for ' . $cased_function_id,
-                    new CodeLocation($this->file_checker, $stmt, null, true)
+                    new CodeLocation($this->file_scanner, $stmt, null, true)
                 )
             )) {
                 // fall through
@@ -777,7 +782,7 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
             if (IssueBuffer::accepts(
                 new InvalidDocblock(
                     $e->getMessage() . ' in docblock for ' . $cased_function_id,
-                    new CodeLocation($this->file_checker, $stmt, null, true)
+                    new CodeLocation($this->file_scanner, $stmt, null, true)
                 )
             )) {
                 // fall through
@@ -802,6 +807,10 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
             $storage->return_type->ignore_nullable_issues = true;
         }
 
+        if ($docblock_info->ignore_falsable_return && $storage->return_type) {
+            $storage->return_type->ignore_falsable_issues = true;
+        }
+
         $storage->suppressed_issues = $docblock_info->suppress;
 
         if (!$this->config->use_docblock_types) {
@@ -815,7 +824,7 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
 
             foreach ($docblock_info->template_types as $template_type) {
                 if (count($template_type) === 3) {
-                    $as_type_string = ClassLikeChecker::getFQCLNFromString($template_type[2], $this->aliases);
+                    $as_type_string = Type::getFQCLNFromString($template_type[2], $this->aliases);
                     $storage->template_types[$template_type[0]] = $as_type_string;
                 } else {
                     $storage->template_types[$template_type[0]] = 'mixed';
@@ -841,7 +850,7 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
         }
 
         if ($docblock_info->return_type) {
-            if (!$storage->return_type || (string)$docblock_info->return_type !== (string)$storage->return_type) {
+            if (!$storage->return_type || $docblock_info->return_type !== $storage->return_type->getId()) {
                 $storage->has_template_return_type =
                     $template_types !== null &&
                     count(
@@ -854,11 +863,18 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
                 $docblock_return_type = $docblock_info->return_type;
 
                 if (!$storage->return_type_location) {
-                    $storage->return_type_location = new CodeLocation($this->file_checker, $stmt, null, true);
+                    $storage->return_type_location = new CodeLocation(
+                        $this->file_scanner,
+                        $stmt,
+                        null,
+                        false,
+                        CodeLocation::FUNCTION_PHPDOC_RETURN_TYPE,
+                        $docblock_info->return_type
+                    );
                 }
 
                 if ($docblock_return_type) {
-                    $fixed_type_string = FunctionLikeChecker::fixUpLocalType(
+                    $fixed_type_string = Type::fixUpLocalType(
                         $docblock_return_type,
                         $this->aliases,
                         $this->function_template_types + $this->class_template_types
@@ -867,12 +883,30 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
                     try {
                         $storage->return_type = Type::parseString($fixed_type_string);
                         $storage->return_type->setFromDocblock();
-                        $storage->return_type->queueClassLikesForScanning($this->project_checker, $this->file_path);
+
+                        if ($storage->signature_return_type) {
+                            $all_typehint_types_match = true;
+                            $signature_return_atomic_types = $storage->signature_return_type->getTypes();
+
+                            foreach ($storage->return_type->getTypes() as $key => $type) {
+                                if (isset($signature_return_atomic_types[$key])) {
+                                    $type->from_docblock = false;
+                                } else {
+                                    $all_typehint_types_match = false;
+                                }
+                            }
+
+                            if ($all_typehint_types_match) {
+                                $storage->return_type->from_docblock = false;
+                            }
+                        }
+
+                        $storage->return_type->queueClassLikesForScanning($this->codebase, $this->file_path);
                     } catch (TypeParseTreeException $e) {
                         if (IssueBuffer::accepts(
                             new InvalidDocblock(
                                 $e->getMessage() . ' in docblock for ' . $cased_function_id,
-                                new CodeLocation($this->file_checker, $stmt, null, true)
+                                new CodeLocation($this->file_scanner, $stmt, null, true)
                             )
                         )) {
                             // fall through
@@ -882,6 +916,14 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
 
                 if ($storage->return_type && $docblock_info->ignore_nullable_return) {
                     $storage->return_type->ignore_nullable_issues = true;
+                }
+
+                if ($storage->return_type && $docblock_info->ignore_falsable_return) {
+                    $storage->return_type->ignore_falsable_issues = true;
+                }
+
+                if ($stmt->returnsByRef() && $storage->return_type) {
+                    $storage->return_type->by_ref = true;
                 }
 
                 if ($docblock_info->return_type_line_number) {
@@ -894,9 +936,7 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
             $this->improveParamsFromDocblock(
                 $storage,
                 $docblock_info->params,
-                $template_types,
-                $stmt,
-                new CodeLocation($this->file_checker, $stmt, null, true)
+                $stmt
             );
         }
     }
@@ -927,13 +967,13 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
                 $param_type_string = $param_typehint;
             } elseif ($param_typehint instanceof PhpParser\Node\Name\FullyQualified) {
                 $param_type_string = (string)$param_typehint;
-                $this->project_checker->queueClassLikeForScanning($param_type_string, $this->file_path);
+                $this->codebase->scanner->queueClassLikeForScanning($param_type_string, $this->file_path);
             } elseif (strtolower($param_typehint->parts[0]) === 'self') {
                 $param_type_string = $this->fq_classlike_names[count($this->fq_classlike_names) - 1];
             } else {
                 $param_type_string = ClassLikeChecker::getFQCLNFromNameObject($param_typehint, $this->aliases);
                 if (!in_array(strtolower($param_type_string), ['self', 'static', 'parent'], true)) {
-                    $this->project_checker->queueClassLikeForScanning($param_type_string, $this->file_path);
+                    $this->codebase->scanner->queueClassLikeForScanning($param_type_string, $this->file_path);
                 }
             }
 
@@ -942,7 +982,7 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
                     $param_type_string .= '|null';
                 }
 
-                $param_type = Type::parseString($param_type_string);
+                $param_type = Type::parseString($param_type_string, true);
 
                 if ($param->variadic) {
                     $param_type = new Type\Union([
@@ -968,7 +1008,10 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
             $param->name,
             $param->byRef,
             $param_type,
-            new CodeLocation($this->file_checker, $param, null, false, FunctionLikeChecker::PARAM_TYPE_REGEX),
+            new CodeLocation($this->file_scanner, $param, null, false, CodeLocation::FUNCTION_PARAM_VAR),
+            $param_typehint
+                ? new CodeLocation($this->file_scanner, $param, null, false, CodeLocation::FUNCTION_PARAM_TYPE)
+                : null,
             $is_optional,
             $is_nullable,
             $param->variadic
@@ -978,18 +1021,14 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
     /**
      * @param  array<int, array{type:string,name:string,line_number:int}>  $docblock_params
      * @param  FunctionLikeStorage          $storage
-     * @param  array<string, string>|null   $template_types
      * @param  PhpParser\Node\FunctionLike  $function
-     * @param  CodeLocation                 $code_location
      *
      * @return void
      */
-    protected function improveParamsFromDocblock(
+    private function improveParamsFromDocblock(
         FunctionLikeStorage $storage,
         array $docblock_params,
-        $template_types,
-        $function,
-        CodeLocation $code_location
+        PhpParser\Node\FunctionLike $function
     ) {
         $base = $this->fq_classlike_names
             ? $this->fq_classlike_names[count($this->fq_classlike_names) - 1] . '::'
@@ -1021,9 +1060,20 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
                 continue;
             }
 
+            $code_location = new CodeLocation(
+                $this->file_scanner,
+                $function,
+                null,
+                true,
+                CodeLocation::FUNCTION_PHPDOC_PARAM_TYPE,
+                $docblock_param['type']
+            );
+
+            $code_location->setCommentLine($docblock_param['line_number']);
+
             try {
                 $new_param_type = Type::parseString(
-                    FunctionLikeChecker::fixUpLocalType(
+                    Type::fixUpLocalType(
                         $docblock_param['type'],
                         $this->aliases,
                         $this->function_template_types + $this->class_template_types
@@ -1043,7 +1093,7 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
             }
 
             $new_param_type->queueClassLikesForScanning(
-                $this->project_checker,
+                $this->codebase,
                 $this->file_path,
                 $storage->template_types ?: []
             );
@@ -1063,36 +1113,46 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
 
             if (!$storage_param->type || $storage_param->type->isMixed() || $storage->template_types) {
                 if ($existing_param_type_nullable && !$new_param_type->isNullable()) {
-                    $new_param_type->types['null'] = new Type\Atomic\TNull();
+                    $new_param_type->addType(new Type\Atomic\TNull());
                 }
 
                 $storage_param->type = $new_param_type;
-                $storage_param->location = $code_location;
+                $storage_param->type_location = $code_location;
                 continue;
             }
 
-            if ($storage_param->type->getId() === $new_param_type->getId()) {
-                continue;
-            }
+            $storage_param_atomic_types = $storage_param->type->getTypes();
 
-            $improved_atomic_types = [];
+            $all_types_match = true;
+            $all_typehint_types_match = true;
 
-            foreach ($storage_param->type->types as $key => $atomic_type) {
-                if (!isset($new_param_type->types[$key])) {
-                    $improved_atomic_types[$key] = clone $atomic_type;
-                    continue;
+            foreach ($new_param_type->getTypes() as $key => $type) {
+                if (isset($storage_param_atomic_types[$key])) {
+                    if ($storage_param_atomic_types[$key]->getId() !== $type->getId()) {
+                        $all_types_match = false;
+                    }
+
+                    $type->from_docblock = false;
+                } else {
+                    $all_types_match = false;
+                    $all_typehint_types_match = false;
                 }
-
-                $improved_atomic_types[$key] = clone $new_param_type->types[$key];
             }
 
-            if ($existing_param_type_nullable && !isset($improved_atomic_types['null'])) {
-                $improved_atomic_types['null'] = new Type\Atomic\TNull();
+            if ($all_types_match) {
+                continue;
             }
 
-            $storage_param->type = new Type\Union(array_values($improved_atomic_types));
-            $storage_param->type->setFromDocblock();
-            $storage_param->location = $code_location;
+            if ($all_typehint_types_match) {
+                $new_param_type->from_docblock = false;
+            }
+
+            if ($existing_param_type_nullable && !$new_param_type->isNullable()) {
+                $new_param_type->addType(new Type\Atomic\TNull());
+            }
+
+            $storage_param->type = $new_param_type;
+            $storage_param->type_location = $code_location;
         }
     }
 
@@ -1104,7 +1164,8 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
      */
     private function visitPropertyDeclaration(
         PhpParser\Node\Stmt\Property $stmt,
-        Config $config
+        Config $config,
+        ClassLikeStorage $storage
     ) {
         if (!$this->fq_classlike_names) {
             throw new \LogicException('$this->fq_classlike_names should not be empty');
@@ -1112,29 +1173,34 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
 
         $comment = $stmt->getDocComment();
         $var_comment = null;
-        $property_type_line_number = null;
 
-        if (!$this->classlike_storages) {
-            throw new \UnexpectedValueException('$this->classlike_storages should not be empty');
-        }
+        $property_is_initialized = false;
 
-        $storage = $this->classlike_storages[count($this->classlike_storages) - 1];
+        $existing_constants = $storage->protected_class_constants
+            + $storage->private_class_constants
+            + $storage->public_class_constants;
 
-        if ($comment && $comment->getText() && $config->use_docblock_types) {
+        if ($comment && $comment->getText() && ($config->use_docblock_types || $config->use_docblock_property_types)) {
+            if (preg_match('/[ \t\*]+@psalm-suppress[ \t]+PropertyNotSetInConstructor/', (string)$comment)) {
+                $property_is_initialized = true;
+            }
+
             try {
                 $property_type_line_number = $comment->getLine();
-                $var_comment = CommentChecker::getTypeFromComment(
+                $var_comments = CommentChecker::getTypeFromComment(
                     $comment->getText(),
-                    $this->file_checker,
+                    $this->file_scanner,
                     $this->aliases,
                     $this->function_template_types + $this->class_template_types,
                     $property_type_line_number
                 );
+
+                $var_comment = array_pop($var_comments);
             } catch (IncorrectDocblockException $e) {
                 if (IssueBuffer::accepts(
                     new MissingDocblockType(
                         $e->getMessage(),
-                        new CodeLocation($this->file_checker, $stmt, null, true)
+                        new CodeLocation($this->file_scanner, $stmt, null, true)
                     )
                 )) {
                     // fall through
@@ -1143,7 +1209,7 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
                 if (IssueBuffer::accepts(
                     new InvalidDocblock(
                         $e->getMessage(),
-                        new CodeLocation($this->file_checker, $stmt, null, true)
+                        new CodeLocation($this->file_scanner, $stmt, null, true)
                     )
                 )) {
                     // fall through
@@ -1151,10 +1217,10 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
             }
         }
 
-        $property_group_type = $var_comment ? Type::parseString($var_comment->type) : null;
+        $property_group_type = $var_comment ? $var_comment->type : null;
 
         if ($property_group_type) {
-            $property_group_type->queueClassLikesForScanning($this->project_checker, $this->file_path);
+            $property_group_type->queueClassLikesForScanning($this->codebase, $this->file_path);
             $property_group_type->setFromDocblock();
         }
 
@@ -1164,20 +1230,21 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
 
             if (!$property_group_type) {
                 if ($property->default) {
-                    $default_type = StatementsChecker::getSimpleType($property->default);
-
-                    if (!$config->use_property_default_for_type) {
-                        $property_type = false;
-                    } else {
-                        $property_type = $default_type ?: Type::getMixed();
-                    }
-                } else {
-                    $property_type = false;
+                    $default_type = StatementsChecker::getSimpleType($property->default, null, $existing_constants);
                 }
+
+                $property_type = false;
             } else {
-                if ($property_type_line_number) {
-                    $property_type_location = new CodeLocation($this->file_checker, $stmt);
-                    $property_type_location->setCommentLine($property_type_line_number);
+                if ($var_comment && $var_comment->line_number) {
+                    $property_type_location = new CodeLocation(
+                        $this->file_scanner,
+                        $stmt,
+                        null,
+                        false,
+                        CodeLocation::VAR_TYPE,
+                        $var_comment->original_type
+                    );
+                    $property_type_location->setCommentLine($var_comment->line_number);
                 }
 
                 $property_type = count($stmt->props) === 1 ? $property_group_type : clone $property_group_type;
@@ -1186,7 +1253,7 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
             $property_storage = $storage->properties[$property->name] = new PropertyStorage();
             $property_storage->is_static = (bool)$stmt->isStatic();
             $property_storage->type = $property_type;
-            $property_storage->location = new CodeLocation($this->file_checker, $property);
+            $property_storage->location = new CodeLocation($this->file_scanner, $property);
             $property_storage->type_location = $property_type_location;
             $property_storage->has_default = $property->default ? true : false;
             $property_storage->suggested_type = $property_group_type ? null : $default_type;
@@ -1207,6 +1274,10 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
             $storage->declaring_property_ids[$property->name] = $property_id;
             $storage->appearing_property_ids[$property->name] = $property_id;
 
+            if ($property_is_initialized) {
+                $storage->initialized_properties[$property->name] = true;
+            }
+
             if (!$stmt->isPrivate()) {
                 $storage->inheritable_property_ids[$property->name] = $property_id;
             }
@@ -1218,14 +1289,8 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
      *
      * @return  void
      */
-    private function visitClassConstDeclaration(PhpParser\Node\Stmt\ClassConst $stmt)
+    private function visitClassConstDeclaration(PhpParser\Node\Stmt\ClassConst $stmt, ClassLikeStorage $storage)
     {
-        if (!$this->classlike_storages) {
-            throw new \LogicException('$this->classlike_storages should not be empty');
-        }
-
-        $storage = $this->classlike_storages[count($this->classlike_storages) - 1];
-
         $existing_constants = $storage->protected_class_constants
             + $storage->private_class_constants
             + $storage->public_class_constants;
@@ -1233,7 +1298,7 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
         foreach ($stmt->consts as $const) {
             $const_type = StatementsChecker::getSimpleType(
                 $const->value,
-                $this->file_checker,
+                null,
                 $existing_constants
             ) ?: Type::getMixed();
 
@@ -1264,20 +1329,18 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
             );
         }
 
-        $path_to_file = null;
-
         if ($stmt->expr instanceof PhpParser\Node\Scalar\String_) {
             $path_to_file = $stmt->expr->value;
 
             // attempts to resolve using get_include_path dirs
-            $include_path = StatementsChecker::resolveIncludePath($path_to_file, dirname($this->file_path));
+            $include_path = IncludeChecker::resolveIncludePath($path_to_file, dirname($this->file_path));
             $path_to_file = $include_path ? $include_path : $path_to_file;
 
             if ($path_to_file[0] !== DIRECTORY_SEPARATOR) {
                 $path_to_file = getcwd() . DIRECTORY_SEPARATOR . $path_to_file;
             }
         } else {
-            $path_to_file = StatementsChecker::getPathTo($stmt->expr, $this->file_path);
+            $path_to_file = IncludeChecker::getPathTo($stmt->expr, $this->file_path);
         }
 
         if ($path_to_file) {
@@ -1296,8 +1359,8 @@ class DependencyFinderVisitor extends PhpParser\NodeVisitorAbstract implements P
                 return null;
             }
 
-            if ($this->project_checker->fileExists($path_to_file)) {
-                $this->project_checker->queueFileForScanning($path_to_file);
+            if ($this->codebase->fileExists($path_to_file)) {
+                $this->codebase->scanner->queueFileForScanning($path_to_file);
 
                 $this->file_storage->included_file_paths[strtolower($path_to_file)] = $path_to_file;
 

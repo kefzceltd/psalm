@@ -5,7 +5,11 @@ use Psalm\Storage\ClassLikeStorage;
 
 class ClassLikeStorageProvider
 {
-    /** @var array<string, ClassLikeStorage> */
+    /**
+     * Storing this statically is much faster (at least in PHP 7.2.1)
+     *
+     * @var array<string, ClassLikeStorage>
+     */
     private static $storage = [];
 
     /**
@@ -61,7 +65,7 @@ class ClassLikeStorageProvider
     /**
      * @return void
      */
-    public function deleteAll()
+    public static function deleteAll()
     {
         self::$storage = [];
     }

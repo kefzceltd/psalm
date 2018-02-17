@@ -14,16 +14,16 @@ class LoopScopeTest extends TestCase
         return [
             'switchVariableWithContinue' => [
                 '<?php
-                    foreach ([\'a\', \'b\', \'c\'] as $letter) {
+                    foreach (["a", "b", "c"] as $letter) {
                         switch ($letter) {
-                            case \'a\':
+                            case "b":
                                 $foo = 1;
                                 break;
-                            case \'b\':
+                            case "c":
                                 $foo = 2;
                                 break;
                             default:
-                                continue;
+                                continue 2;
                         }
 
                         $moo = $foo;
@@ -31,22 +31,22 @@ class LoopScopeTest extends TestCase
             ],
             'switchVariableWithContinueAndIfs' => [
                 '<?php
-                    foreach ([\'a\', \'b\', \'c\'] as $letter) {
+                    foreach (["a", "b", "c"] as $letter) {
                         switch ($letter) {
-                            case \'a\':
+                            case "a":
                                 if (rand(0, 10) === 1) {
-                                    continue;
+                                    continue 2;
                                 }
                                 $foo = 1;
                                 break;
-                            case \'b\':
+                            case "b":
                                 if (rand(0, 10) === 1) {
-                                    continue;
+                                    continue 2;
                                 }
                                 $foo = 2;
                                 break;
                             default:
-                                continue;
+                                continue 2;
                         }
 
                         $moo = $foo;
@@ -54,10 +54,10 @@ class LoopScopeTest extends TestCase
             ],
             'switchVariableWithFallthrough' => [
                 '<?php
-                    foreach ([\'a\', \'b\', \'c\'] as $letter) {
+                    foreach (["a", "b", "c"] as $letter) {
                         switch ($letter) {
-                            case \'a\':
-                            case \'b\':
+                            case "a":
+                            case "b":
                                 $foo = 2;
                                 break;
 
@@ -71,12 +71,12 @@ class LoopScopeTest extends TestCase
             ],
             'switchVariableWithFallthroughStatement' => [
                 '<?php
-                    foreach ([\'a\', \'b\', \'c\'] as $letter) {
+                    foreach (["a", "b", "c"] as $letter) {
                         switch ($letter) {
-                            case \'a\':
+                            case "a":
                                 $bar = 1;
 
-                            case \'b\':
+                            case "b":
                                 $foo = 2;
                                 break;
 
@@ -139,11 +139,11 @@ class LoopScopeTest extends TestCase
                         public $parent;
 
                         public function __construct() {
-                            $this->parent = rand(0, 1) ? new A() : new B();
+                            $this->parent = rand(0, 1) ? new A(): new B();
                         }
                     }
 
-                    function makeA() : A {
+                    function makeA(): A {
                         return new A();
                     }
 
@@ -164,11 +164,11 @@ class LoopScopeTest extends TestCase
                         public $parent;
 
                         public function __construct() {
-                            $this->parent = rand(0, 1) ? new A() : new B();
+                            $this->parent = rand(0, 1) ? new A(): new B();
                         }
                     }
 
-                    function makeA() : A {
+                    function makeA(): A {
                         return new A();
                     }
 
@@ -191,11 +191,11 @@ class LoopScopeTest extends TestCase
                         public $parent;
 
                         public function __construct() {
-                            $this->parent = rand(0, 1) ? new A() : null;
+                            $this->parent = rand(0, 1) ? new A(): null;
                         }
                     }
 
-                    function makeA() : A {
+                    function makeA(): A {
                         return new A();
                     }
 
@@ -215,11 +215,11 @@ class LoopScopeTest extends TestCase
                         public $parent;
 
                         public function __construct() {
-                            $this->parent = rand(0, 1) ? new A() : null;
+                            $this->parent = rand(0, 1) ? new A(): null;
                         }
                     }
 
-                    function makeA() : A {
+                    function makeA(): A {
                         return new A();
                     }
 
@@ -564,14 +564,40 @@ class LoopScopeTest extends TestCase
                     '$tag' => 'null',
                 ],
             ],
-            'nullToNullableWithNullCheck' => [
+            'nullToMixedWithNullCheckNoContinue' => [
+                '<?php
+                    function getStrings(): array {
+                        return ["hello", "world"];
+                    }
+
+                    $a = null;
+
+                    foreach (getStrings() as $s) {
+                      if ($a === null) {
+                        $a = $s;
+                      }
+                    }',
+                'assignments' => [
+                    '$a' => 'mixed',
+                ],
+                'error_levels' => [
+                    'MixedAssignment',
+                ],
+            ],
+            'nullToMixedWithNullCheckAndContinue' => [
                 '<?php
                     $a = null;
 
-                    foreach ([1, 2, 3] as $i) {
+                    function getStrings(): array {
+                        return ["hello", "world"];
+                    }
+
+                    $a = null;
+
+                    foreach (getStrings() as $s) {
                       if ($a === null) {
-                        /** @var mixed */
-                        $a = "hello";
+                        $a = $s;
+                        continue;
                       }
                     }',
                 'assignments' => [
@@ -731,7 +757,7 @@ class LoopScopeTest extends TestCase
                       public $bar;
                     }
 
-                    function foo() : ?A {
+                    function foo(): ?A {
                       return rand(0, 1) ? new A : null;
                     }
 
@@ -752,7 +778,7 @@ class LoopScopeTest extends TestCase
             ],
             'mixedArrayAccessNoPossiblyUndefinedVar' => [
                 '<?php
-                    function foo(array $arr) : void {
+                    function foo(array $arr): void {
                       $r = [];
                       foreach ($arr as $key => $value) {
                         if ($value["foo"]) {}
@@ -778,11 +804,176 @@ class LoopScopeTest extends TestCase
                         $c = true;
                         break;
                     }',
-                'assignments' => [
+                'assertions' => [
                     '$a' => 'string',
                     '$b' => 'int',
                     '$c' => 'true',
                 ],
+            ],
+            'foreachLoopWithOKManipulation' => [
+                '<?php
+                    $list = [1, 2, 3];
+                    foreach ($list as $i) {
+                      $i = 5;
+                    }',
+            ],
+            'forLoopwithOKChange' => [
+                '<?php
+                    $j = 5;
+                    for ($i = $j; $i < 4; $i++) {
+                      $j = 9;
+                    }',
+            ],
+            'foreachLoopDuplicateList' => [
+                '<?php
+                    $list = [1, 2, 3];
+                    foreach ($list as $i) {
+                      foreach ($list as $j) {}
+                    }',
+            ],
+            'whileWithNotEmptyCheck' => [
+                '<?php
+                    class A {
+                      /** @var A|null */
+                      public $a;
+
+                      public function __construct() {
+                        $this->a = rand(0, 1) ? new A : null;
+                      }
+                    }
+
+                    function takesA(A $a): void {}
+
+                    $a = new A();
+                    while ($a) {
+                      takesA($a);
+                      $a = $a->a;
+                    };',
+                'assertions' => [
+                    '$a' => 'null',
+                ],
+            ],
+            'doWhileWithNotEmptyCheck' => [
+                '<?php
+                    class A {
+                      /** @var A|null */
+                      public $a;
+
+                      public function __construct() {
+                        $this->a = rand(0, 1) ? new A : null;
+                      }
+                    }
+
+                    function takesA(A $a): void {}
+
+                    $a = new A();
+                    do {
+                      takesA($a);
+                      $a = $a->a;
+                    } while ($a);',
+                'assertions' => [
+                    '$a' => 'null',
+                ],
+            ],
+            'doWhileWithMethodCall' => [
+                '<?php
+                    class A {
+                      public function getParent(): ?A {
+                        return rand(0, 1) ? new A() : null;
+                      }
+                    }
+
+                    $a = new A();
+
+                    do {
+                      $a = $a->getParent();
+                    } while ($a);',
+                'assertions' => [
+                    '$a' => 'null',
+                ],
+            ],
+            'doWhileFirstGood' => [
+                '<?php
+                    do {
+                        $done = rand(0, 1) > 0;
+                    } while (!$done);',
+            ],
+            'doWhileWithIfException' => [
+                '<?php
+                    class A
+                    {
+                        /**
+                         * @var null|A
+                         */
+                        public $parent;
+
+                        public static function foo(A $a) : void
+                        {
+                            do {
+                                if ($a->parent === null) {
+                                    throw new \Exception("bad");
+                                }
+
+                                $a = $a->parent;
+                            } while (rand(0,1));
+                        }
+                    }',
+            ],
+            'doWhileWithIfExceptionOutside' => [
+                '<?php
+                    class A
+                    {
+                        /**
+                         * @var null|A
+                         */
+                        public $parent;
+
+                        public static function foo(A $a) : void
+                        {
+                            if ($a->parent === null) {
+                                throw new \Exception("bad");
+                            }
+
+                            do {
+                                $a = $a->parent;
+                            } while ($a->parent && rand(0, 1));
+                        }
+                    }',
+            ],
+            'whileInstanceOf' => [
+                '<?php
+                    class A {
+                        /** @var null|A */
+                        public $parent;
+                    }
+
+                    class B extends A {}
+
+                    $a = new A();
+
+                    while ($a->parent instanceof B) {
+                        $a = $a->parent;
+                    }',
+            ],
+            'whileInstanceOfAndNotEmptyCheck' => [
+                '<?php
+                    class A {
+                        /** @var null|A */
+                        public $parent;
+                    }
+
+                    class B extends A {}
+
+                    $a = (new A())->parent;
+
+                    $foo = rand(0, 1) ? "hello" : null;
+
+                    if (!$foo) {
+                        while ($a instanceof B && !$foo) {
+                            $a = $a->parent;
+                            $foo = rand(0, 1) ? "hello" : null;
+                        }
+                    }',
             ],
         ];
     }
@@ -793,6 +984,24 @@ class LoopScopeTest extends TestCase
     public function providerFileCheckerInvalidCodeParse()
     {
         return [
+            'switchVariableWithContinueOnce' => [
+                '<?php
+                    foreach (["a", "b", "c"] as $letter) {
+                        switch ($letter) {
+                            case "b":
+                                $foo = 1;
+                                break;
+                            case "c":
+                                $foo = 2;
+                                break;
+                            default:
+                                continue;
+                        }
+
+                        $moo = $foo;
+                    }',
+                'error_message' => 'PossiblyUndefinedGlobalVariable',
+            ],
             'possiblyUndefinedArrayInForeach' => [
                 '<?php
                     foreach ([1, 2, 3, 4] as $b) {
@@ -825,7 +1034,7 @@ class LoopScopeTest extends TestCase
                 'error_message' => 'PossiblyUndefinedGlobalVariable - src/somefile.php:6 - Possibly undefined ' .
                     'global variable $car, first seen on line 3',
             ],
-            'possibleUndefinedVariableInForeachAndIf' => [
+            'possibleUndefinedVariableInForeachAndIfWithBreak' => [
                 '<?php
                     foreach ([1,2,3,4] as $i) {
                         if ($i === 1) {
@@ -935,6 +1144,21 @@ class LoopScopeTest extends TestCase
 
                     echo $a;',
                 'error_message' => 'UndefinedGlobalVariable',
+            ],
+            'foreachLoopInvalidation' => [
+                '<?php
+                    $list = [1, 2, 3];
+                    foreach ($list as $i) {
+                      $list = [4, 5, 6];
+                    }',
+                'error_message' => 'LoopInvalidation',
+            ],
+            'forLoopInvalidation' => [
+                '<?php
+                    for ($i = 0; $i < 4; $i++) {
+                      foreach ([1, 2, 3] as $i) {}
+                    }',
+                'error_message' => 'LoopInvalidation',
             ],
         ];
     }

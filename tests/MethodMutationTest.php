@@ -58,7 +58,7 @@ class MethodMutationTest extends TestCase
                 $this->user_viewdata = new UserViewData();
             }
 
-            public function setUser() : void
+            public function setUser(): void
             {
                 $user_id = (int)$_GET["id"];
 
@@ -77,7 +77,7 @@ class MethodMutationTest extends TestCase
         }
 
         class FooController extends Controller {
-            public function barBar() : Response {
+            public function barBar(): Response {
                 $this->setUser();
 
                 if (rand(0, 1)) {
@@ -89,8 +89,8 @@ class MethodMutationTest extends TestCase
         }'
         );
 
-        new FileChecker('somefile.php', $this->project_checker);
-        $this->project_checker->scanFiles();
+        new FileChecker($this->project_checker, 'somefile.php', 'somefile.php');
+        $this->project_checker->getCodebase()->scanFiles();
         $method_context = new Context();
         $this->project_checker->getMethodMutations('FooController::barBar', $method_context);
 
@@ -126,8 +126,8 @@ class MethodMutationTest extends TestCase
         }'
         );
 
-        new FileChecker('somefile.php', $this->project_checker);
-        $this->project_checker->scanFiles();
+        new FileChecker($this->project_checker, 'somefile.php', 'somefile.php');
+        $this->project_checker->getCodebase()->scanFiles();
         $method_context = new Context();
         $this->project_checker->getMethodMutations('FooController::__construct', $method_context);
 
@@ -145,7 +145,7 @@ class MethodMutationTest extends TestCase
         class Foo { }
 
         trait T {
-            private function setFoo() : void {
+            private function setFoo(): void {
                 $this->foo = new Foo();
             }
         }
@@ -162,8 +162,8 @@ class MethodMutationTest extends TestCase
         }'
         );
 
-        new FileChecker('somefile.php', $this->project_checker);
-        $this->project_checker->scanFiles();
+        new FileChecker($this->project_checker, 'somefile.php', 'somefile.php');
+        $this->project_checker->getCodebase()->scanFiles();
         $method_context = new Context();
         $this->project_checker->getMethodMutations('FooController::__construct', $method_context);
 

@@ -8,6 +8,7 @@ use Psalm\Checker\TypeChecker;
 use Psalm\Clause;
 use Psalm\Context;
 use Psalm\Type;
+use Psalm\Type\Reconciler;
 
 class TypeReconciliationTest extends TestCase
 {
@@ -27,7 +28,7 @@ class TypeReconciliationTest extends TestCase
     {
         parent::setUp();
 
-        $this->file_checker = new FileChecker('somefile.php', $this->project_checker);
+        $this->file_checker = new FileChecker($this->project_checker, 'somefile.php', 'somefile.php');
         $this->file_checker->context = new Context();
         $this->statements_checker = new StatementsChecker($this->file_checker);
     }
@@ -43,7 +44,7 @@ class TypeReconciliationTest extends TestCase
      */
     public function testReconcilation($expected, $type, $string)
     {
-        $reconciled = TypeChecker::reconcileTypes(
+        $reconciled = Reconciler::reconcileTypes(
             $type,
             Type::parseString($string),
             null,
@@ -55,8 +56,8 @@ class TypeReconciliationTest extends TestCase
             (string) $reconciled
         );
 
-        if ($reconciled && is_array($reconciled->types)) {
-            foreach ($reconciled->types as $type) {
+        if (is_array($reconciled->getTypes())) {
+            foreach ($reconciled->getTypes() as $type) {
                 $this->assertInstanceOf('Psalm\Type\Atomic', $type);
             }
         }
@@ -74,7 +75,7 @@ class TypeReconciliationTest extends TestCase
     {
         $this->assertTrue(
             TypeChecker::isContainedBy(
-                $this->project_checker,
+                $this->project_checker->codebase,
                 Type::parseString($input),
                 Type::parseString($container)
             )
@@ -198,8 +199,8 @@ class TypeReconciliationTest extends TestCase
             // @todo in the future this should also work
             //'notEmptyWithMyObjectFalseTrue' => ['MyObject|true', '!falsy', 'MyObject|bool'],
 
-            'notEmptyWithMyObjectPipeNull' => ['null', 'null', 'MyObject|null'],
-            'notEmptyWithMixed' => ['null', 'null', 'mixed'],
+            'nullWithMyObjectPipeNull' => ['null', 'null', 'MyObject|null'],
+            'nullWithMixed' => ['null', 'null', 'mixed'],
 
             'emptyWithMyObject' => ['mixed', 'falsy', 'MyObject'],
             'emptyWithMyObjectPipeFalse' => ['false', 'falsy', 'MyObject|false'],
@@ -245,7 +246,7 @@ class TypeReconciliationTest extends TestCase
             'intIsMixed' => [
                 '<?php
                     /** @param mixed $a */
-                    function foo($a) : void {
+                    function foo($a): void {
                         $b = 5;
 
                         if ($b === $a) { }
@@ -263,6 +264,8 @@ class TypeReconciliationTest extends TestCase
                         if ($a instanceof A) {
                         }
                     }',
+                'assertions' => [],
+                'error_levels' => ['RedundantConditionGivenDocblockType'],
             ],
             'arrayTypeResolutionFromDocblock' => [
                 '<?php
@@ -272,9 +275,11 @@ class TypeReconciliationTest extends TestCase
                      */
                     function foo(array $strs) {
                         foreach ($strs as $str) {
-                            if (is_string($str)) {} // Issue emitted here
+                            if (is_string($str)) {}
                         }
                     }',
+                'assertions' => [],
+                'error_levels' => ['RedundantConditionGivenDocblockType'],
             ],
             'typeResolutionFromDocblockInside' => [
                 '<?php
@@ -288,6 +293,8 @@ class TypeReconciliationTest extends TestCase
                             }
                         }
                     }',
+                'assertions' => [],
+                'error_levels' => ['RedundantConditionGivenDocblockType'],
             ],
             'notInstanceof' => [
                 '<?php
@@ -473,7 +480,7 @@ class TypeReconciliationTest extends TestCase
                       return new D();
                     }
 
-                    $a = rand(0, 1) ? makeA() : makeC();
+                    $a = rand(0, 1) ? makeA(): makeC();
 
                     if ($a instanceof B || $a instanceof D) { }',
             ],
@@ -492,6 +499,8 @@ class TypeReconciliationTest extends TestCase
 
                         throw new \LogicException("Runtime error");
                     }',
+                'assertions' => [],
+                'error_levels' => ['RedundantConditionGivenDocblockType'],
             ],
             'ignoreNullCheckAndMaintainNullValue' => [
                 '<?php
@@ -514,24 +523,24 @@ class TypeReconciliationTest extends TestCase
             ],
             'ternaryByRefVar' => [
                 '<?php
-                    function foo() : void {
+                    function foo(): void {
                         $b = null;
-                        $c = rand(0, 1) ? bar($b) : null;
+                        $c = rand(0, 1) ? bar($b): null;
                         if (is_int($b)) { }
                     }
-                    function bar(?int &$a) : void {
+                    function bar(?int &$a): void {
                         $a = 5;
                     }',
             ],
             'ternaryByRefVarInConditional' => [
                 '<?php
-                    function foo() : void {
+                    function foo(): void {
                         $b = null;
                         if (rand(0, 1) || bar($b)) {
                             if (is_int($b)) { }
                         }
                     }
-                    function bar(?int &$a) : void {
+                    function bar(?int &$a): void {
                         $a = 5;
                     }',
             ],
@@ -542,7 +551,7 @@ class TypeReconciliationTest extends TestCase
 
                     class A
                     {
-                        public function foo() : void {
+                        public function foo(): void {
                             if ($this instanceof I1 || $this instanceof I2) {}
                         }
                     }',
@@ -550,14 +559,14 @@ class TypeReconciliationTest extends TestCase
             'intersection' => [
                 '<?php
                     interface I {
-                        public function bat() : void;
+                        public function bat(): void;
                     }
 
-                    function takesI(I $i) : void {}
-                    function takesA(A $a) : void {}
+                    function takesI(I $i): void {}
+                    function takesA(A $a): void {}
 
                     class A {
-                        public function foo() : void {
+                        public function foo(): void {
                             if ($this instanceof I) {
                                 $this->bar();
                                 $this->bat();
@@ -567,11 +576,11 @@ class TypeReconciliationTest extends TestCase
                             }
                         }
 
-                        protected function bar() : void {}
+                        protected function bar(): void {}
                     }
 
                     class B extends A implements I {
-                        public function bat() : void {}
+                        public function bat(): void {}
                     }',
             ],
             'isTruthy' => [
@@ -588,7 +597,7 @@ class TypeReconciliationTest extends TestCase
                 '<?php
                     class A
                     {
-                        public function callMeMaybe(string $method) : void
+                        public function callMeMaybe(string $method): void
                         {
                             $handleMethod = [$this, $method];
 
@@ -597,7 +606,7 @@ class TypeReconciliationTest extends TestCase
                             }
                         }
 
-                        public function foo() : void {}
+                        public function foo(): void {}
                     }
                     $a = new A();
                     $a->callMeMaybe("foo");',
@@ -660,7 +669,7 @@ class TypeReconciliationTest extends TestCase
             ],
             'eraseNullAfterInequalityCheck' => [
                 '<?php
-                    $a = mt_rand(0, 1) ? mt_rand(-10, 10) : null;
+                    $a = mt_rand(0, 1) ? mt_rand(-10, 10): null;
 
                     if ($a > 0) {
                       echo $a + 3;
@@ -668,6 +677,75 @@ class TypeReconciliationTest extends TestCase
 
                     if (0 < $a) {
                       echo $a + 3;
+                    }',
+            ],
+            'twoWrongsDontMakeARight' => [
+                '<?php
+                    if (rand(0, 1)) {
+                        $a = false;
+                    } else {
+                        $a = false;
+                    }',
+                'assertions' => [
+                    '$a' => 'false',
+                ],
+            ],
+            'instanceofStatic' => [
+                '<?php
+                    abstract class Foo {
+                        /**
+                         * @return static[]
+                         */
+                        abstract public static function getArr() : array;
+
+                        /**
+                         * @return static|null
+                         */
+                        public static function getOne() {
+                            $one = current(static::getArr());
+                            return $one instanceof static ? $one : null;
+                        }
+                    }',
+            ],
+            'isaStaticClass' => [
+                '<?php
+                    abstract class Foo {
+                        /**
+                         * @return static[]
+                         */
+                        abstract public static function getArr() : array;
+
+                        /**
+                         * @return static|null
+                         */
+                        public static function getOne() {
+                            $one = current(static::getArr());
+                            return is_a($one, static::class, false) ? $one : null;
+                        }
+                    }',
+            ],
+            'isAClass' => [
+                '<?php
+                    class A {}
+                    $a_class = rand(0, 1) ? A::class : "blargle";
+                    if (is_a($a_class, A::class, true)) {
+                      echo "cool";
+                    }',
+            ],
+            'specificArrayFields' => [
+                '<?php
+                    /**
+                     * @param array{field:string} $array
+                     */
+                    function print_field($array) : void {
+                        echo $array["field"];
+                    }
+
+                    /**
+                     * @param array{field:string,otherField:string} $array
+                     */
+                    function has_mix_of_fields($array) : void {
+                        print_field($array);
                     }',
             ],
         ];
@@ -692,7 +770,7 @@ class TypeReconciliationTest extends TestCase
                     class A { }
                     class B { }
                     class C { }
-                    $a = rand(0, 10) > 5 ? new A() : new B();
+                    $a = rand(0, 10) > 5 ? new A(): new B();
                     if ($a instanceof A) {
                     } elseif ($a instanceof C) {
                     }',
@@ -731,7 +809,7 @@ class TypeReconciliationTest extends TestCase
             ],
             'dontEraseNullAfterLessThanCheck' => [
                 '<?php
-                    $a = mt_rand(0, 1) ? mt_rand(-10, 10) : null;
+                    $a = mt_rand(0, 1) ? mt_rand(-10, 10): null;
 
                     if ($a < 0) {
                       echo $a + 3;
@@ -740,12 +818,37 @@ class TypeReconciliationTest extends TestCase
             ],
             'dontEraseNullAfterGreaterThanCheck' => [
                 '<?php
-                    $a = mt_rand(0, 1) ? mt_rand(-10, 10) : null;
+                    $a = mt_rand(0, 1) ? mt_rand(-10, 10): null;
 
                     if (0 > $a) {
                       echo $a + 3;
                     }',
                 'error_message' => 'PossiblyNullOperand',
+            ],
+            'nonRedundantConditionGivenDocblockType' => [
+                '<?php
+                    /** @param array[] $arr */
+                    function foo(array $arr) : void {
+                       if ($arr === "hello") {}
+                    }',
+                'error_message' => 'TypeDoesNotContainType',
+            ],
+            'lessSpecificArrayFields' => [
+                '<?php
+                    /**
+                     * @param array{field:string, otherField:string} $array
+                     */
+                    function print_field($array) : void {
+                        echo $array["field"] . " " . $array["otherField"];
+                    }
+
+                    /**
+                     * @param array{field:string} $array
+                     */
+                    function has_mix_of_fields($array) : void {
+                        print_field($array);
+                    }',
+                'error_message' => 'PossiblyInvalidArgument',
             ],
         ];
     }

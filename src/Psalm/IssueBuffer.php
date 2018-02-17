@@ -35,11 +35,6 @@ class IssueBuffer
     protected static $recorded_issues = [];
 
     /**
-     * @var int
-     */
-    protected static $start_time = 0;
-
-    /**
      * @param   CodeIssue $e
      * @param   array     $suppressed_issues
      *
@@ -79,10 +74,15 @@ class IssueBuffer
     public static function add(CodeIssue $e)
     {
         $config = Config::getInstance();
-        $project_checker = ProjectChecker::getInstance();
 
         $fqcn_parts = explode('\\', get_class($e));
         $issue_type = array_pop($fqcn_parts);
+
+        $project_checker = ProjectChecker::getInstance();
+
+        if ($project_checker->alter_code) {
+            return false;
+        }
 
         $error_message = $issue_type . ' - ' . $e->getShortLocation() . ' - ' . $e->getMessage();
 
@@ -106,10 +106,6 @@ class IssueBuffer
 
         if (!self::alreadyEmitted($error_message)) {
             self::$issues_data[] = $e->toArray(Config::REPORT_ERROR);
-        }
-
-        if ($config->stop_on_first_error) {
-            exit(1);
         }
 
         return true;
@@ -140,7 +136,9 @@ class IssueBuffer
     {
         $issue_string = '';
 
-        if ($issue_data['severity'] === Config::REPORT_ERROR) {
+        $is_error = $issue_data['severity'] === Config::REPORT_ERROR;
+
+        if ($is_error) {
             $issue_string .= ($use_color ? "\e[0;31mERROR\e[0m" : 'ERROR');
         } else {
             $issue_string .= 'INFO';
@@ -158,7 +156,7 @@ class IssueBuffer
             $selection_length = $issue_data['to'] - $issue_data['from'];
 
             $issue_string .= substr($snippet, 0, $selection_start) .
-                "\e[97;41m" . substr($snippet, $selection_start, $selection_length) .
+                ($is_error ? "\e[97;41m" : "\e[30;47m") . substr($snippet, $selection_start, $selection_length) .
                 "\e[0m" . substr($snippet, $selection_length + $selection_start) . PHP_EOL;
         }
 
@@ -187,19 +185,23 @@ class IssueBuffer
     }
 
     /**
+     * @param  ProjectChecker       $project_checker
      * @param  bool                 $is_full
-     * @param  int|null             $start_time
-     * @param  array<string, bool>  $visited_files
+     * @param  float                $start_time
+     * @param  bool                 $add_stats
      *
      * @return void
      */
-    public static function finish(ProjectChecker $project_checker, $is_full, $start_time, array $visited_files)
-    {
-        Provider\FileReferenceProvider::updateReferenceCache($project_checker, $visited_files);
+    public static function finish(
+        ProjectChecker $project_checker,
+        $is_full,
+        $start_time,
+        $add_stats = false
+    ) {
+        $scanned_files = $project_checker->codebase->scanner->getScannedFiles();
+        Provider\FileReferenceProvider::updateReferenceCache($project_checker, $scanned_files);
 
         $has_error = false;
-
-        $project_checker = ProjectChecker::getInstance();
 
         if (self::$issues_data) {
             usort(
@@ -238,8 +240,21 @@ class IssueBuffer
         }
 
         if ($start_time) {
-            echo 'Checks took ' . ((float)microtime(true) - self::$start_time);
-            echo ' and used ' . number_format(memory_get_peak_usage() / (1024 * 1024), 3) . 'MB' . PHP_EOL;
+            echo 'Checks took ' . number_format((float)microtime(true) - $start_time, 2) . ' seconds';
+            echo ' and used ' . number_format(memory_get_peak_usage() / (1024 * 1024), 3) . 'MB of memory' . PHP_EOL;
+
+            $nonmixed_percentage = $project_checker->codebase->analyzer->getNonMixedPercentage();
+
+            if ($is_full) {
+                echo 'Psalm was able to infer types for ' . number_format($nonmixed_percentage, 3) . '%'
+                    . ' of the codebase' . PHP_EOL;
+            }
+
+            if ($add_stats) {
+                echo '-----------------' . PHP_EOL;
+                echo $project_checker->codebase->analyzer->getNonMixedStats();
+                echo PHP_EOL;
+            }
         }
 
         if ($has_error) {
@@ -298,16 +313,6 @@ class IssueBuffer
         self::$emitted[$sham] = true;
 
         return false;
-    }
-
-    /**
-     * @param int $time
-     *
-     * @return void
-     */
-    public static function setStartTime($time)
-    {
-        self::$start_time = $time;
     }
 
     /**

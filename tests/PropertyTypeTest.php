@@ -1,8 +1,8 @@
 <?php
 namespace Psalm\Tests;
 
-use Psalm\Checker\FileChecker;
 use Psalm\Config;
+use Psalm\Context;
 
 class PropertyTypeTest extends TestCase
 {
@@ -11,7 +11,7 @@ class PropertyTypeTest extends TestCase
 
     /**
      * @expectedException        \Psalm\Exception\CodeException
-     * @expectedExceptionMessage InvalidReturnStatement
+     * @expectedExceptionMessage NullableReturnStatement
      *
      * @return                   void
      */
@@ -40,8 +40,43 @@ class PropertyTypeTest extends TestCase
                 }'
         );
 
-        $file_checker = new FileChecker('somefile.php', $this->project_checker);
-        $file_checker->visitAndAnalyzeMethods();
+        $this->analyzeFile('somefile.php', new Context());
+    }
+
+    /**
+     * @return void
+     */
+    public function testRemovePropertyAfterReassignment()
+    {
+        Config::getInstance()->remember_property_assignments_after_call = false;
+
+        $this->addFile(
+            'somefile.php',
+            '<?php
+                class A {
+                    /** @var A|null */
+                    public $parent;
+
+                    public function __construct() {
+                        $this->parent = rand(0, 1) ? new A : null;
+                    }
+                }
+
+                $a = new A();
+
+                if ($a->parent === null) {
+                    throw new \Exception("bad");
+                }
+
+                $a = $a->parent;'
+        );
+
+        $context = new Context();
+
+        $this->analyzeFile('somefile.php', $context);
+
+        $this->assertSame('A', (string) $context->vars_in_scope['$a']);
+        $this->assertFalse(isset($context->vars_in_scope['$a->parent']));
     }
 
     /**
@@ -113,7 +148,7 @@ class PropertyTypeTest extends TestCase
                         public $foo = "";
                     }
 
-                    $a = rand(0, 10) ? new A() : (rand(0, 10) ? new B() : null);
+                    $a = rand(0, 10) ? new A(): (rand(0, 10) ? new B(): null);
                     $b = null;
 
                     if ($a instanceof A || $a instanceof B) {
@@ -134,7 +169,7 @@ class PropertyTypeTest extends TestCase
                         public $foo = "";
                     }
 
-                    $a = rand(0, 10) ? new A() : new B();
+                    $a = rand(0, 10) ? new A(): new B();
                     $b = null;
 
                     if (rand(0, 10) === 4) {
@@ -159,7 +194,7 @@ class PropertyTypeTest extends TestCase
                         public $bb;
                     }
 
-                    $b = rand(0, 10) ? new A() : new B();
+                    $b = rand(0, 10) ? new A(): new B();
 
                     if ($b instanceof B && isset($b->bb) && $b->bb->aa === "aa") {
                         echo $b->bb->aa;
@@ -186,7 +221,7 @@ class PropertyTypeTest extends TestCase
                         /** @var A|null */
                         public static $fooFoo;
 
-                        public static function getFoo() : A {
+                        public static function getFoo(): A {
                             if (!self::$fooFoo) {
                                 self::$fooFoo = new A();
                             }
@@ -262,7 +297,7 @@ class PropertyTypeTest extends TestCase
                             $this->foo();
                         }
 
-                        private function foo() : void {
+                        private function foo(): void {
                             $this->a = 5;
                         }
                     }',
@@ -291,24 +326,24 @@ class PropertyTypeTest extends TestCase
                             $this->foo();
                         }
 
-                        private function foo() : void {
+                        private function foo(): void {
                             $this->bar();
                         }
 
-                        private function bar() : void {
+                        private function bar(): void {
                             $this->a = 5;
                         }
                     }',
             ],
             'propertyArrayIssetAssertion' => [
                 '<?php
-                    function bar(string $s) : void { }
+                    function bar(string $s): void { }
 
                     class A {
                         /** @var array<string, string> */
                         public $a = [];
 
-                        private function foo() : void {
+                        private function foo(): void {
                             if (isset($this->a["hello"])) {
                                 bar($this->a["hello"]);
                             }
@@ -317,13 +352,13 @@ class PropertyTypeTest extends TestCase
             ],
             'propertyArrayIssetAssertionWithVariableOffset' => [
                 '<?php
-                    function bar(string $s) : void { }
+                    function bar(string $s): void { }
 
                     class A {
                         /** @var array<string, string> */
                         public $a = [];
 
-                        private function foo() : void {
+                        private function foo(): void {
                             $b = "hello";
 
                             if (!isset($this->a[$b])) {
@@ -336,14 +371,14 @@ class PropertyTypeTest extends TestCase
             ],
             'staticPropertyArrayIssetAssertionWithVariableOffset' => [
                 '<?php
-                    function bar(string $s) : void { }
+                    function bar(string $s): void { }
 
                     class A {
                         /** @var array<string, string> */
                         public static $a = [];
                     }
 
-                    function foo() : void {
+                    function foo(): void {
                         $b = "hello";
 
                         if (!isset(A::$a[$b])) {
@@ -355,14 +390,14 @@ class PropertyTypeTest extends TestCase
             ],
             'staticPropertyArrayIssetAssertionWithVariableOffsetAndElse' => [
                 '<?php
-                    function bar(string $s) : void { }
+                    function bar(string $s): void { }
 
                     class A {
                         /** @var array<string, string> */
                         public static $a = [];
                     }
 
-                    function foo() : void {
+                    function foo(): void {
                         $b = "hello";
 
                         if (!isset(A::$a[$b])) {
@@ -488,7 +523,7 @@ class PropertyTypeTest extends TestCase
             'setInAbstractMethod' => [
                 '<?php
                     interface I {
-                        public function foo() : void;
+                        public function foo(): void;
                     }
 
                     abstract class A implements I {
@@ -501,7 +536,7 @@ class PropertyTypeTest extends TestCase
                     }
 
                     class B extends A {
-                        public function foo() : void
+                        public function foo(): void
                         {
                             $this->bar = "hello";
                         }
@@ -599,6 +634,126 @@ class PropertyTypeTest extends TestCase
                     '$next' => 'Node|null',
                 ],
             ],
+            'perPropertySuppress' => [
+                '<?php
+                    class A {
+                        /**
+                         * @var int
+                         * @psalm-suppress PropertyNotSetInConstructor
+                         */
+                        public $a;
+
+                        public function __construct() { }
+                    }',
+            ],
+            'analyzePropertyMappedClass' => [
+                '<?php
+                    namespace PhpParser\Node\Stmt;
+
+                    use PhpParser\Node;
+
+                    class Finally_ extends Node\Stmt
+                    {
+                        /** @var Node[] Statements */
+                        public $stmts;
+
+                        /**
+                         * Constructs a finally node.
+                         *
+                         * @param Node[] $stmts      Statements
+                         * @param array  $attributes Additional attributes
+                         */
+                        public function __construct(array $stmts = array(), array $attributes = array()) {
+                            parent::__construct($attributes);
+                            $this->stmts = $stmts;
+                        }
+
+                        public function getSubNodeNames() {
+                            return array("stmts");
+                        }
+                    }',
+                'assertions' => [],
+                'error_levels' => [
+                    'MixedTypeCoercion',
+                    'MissingReturnType',
+                ],
+            ],
+            'privatePropertyAccessible' => [
+                '<?php
+                    class A {
+                      /** @var string */
+                      private $foo;
+
+                      public function __construct(string $foo) {
+                        $this->foo = $foo;
+                      }
+
+                      private function bar() : void {}
+                    }
+
+                    class B extends A {
+                      /** @var string */
+                      private $foo;
+
+                      public function __construct(string $foo) {
+                        $this->foo = $foo;
+                        parent::__construct($foo);
+                      }
+                    }',
+            ],
+            'privatePropertyAccessibleDifferentType' => [
+                '<?php
+                    class A {
+                      /** @var int */
+                      private $foo;
+
+                      public function __construct(string $foo) {
+                        $this->foo = 5;
+                      }
+
+                      private function bar() : void {}
+                    }
+
+                    class B extends A {
+                      /** @var string */
+                      private $foo;
+
+                      public function __construct(string $foo) {
+                        $this->foo = $foo;
+                        parent::__construct($foo);
+                      }
+                    }',
+            ],
+            'privatePropertyAccessibleInTwoSubclasses' => [
+                '<?php
+                    class A {
+                        public function __construct() {}
+                    }
+                    class B extends A {
+                        /**
+                         * @var int
+                         */
+                        private $prop;
+
+                        public function __construct()
+                        {
+                            parent::__construct();
+                            $this->prop = 1;
+                        }
+                    }
+                    class C extends A {
+                        /**
+                         * @var int
+                         */
+                        private $prop;
+
+                        public function __construct()
+                        {
+                            parent::__construct();
+                            $this->prop = 2;
+                        }
+                    }',
+            ],
         ];
     }
 
@@ -627,7 +782,7 @@ class PropertyTypeTest extends TestCase
             'undefinedThisPropertyAssignment' => [
                 '<?php
                     class A {
-                        public function fooFoo() : void {
+                        public function fooFoo(): void {
                             $this->foo = "cool";
                         }
                     }',
@@ -636,7 +791,7 @@ class PropertyTypeTest extends TestCase
             'undefinedThisPropertyFetch' => [
                 '<?php
                     class A {
-                        public function fooFoo() : void {
+                        public function fooFoo(): void {
                             echo $this->foo;
                         }
                     }',
@@ -647,7 +802,7 @@ class PropertyTypeTest extends TestCase
                     class A {
                         public $foo;
 
-                        public function assignToFoo() : void {
+                        public function assignToFoo(): void {
                             $this->foo = 5;
                         }
                     }',
@@ -659,7 +814,7 @@ class PropertyTypeTest extends TestCase
                     class A {
                         public $foo;
 
-                        public function __construct() : void {
+                        public function __construct(): void {
                             $this->foo = 5;
                         }
                     }',
@@ -671,11 +826,11 @@ class PropertyTypeTest extends TestCase
                     class A {
                         public $foo;
 
-                        public function __construct() : void {
+                        public function __construct(): void {
                             $this->foo = 5;
                         }
 
-                        public function makeNull() : void {
+                        public function makeNull(): void {
                             $this->foo = null;
                         }
                     }',
@@ -687,7 +842,7 @@ class PropertyTypeTest extends TestCase
                     class A {
                         public $foo = null;
 
-                        public function __construct() : void {
+                        public function __construct(): void {
                             $this->foo = 5;
                         }
                     }',
@@ -700,12 +855,12 @@ class PropertyTypeTest extends TestCase
                         /** @var string */
                         public $foo;
 
-                        public function barBar() : void
+                        public function barBar(): void
                         {
                             $this->foo = 5;
                         }
                     }',
-                'error_message' => 'InvalidPropertyAssignment',
+                'error_message' => 'InvalidPropertyAssignmentValue',
             ],
             'badAssignmentAsWell' => [
                 '<?php
@@ -766,7 +921,7 @@ class PropertyTypeTest extends TestCase
                         public $foo = "";
                     }
 
-                    $a = rand(0, 10) ? new Foo() : null;
+                    $a = rand(0, 10) ? new Foo(): null;
 
                     $a->foo = "hello";',
                 'error_message' => 'PossiblyNullPropertyAssignment',
@@ -785,7 +940,7 @@ class PropertyTypeTest extends TestCase
                         public $foo = "";
                     }
 
-                    $a = rand(0, 10) ? new Foo() : null;
+                    $a = rand(0, 10) ? new Foo(): null;
 
                     echo $a->foo;',
                 'error_message' => 'PossiblyNullPropertyFetch',
@@ -810,27 +965,23 @@ class PropertyTypeTest extends TestCase
 
                     $c = new C;
                     $c->bb = [new A, new B];',
-                'error_message' => 'InvalidPropertyAssignment',
+                'error_message' => 'InvalidPropertyAssignmentValue',
             ],
             'possiblyBadArrayProperty' => [
                 '<?php
-                    class A {}
+                    class A {
+                        /** @var int[] */
+                        public $bb = [];
+                    }
 
-                    class B {}
-
-                    class C {
-                        /** @var array<int, B> */
+                    class B {
+                        /** @var string[] */
                         public $bb;
                     }
 
-                    class D {
-                        /** @var array<int, A|B> */
-                        public $bb;
-                    }
-
-                    $c = rand(0, 5) > 3 ? new C : new D;
-                    $c->bb = [new A, new B];',
-                'error_message' => 'PossiblyInvalidPropertyAssignment',
+                    $c = rand(0, 1) ? new A : new B;
+                    $c->bb = ["hello", "world"];',
+                'error_message' => 'PossiblyInvalidPropertyAssignmentValue',
             ],
             'notSetInEmptyConstructor' => [
                 '<?php
@@ -914,7 +1065,7 @@ class PropertyTypeTest extends TestCase
                             $this->foo();
                         }
 
-                        protected function foo() : void {
+                        protected function foo(): void {
                             $this->a = 5;
                         }
                     }',
@@ -946,7 +1097,7 @@ class PropertyTypeTest extends TestCase
                             }
                         }
 
-                        private function foo() : void {
+                        private function foo(): void {
                             $this->a = 5;
                         }
                     }',
@@ -966,11 +1117,11 @@ class PropertyTypeTest extends TestCase
                             }
                         }
 
-                        private function foo() : void {
+                        private function foo(): void {
                             $this->a = 5;
                         }
 
-                        private function bar() : void {
+                        private function bar(): void {
                             $this->a = 5;
                         }
                     }',
@@ -996,6 +1147,65 @@ class PropertyTypeTest extends TestCase
                       }
                     }',
                 'error_message' => 'PropertyNotSetInConstructor',
+            ],
+            'badAssignmentToUndefinedVars' => [
+                '<?php
+                    $x->$y = 4;',
+                'error_message' => 'UndefinedGlobalVariable',
+            ],
+            'echoUndefinedPropertyFetch' => [
+                '<?php
+                    echo $x->$y;',
+                'error_message' => 'UndefinedGlobalVariable',
+            ],
+            'toStringPropertyAssignment' => [
+                '<?php
+                    class A {
+                      /** @var ?string */
+                      public $foo;
+                    }
+
+                    class B {
+                      public function __toString() {
+                        return "bar";
+                      }
+                    }
+
+                    $a = new A();
+                    $a->foo = new B;',
+                'error_message' => 'ImplicitToStringCast',
+            ],
+            'noInfiniteLoop' => [
+                '<?php
+                    class A {
+                        /** @var string */
+                        public $foo;
+
+                        public function __construct() {
+                            $this->doThing();
+                        }
+
+                        private function doThing(): void {
+                            if (rand(0, 1)) {
+                                $this->doOtherThing();
+                            }
+                        }
+
+                        private function doOtherThing(): void {
+                            if (rand(0, 1)) {
+                                $this->doThing();
+                            }
+                        }
+                    }',
+                'error_message' => 'PropertyNotSetInConstructor',
+            ],
+            'invalidPropertyDefault' => [
+                '<?php
+                    class A {
+                        /** @var int */
+                        public $a = "hello";
+                    }',
+                'error_message' => 'InvalidPropertyAssignmentValue',
             ],
         ];
     }

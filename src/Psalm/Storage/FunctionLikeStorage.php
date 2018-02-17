@@ -23,11 +23,6 @@ class FunctionLikeStorage
     public $param_types = [];
 
     /**
-     * @var string
-     */
-    public $namespace;
-
-    /**
      * @var Type\Union|null
      */
     public $return_type;
@@ -66,6 +61,11 @@ class FunctionLikeStorage
      * @var bool
      */
     public $variadic;
+
+    /**
+     * @var bool
+     */
+    public $returns_by_ref = false;
 
     /**
      * @var bool

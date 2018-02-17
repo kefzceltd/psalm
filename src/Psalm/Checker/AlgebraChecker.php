@@ -88,38 +88,49 @@ class AlgebraChecker
 
             foreach ($assertions as $var => $type) {
                 if ($type === 'isset' || $type === '!empty') {
-                    $key_parts = preg_split(
-                        '/(\]|\[)/',
-                        $var,
-                        -1,
-                        PREG_SPLIT_NO_EMPTY
-                    );
+                    $key_parts = preg_split('/(->|\[|\])/', $var, -1, PREG_SPLIT_DELIM_CAPTURE | PREG_SPLIT_NO_EMPTY);
 
-                    $base = array_shift($key_parts);
+                    $base_key = array_shift($key_parts);
 
                     if ($type === 'isset') {
-                        $clauses[] = new Clause([$base => ['^isset']]);
+                        $clauses[] = new Clause([$base_key => ['^isset']]);
                     } else {
-                        $clauses[] = new Clause([$base => ['^!empty']]);
+                        $clauses[] = new Clause([$base_key => ['^!empty']]);
                     }
 
-                    if (count($key_parts)) {
-                        $clauses[] = new Clause([$base => ['!false']]);
-                        $clauses[] = new Clause([$base => ['!int']]);
+                    if (!empty($key_parts)) {
+                        $clauses[] = new Clause([$base_key => ['!false']]);
+                        $clauses[] = new Clause([$base_key => ['!int']]);
                     }
 
-                    foreach ($key_parts as $i => $key_part_dim) {
-                        $base .= '[' . $key_part_dim . ']';
+                    while ($key_parts) {
+                        $divider = array_shift($key_parts);
 
-                        if ($type === 'isset') {
-                            $clauses[] = new Clause([$base => ['^isset']]);
+                        if ($divider === '[') {
+                            $array_key = array_shift($key_parts);
+                            array_shift($key_parts);
+
+                            $new_base_key = $base_key . '[' . $array_key . ']';
+
+                            $base_key = $new_base_key;
+                        } elseif ($divider === '->') {
+                            $property_name = array_shift($key_parts);
+                            $new_base_key = $base_key . '->' . $property_name;
+
+                            $base_key = $new_base_key;
                         } else {
-                            $clauses[] = new Clause([$base => ['^!empty']]);
+                            throw new \InvalidArgumentException('Unexpected divider ' . $divider);
                         }
 
-                        if ($i < count($key_parts) - 1) {
-                            $clauses[] = new Clause([$base => ['!false']]);
-                            $clauses[] = new Clause([$base => ['!int']]);
+                        if ($type === 'isset') {
+                            $clauses[] = new Clause([$base_key => ['^isset']]);
+                        } else {
+                            $clauses[] = new Clause([$base_key => ['^!empty']]);
+                        }
+
+                        if (count($key_parts)) {
+                            $clauses[] = new Clause([$base_key => ['!false']]);
+                            $clauses[] = new Clause([$base_key => ['!int']]);
                         }
                     }
                 } else {
@@ -218,19 +229,21 @@ class AlgebraChecker
 
         // remove impossible types
         foreach ($negated_formula2 as $clause_a) {
-            foreach ($clause_a->possibilities as $key => $values) {
-                if (count($values) > 1
-                    && count(array_unique($values)) < count($values)
-                    && !isset($new_assigned_var_ids[$key])
-                ) {
-                    if (IssueBuffer::accepts(
-                        new RedundantCondition(
-                            'Found a redundant condition when evaluating ' . $key,
-                            new CodeLocation($statements_checker, $stmt)
-                        ),
-                        $statements_checker->getSuppressedIssues()
-                    )) {
-                        // fall through
+            if (count($negated_formula2) === 1) {
+                foreach ($clause_a->possibilities as $key => $values) {
+                    if (count($values) > 1
+                        && count(array_unique($values)) < count($values)
+                        && !isset($new_assigned_var_ids[$key])
+                    ) {
+                        if (IssueBuffer::accepts(
+                            new RedundantCondition(
+                                'Found a redundant condition when evaluating ' . $key,
+                                new CodeLocation($statements_checker, $stmt)
+                            ),
+                            $statements_checker->getSuppressedIssues()
+                        )) {
+                            // fall through
+                        }
                     }
                 }
             }
@@ -435,7 +448,7 @@ class AlgebraChecker
 
         $new_clauses = [];
 
-        if (count($clauses)) {
+        if (!empty($clauses)) {
             $grouped_clauses = self::groupImpossibilities($clauses);
 
             foreach ($grouped_clauses as $grouped_clause) {
@@ -453,7 +466,11 @@ class AlgebraChecker
                             $new_clause_possibilities[$var] = [$impossible_type];
                         }
 
-                        $new_clauses[] = new Clause($new_clause_possibilities);
+                        $new_clause = new Clause($new_clause_possibilities);
+
+                        //$new_clause->reconcilable = $clause->reconcilable;
+
+                        $new_clauses[] = $new_clause;
                     }
                 }
             }
@@ -464,7 +481,9 @@ class AlgebraChecker
 
             foreach ($clause->impossibilities as $var => $impossible_types) {
                 foreach ($impossible_types as $impossible_type) {
-                    $new_clauses[] = new Clause([$var => [$impossible_type]]);
+                    $new_clause = new Clause([$var => [$impossible_type]]);
+                    //$new_clause->reconcilable = $clause->reconcilable;
+                    $new_clauses[] = $new_clause;
                 }
             }
         }

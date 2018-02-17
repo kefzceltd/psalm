@@ -2,7 +2,7 @@
 namespace Psalm\Type;
 
 use Psalm\Checker\ClassLikeChecker;
-use Psalm\Checker\ProjectChecker;
+use Psalm\Codebase;
 use Psalm\CodeLocation;
 use Psalm\Issue\ReservedWord;
 use Psalm\IssueBuffer;
@@ -49,15 +49,13 @@ abstract class Atomic
 
     /**
      * @param  string $value
+     * @param  bool   $php_compatible
      *
      * @return Atomic
      */
-    public static function create($value)
+    public static function create($value, $php_compatible = false)
     {
         switch ($value) {
-            case 'numeric':
-                return new TNumeric();
-
             case 'int':
                 return new TInt();
 
@@ -73,35 +71,38 @@ abstract class Atomic
             case 'bool':
                 return new TBool();
 
-            case 'true':
-                return new TTrue();
+            case 'object':
+                return new TObject();
 
-            case 'false':
-                return new TFalse();
-
-            case 'empty':
-                return new TEmpty();
-
-            case 'scalar':
-                return new TScalar();
-
-            case 'null':
-                return new TNull();
+            case 'callable':
+                return new TCallable();
 
             case 'array':
                 return new TArray([new Union([new TMixed]), new Union([new TMixed])]);
 
-            case 'object':
-                return new TObject();
+            case 'resource':
+                return $php_compatible ? new TNamedObject($value) : new TResource();
+
+            case 'numeric':
+                return $php_compatible ? new TNamedObject($value) : new TNumeric();
+
+            case 'true':
+                return $php_compatible ? new TNamedObject($value) : new TTrue();
+
+            case 'false':
+                return $php_compatible ? new TNamedObject($value) : new TFalse();
+
+            case 'empty':
+                return $php_compatible ? new TNamedObject($value) : new TEmpty();
+
+            case 'scalar':
+                return $php_compatible ? new TNamedObject($value) : new TScalar();
+
+            case 'null':
+                return $php_compatible ? new TNamedObject($value) : new TNull();
 
             case 'mixed':
-                return new TMixed();
-
-            case 'resource':
-                return new TResource();
-
-            case 'callable':
-                return new TCallable();
+                return $php_compatible ? new TNamedObject($value) : new TMixed();
 
             case 'numeric-string':
                 return new TNumericString();
@@ -121,7 +122,10 @@ abstract class Atomic
      */
     public function isNumericType()
     {
-        return $this instanceof TInt || $this instanceof TFloat || $this instanceof TNumericString;
+        return $this instanceof TInt
+            || $this instanceof TFloat
+            || $this instanceof TNumericString
+            || $this instanceof TNumeric;
     }
 
     /**
@@ -155,7 +159,7 @@ abstract class Atomic
         if ($this instanceof TNamedObject &&
             !isset($phantom_classes[strtolower($this->value)]) &&
             ClassLikeChecker::checkFullyQualifiedClassLikeName(
-                $source->getFileChecker()->project_checker,
+                $source,
                 $this->value,
                 $code_location,
                 $suppressed_issues,
@@ -187,19 +191,18 @@ abstract class Atomic
     }
 
     /**
-     * @param  ProjectChecker $project_checker
      * @param  string $referencing_file_path
      * @param  array<string, mixed> $phantom_classes
      *
      * @return void
      */
     public function queueClassLikesForScanning(
-        ProjectChecker $project_checker,
+        Codebase $codebase,
         $referencing_file_path = null,
         array $phantom_classes = []
     ) {
         if ($this instanceof TNamedObject && !isset($phantom_classes[strtolower($this->value)])) {
-            $project_checker->queueClassLikeForScanning($this->value, $referencing_file_path);
+            $codebase->scanner->queueClassLikeForScanning($this->value, $referencing_file_path);
 
             return;
         }
@@ -207,7 +210,7 @@ abstract class Atomic
         if ($this instanceof Type\Atomic\TArray || $this instanceof Type\Atomic\TGenericObject) {
             foreach ($this->type_params as $type_param) {
                 $type_param->queueClassLikesForScanning(
-                    $project_checker,
+                    $codebase,
                     $referencing_file_path,
                     $phantom_classes
                 );
@@ -240,16 +243,39 @@ abstract class Atomic
     }
 
     /**
+     * @param  string|null   $namespace
      * @param  array<string> $aliased_classes
      * @param  string|null   $this_class
      * @param  bool          $use_phpdoc_format
      *
      * @return string
      */
-    public function toNamespacedString(array $aliased_classes, $this_class, $use_phpdoc_format)
+    public function toNamespacedString($namespace, array $aliased_classes, $this_class, $use_phpdoc_format)
     {
         return $this->getKey();
     }
+
+    /**
+     * @param  string|null   $namespace
+     * @param  array<string> $aliased_classes
+     * @param  string|null   $this_class
+     * @param  int           $php_major_version
+     * @param  int           $php_minor_version
+     *
+     * @return null|string
+     */
+    abstract public function toPhpString(
+        $namespace,
+        array $aliased_classes,
+        $this_class,
+        $php_major_version,
+        $php_minor_version
+    );
+
+    /**
+     * @return bool
+     */
+    abstract public function canBeFullyExpressedInPhp();
 
     /**
      * @return void

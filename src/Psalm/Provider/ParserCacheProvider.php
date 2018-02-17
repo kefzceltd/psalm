@@ -26,7 +26,6 @@ class ParserCacheProvider
     public $use_igbinary = false;
 
     /**
-     * @param  string   $file_path
      * @param  string   $file_content_hash
      * @param  string   $file_cache_key
      * @param mixed $file_modified_time
@@ -35,7 +34,7 @@ class ParserCacheProvider
      *
      * @psalm-suppress UndefinedFunction
      */
-    public function loadStatementsFromCache($file_path, $file_modified_time, $file_content_hash, $file_cache_key)
+    public function loadStatementsFromCache($file_modified_time, $file_content_hash, $file_cache_key)
     {
         $root_cache_directory = Config::getInstance()->getCacheDirectory();
 
@@ -44,8 +43,6 @@ class ParserCacheProvider
         }
 
         $parser_cache_directory = $root_cache_directory . DIRECTORY_SEPARATOR . self::PARSER_CACHE_DIRECTORY;
-
-        $cache_location = null;
 
         $file_content_hashes = $this->getFileContentHashes();
 
@@ -141,7 +138,7 @@ class ParserCacheProvider
     }
 
     /**
-     * @param int $start_time
+     * @param float $start_time
      *
      * @return void
      */
@@ -155,7 +152,7 @@ class ParserCacheProvider
 
         $run_cache_location = $cache_directory . DIRECTORY_SEPARATOR . self::GOOD_RUN_NAME;
 
-        touch($run_cache_location, $start_time);
+        touch($run_cache_location, (int)$start_time);
 
         FileReferenceProvider::removeDeletedFilesFromReferences();
 

@@ -3,7 +3,6 @@ namespace Psalm;
 
 use Psalm\Exception\TypeParseTreeException;
 use Psalm\Type\Atomic;
-use Psalm\Type\Atomic\Generic;
 use Psalm\Type\Atomic\ObjectLike;
 use Psalm\Type\Atomic\TArray;
 use Psalm\Type\Atomic\TBool;
@@ -15,7 +14,9 @@ use Psalm\Type\Atomic\TInt;
 use Psalm\Type\Atomic\TMixed;
 use Psalm\Type\Atomic\TNamedObject;
 use Psalm\Type\Atomic\TNull;
+use Psalm\Type\Atomic\TNumeric;
 use Psalm\Type\Atomic\TObject;
+use Psalm\Type\Atomic\TResource;
 use Psalm\Type\Atomic\TString;
 use Psalm\Type\Atomic\TTrue;
 use Psalm\Type\Atomic\TVoid;
@@ -26,13 +27,19 @@ use Psalm\Type\Union;
 abstract class Type
 {
     /**
+     * @var array<string, string[]>
+     */
+    private static $memoized_tokens = [];
+
+    /**
      * Parses a string type representation
      *
      * @param  string $type_string
+     * @param  bool   $php_compatible
      *
      * @return Union
      */
-    public static function parseString($type_string)
+    public static function parseString($type_string, $php_compatible = false)
     {
         // remove all unacceptable characters
         $type_string = preg_replace('/[^A-Za-z0-9_\\\\|\? \<\>\{\}:,\]\[\(\)\$]/', '', trim($type_string));
@@ -50,14 +57,14 @@ abstract class Type
         $type_tokens = self::tokenize($type_string);
 
         if (count($type_tokens) === 1) {
-            $type_tokens[0] = self::fixScalarTerms($type_tokens[0]);
+            $type_tokens[0] = self::fixScalarTerms($type_tokens[0], $php_compatible);
 
-            return new Union([Atomic::create($type_tokens[0])]);
+            return new Union([Atomic::create($type_tokens[0], $php_compatible)]);
         }
 
         try {
             $parse_tree = ParseTree::createFromTokens($type_tokens);
-            $parsed_type = self::getTypeFromTree($parse_tree);
+            $parsed_type = self::getTypeFromTree($parse_tree, $php_compatible);
         } catch (TypeParseTreeException $e) {
             throw $e;
         } catch (\Exception $e) {
@@ -73,50 +80,55 @@ abstract class Type
 
     /**
      * @param  string $type_string
+     * @param  bool   $php_compatible
      *
      * @return string
      */
-    public static function fixScalarTerms($type_string)
+    private static function fixScalarTerms($type_string, $php_compatible = false)
     {
-        if (in_array(
-            strtolower($type_string),
-            [
-                'numeric',
-                'int',
-                'void',
-                'float',
-                'string',
-                'bool',
-                'true',
-                'false',
-                'null',
-                'array',
-                'object',
-                'mixed',
-                'resource',
-                'callable',
-                'iterable',
-            ],
-            true
-        )) {
-            return strtolower($type_string);
-        } elseif ($type_string === 'boolean') {
-            return 'bool';
-        } elseif ($type_string === 'integer') {
-            return 'int';
-        } elseif ($type_string === 'double' || $type_string === 'real') {
-            return 'float';
+        $type_string_lc = strtolower($type_string);
+
+        switch ($type_string_lc) {
+            case 'int':
+            case 'void':
+            case 'float':
+            case 'string':
+            case 'bool':
+            case 'callable':
+            case 'iterable':
+            case 'array':
+            case 'object':
+            case 'numeric':
+            case 'true':
+            case 'false':
+            case 'null':
+            case 'mixed':
+            case 'resource':
+                return $type_string_lc;
+        }
+
+        switch ($type_string) {
+            case 'boolean':
+                return $php_compatible ? $type_string : 'bool';
+
+            case 'integer':
+                return $php_compatible ? $type_string : 'int';
+
+            case 'double':
+            case 'real':
+                return $php_compatible ? $type_string : 'float';
         }
 
         return $type_string;
     }
 
     /**
-     * @param   ParseTree $parse_tree
+     * @param  ParseTree $parse_tree
+     * @param  bool      $php_compatible
      *
      * @return  Atomic|TArray|TGenericObject|ObjectLike|Union
      */
-    private static function getTypeFromTree(ParseTree $parse_tree)
+    private static function getTypeFromTree(ParseTree $parse_tree, $php_compatible)
     {
         if (!$parse_tree->value) {
             throw new \InvalidArgumentException('Parse tree must have a value');
@@ -130,7 +142,7 @@ abstract class Type
                  * @return Union
                  */
                 function (ParseTree $child_tree) {
-                    $tree_type = self::getTypeFromTree($child_tree);
+                    $tree_type = self::getTypeFromTree($child_tree, false);
 
                     return $tree_type instanceof Union ? $tree_type : new Union([$tree_type]);
                 },
@@ -141,7 +153,7 @@ abstract class Type
                 throw new \InvalidArgumentException('Generic type must have a value');
             }
 
-            $generic_type_value = self::fixScalarTerms($generic_type->value);
+            $generic_type_value = self::fixScalarTerms($generic_type->value, false);
 
             if (($generic_type_value === 'array' || $generic_type_value === 'Generator') &&
                 count($generic_params) === 1
@@ -166,7 +178,7 @@ abstract class Type
                  * @return Atomic
                  */
                 function (ParseTree $child_tree) {
-                    $atomic_type = self::getTypeFromTree($child_tree);
+                    $atomic_type = self::getTypeFromTree($child_tree, false);
 
                     if (!$atomic_type instanceof Atomic) {
                         throw new \UnexpectedValueException(
@@ -188,11 +200,11 @@ abstract class Type
             $type = array_shift($parse_tree->children);
 
             foreach ($parse_tree->children as $i => $property_branch) {
-                if (!count($property_branch->children)) {
-                    $property_type = self::getTypeFromTree($property_branch);
+                if ($property_branch->value !== ParseTree::OBJECT_PROPERTY) {
+                    $property_type = self::getTypeFromTree($property_branch, false);
                     $property_key = (string)$i;
                 } elseif (count($property_branch->children) === 2) {
-                    $property_type = self::getTypeFromTree($property_branch->children[1]);
+                    $property_type = self::getTypeFromTree($property_branch->children[1], false);
                     $property_key = (string)($property_branch->children[0]->value);
                 } else {
                     throw new \InvalidArgumentException('Unexpected number of property parts');
@@ -208,28 +220,43 @@ abstract class Type
                 throw new \InvalidArgumentException('Object-like type must be array');
             }
 
+            if (!$properties) {
+                throw new \InvalidArgumentException('No properties supplied for ObjectLike');
+            }
+
             return new ObjectLike($properties);
         }
 
-        $atomic_type = self::fixScalarTerms($parse_tree->value);
+        $atomic_type = self::fixScalarTerms($parse_tree->value, $php_compatible);
 
-        return Atomic::create($atomic_type);
+        return Atomic::create($atomic_type, $php_compatible);
     }
 
     /**
      * @param  string $return_type
+     * @param  bool   $ignore_space
      *
      * @return array<int,string>
      */
-    public static function tokenize($return_type)
+    public static function tokenize($return_type, $ignore_space = true)
     {
         $return_type_tokens = [''];
         $was_char = false;
-        $return_type = str_replace(' ', '', $return_type);
+
+        if ($ignore_space) {
+            $return_type = str_replace(' ', '', $return_type);
+        }
+
+        if (isset(self::$memoized_tokens[$return_type])) {
+            return self::$memoized_tokens[$return_type];
+        }
+
+        // index of last type token
+        $rtc = 0;
 
         foreach (str_split($return_type) as $char) {
             if ($was_char) {
-                $return_type_tokens[] = '';
+                $return_type_tokens[++$rtc] = '';
             }
 
             if ($char === '<' ||
@@ -239,22 +266,111 @@ abstract class Type
                 $char === ',' ||
                 $char === '{' ||
                 $char === '}' ||
+                $char === '[' ||
+                $char === ']' ||
+                $char === ' ' ||
                 $char === ':'
             ) {
-                if ($return_type_tokens[count($return_type_tokens) - 1] === '') {
-                    $return_type_tokens[count($return_type_tokens) - 1] = $char;
+                if ($return_type_tokens[$rtc] === '') {
+                    $return_type_tokens[$rtc] = $char;
                 } else {
-                    $return_type_tokens[] = $char;
+                    $return_type_tokens[++$rtc] = $char;
                 }
 
                 $was_char = true;
             } else {
-                $return_type_tokens[count($return_type_tokens) - 1] .= $char;
+                $return_type_tokens[$rtc] .= $char;
                 $was_char = false;
             }
         }
 
+        self::$memoized_tokens[$return_type] = $return_type_tokens;
+
         return $return_type_tokens;
+    }
+
+    /**
+     * @param  string                       $return_type
+     * @param  Aliases                      $aliases
+     * @param  array<string, string>|null   $template_types
+     *
+     * @return string
+     */
+    public static function fixUpLocalType(
+        $return_type,
+        Aliases $aliases,
+        array $template_types = null
+    ) {
+        if (strpos($return_type, '[') !== false) {
+            $return_type = self::convertSquareBrackets($return_type);
+        }
+
+        $return_type_tokens = self::tokenize($return_type);
+
+        foreach ($return_type_tokens as $i => &$return_type_token) {
+            if (in_array($return_type_token, ['<', '>', '|', '?', ',', '{', '}', ':'], true)) {
+                continue;
+            }
+
+            if (isset($return_type_tokens[$i + 1]) && $return_type_tokens[$i + 1] === ':') {
+                continue;
+            }
+
+            $return_type_token = self::fixScalarTerms($return_type_token);
+
+            if ($return_type_token[0] === strtoupper($return_type_token[0]) &&
+                !isset($template_types[$return_type_token])
+            ) {
+                if ($return_type_token[0] === '$') {
+                    if ($return_type === '$this') {
+                        $return_type_token = 'static';
+                    }
+
+                    continue;
+                }
+
+                $return_type_token = self::getFQCLNFromString(
+                    $return_type_token,
+                    $aliases
+                );
+            }
+        }
+
+        return implode('', $return_type_tokens);
+    }
+
+    /**
+     * @param  string                   $class
+     * @param  Aliases                  $aliases
+     *
+     * @return string
+     */
+    public static function getFQCLNFromString($class, Aliases $aliases)
+    {
+        if (empty($class)) {
+            throw new \InvalidArgumentException('$class cannot be empty');
+        }
+
+        if ($class[0] === '\\') {
+            return substr($class, 1);
+        }
+
+        $imported_namespaces = $aliases->uses;
+
+        if (strpos($class, '\\') !== false) {
+            $class_parts = explode('\\', $class);
+            $first_namespace = array_shift($class_parts);
+
+            if (isset($imported_namespaces[strtolower($first_namespace)])) {
+                return $imported_namespaces[strtolower($first_namespace)] . '\\' . implode('\\', $class_parts);
+            }
+        } elseif (isset($imported_namespaces[strtolower($class)])) {
+            return $imported_namespaces[strtolower($class)];
+        }
+
+        $namespace = $aliases->namespace;
+
+        return ($namespace ? $namespace . '\\' : '') . $class;
     }
 
     /**
@@ -292,6 +408,16 @@ abstract class Type
     public static function getInt()
     {
         $type = new TInt;
+
+        return new Union([$type]);
+    }
+
+    /**
+     * @return Type\Union
+     */
+    public static function getNumeric()
+    {
+        $type = new TNumeric;
 
         return new Union([$type]);
     }
@@ -427,6 +553,14 @@ abstract class Type
     }
 
     /**
+     * @return Type\Union
+     */
+    public static function getResource()
+    {
+        return new Union([new TResource]);
+    }
+
+    /**
      * @param  array<string, Union> $redefined_vars
      * @param  Context              $context
      *
@@ -435,8 +569,8 @@ abstract class Type
     public static function redefineGenericUnionTypes(array $redefined_vars, Context $context)
     {
         foreach ($redefined_vars as $var_name => $redefined_union_type) {
-            foreach ($redefined_union_type->types as $redefined_atomic_type) {
-                foreach ($context->vars_in_scope[$var_name]->types as $context_type) {
+            foreach ($redefined_union_type->getTypes() as $redefined_atomic_type) {
+                foreach ($context->vars_in_scope[$var_name]->getTypes() as $context_type) {
                     if ($context_type instanceof Type\Atomic\TArray &&
                         $redefined_atomic_type instanceof Type\Atomic\TArray
                     ) {
@@ -473,6 +607,10 @@ abstract class Type
      */
     public static function combineUnionTypes(Union $type_1, Union $type_2)
     {
+        if ($type_1->isMixed() || $type_2->isMixed()) {
+            return Type::getMixed();
+        }
+
         $both_failed_reconciliation = false;
 
         if ($type_1->failed_reconciliation) {
@@ -485,7 +623,12 @@ abstract class Type
             return $type_1;
         }
 
-        $combined_type = self::combineTypes(array_merge(array_values($type_1->types), array_values($type_2->types)));
+        $combined_type = self::combineTypes(
+            array_merge(
+                array_values($type_1->getTypes()),
+                array_values($type_2->getTypes())
+            )
+        );
 
         if (!$type_1->initialized || !$type_2->initialized) {
             $combined_type->initialized = false;
@@ -497,6 +640,10 @@ abstract class Type
 
         if ($type_1->ignore_nullable_issues || $type_2->ignore_nullable_issues) {
             $combined_type->ignore_nullable_issues = true;
+        }
+
+        if ($type_1->ignore_falsable_issues || $type_2->ignore_falsable_issues) {
+            $combined_type->ignore_falsable_issues = true;
         }
 
         if ($both_failed_reconciliation) {
@@ -527,7 +674,13 @@ abstract class Type
         }
 
         if (count($types) === 1) {
-            return new Union([$types[0]]);
+            $union_type = new Union([$types[0]]);
+
+            if ($types[0]->from_docblock) {
+                $union_type->from_docblock = true;
+            }
+
+            return $union_type;
         }
 
         if (!$types) {
@@ -536,10 +689,18 @@ abstract class Type
 
         $combination = new TypeCombination();
 
+        $from_docblock = false;
+
         foreach ($types as $type) {
+            $from_docblock = $from_docblock || $type->from_docblock;
+
             $result = self::scrapeTypeProperties($type, $combination);
 
             if ($result) {
+                if ($from_docblock) {
+                    $result->from_docblock = true;
+                }
+
                 return $result;
             }
         }
@@ -548,11 +709,30 @@ abstract class Type
             && !count($combination->objectlike_entries)
             && !count($combination->type_params)
         ) {
-            if (isset($combination->value_types['false']) || isset($combination->value_types['true'])) {
-                return Type::getBool();
+            if (isset($combination->value_types['false'])) {
+                $union_type = Type::getFalse();
+
+                if ($from_docblock) {
+                    $union_type->from_docblock = true;
+                }
+
+                return $union_type;
+            }
+
+            if (isset($combination->value_types['true'])) {
+                $union_type = Type::getTrue();
+
+                if ($from_docblock) {
+                    $union_type->from_docblock = true;
+                }
+
+                return $union_type;
             }
         } elseif (isset($combination->value_types['void'])) {
             unset($combination->value_types['void']);
+
+            // if we're merging with another type, we cannot represent it in PHP
+            $from_docblock = true;
 
             if (!isset($combination->value_types['null'])) {
                 $combination->value_types['null'] = new TNull();
@@ -582,7 +762,9 @@ abstract class Type
                 if ($combination->objectlike_entries) {
                     $object_like_generic_type = null;
 
-                    foreach ($combination->objectlike_entries as $property_type) {
+                    $objectlike_keys = [];
+
+                    foreach ($combination->objectlike_entries as $property_name => $property_type) {
                         if ($object_like_generic_type) {
                             $object_like_generic_type = Type::combineUnionTypes(
                                 $property_type,
@@ -591,15 +773,27 @@ abstract class Type
                         } else {
                             $object_like_generic_type = $property_type;
                         }
+
+                        if (is_int($property_name)) {
+                            if (!isset($objectlike_keys['int'])) {
+                                $objectlike_keys['int'] = new TInt;
+                            }
+                        } else {
+                            if (!isset($objectlike_keys['string'])) {
+                                $objectlike_keys['string'] = new TString;
+                            }
+                        }
                     }
 
                     if (!$object_like_generic_type) {
                         throw new \InvalidArgumentException('Cannot be null');
                     }
 
+                    $objectlike_key_type = new Type\Union(array_values($objectlike_keys));
+
                     $generic_type_params[0] = Type::combineUnionTypes(
                         $generic_type_params[0],
-                        Type::getString()
+                        $objectlike_key_type
                     );
                     $generic_type_params[1] = Type::combineUnionTypes(
                         $generic_type_params[1],
@@ -624,7 +818,13 @@ abstract class Type
 
         $new_types = array_values($new_types);
 
-        return new Union($new_types);
+        $union_type = new Union($new_types);
+
+        if ($from_docblock) {
+            $union_type->from_docblock = true;
+        }
+
+        return $union_type;
     }
 
     /**
@@ -655,9 +855,7 @@ abstract class Type
         $type_key = $type->getKey();
 
         if ($type instanceof TArray || $type instanceof TGenericObject) {
-            for ($i = 0; $i < count($type->type_params); ++$i) {
-                $type_param = $type->type_params[$i];
-
+            foreach ($type->type_params as $i => $type_param) {
                 if (isset($combination->type_params[$type_key][$i])) {
                     $combination->type_params[$type_key][$i] = Type::combineUnionTypes(
                         $combination->type_params[$type_key][$i],

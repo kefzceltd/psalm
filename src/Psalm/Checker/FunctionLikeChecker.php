@@ -5,30 +5,34 @@ use PhpParser;
 use PhpParser\Node\Expr\Closure;
 use PhpParser\Node\Stmt\ClassMethod;
 use PhpParser\Node\Stmt\Function_;
-use Psalm\Aliases;
 use Psalm\Checker\Statements\ExpressionChecker;
+use Psalm\Codebase\CallMap;
 use Psalm\CodeLocation;
-use Psalm\Config;
 use Psalm\Context;
 use Psalm\EffectsAnalyser;
 use Psalm\FileManipulation\FunctionDocblockManipulator;
 use Psalm\FunctionLikeParameter;
 use Psalm\Issue\ImplementedReturnTypeMismatch;
-use Psalm\Issue\InvalidDocblock;
+use Psalm\Issue\InvalidFalsableReturnType;
+use Psalm\Issue\InvalidNullableReturnType;
 use Psalm\Issue\InvalidParamDefault;
 use Psalm\Issue\InvalidReturnType;
 use Psalm\Issue\InvalidToString;
 use Psalm\Issue\LessSpecificReturnType;
 use Psalm\Issue\MethodSignatureMismatch;
+use Psalm\Issue\MismatchingDocblockParamType;
+use Psalm\Issue\MismatchingDocblockReturnType;
+use Psalm\Issue\MissingClosureParamType;
 use Psalm\Issue\MissingClosureReturnType;
+use Psalm\Issue\MissingParamType;
 use Psalm\Issue\MissingReturnType;
 use Psalm\Issue\MixedInferredReturnType;
+use Psalm\Issue\MoreSpecificImplementedParamType;
 use Psalm\Issue\MoreSpecificImplementedReturnType;
 use Psalm\Issue\MoreSpecificReturnType;
 use Psalm\Issue\OverriddenMethodAccess;
-use Psalm\Issue\PossiblyUnusedVariable;
-use Psalm\Issue\UntypedParam;
-use Psalm\Issue\UnusedVariable;
+use Psalm\Issue\ReservedWord;
+use Psalm\Issue\UnusedParam;
 use Psalm\IssueBuffer;
 use Psalm\StatementsSource;
 use Psalm\Storage\ClassLikeStorage;
@@ -39,9 +43,6 @@ use Psalm\Type\Atomic\TNamedObject;
 
 abstract class FunctionLikeChecker extends SourceChecker implements StatementsSource
 {
-    const RETURN_TYPE_REGEX = '/\\:\s+(\\??[A-Za-z0-9_\\\\\[\]]+)/';
-    const PARAM_TYPE_REGEX = '/^(\\??[A-Za-z0-9_\\\\\[\]]+)\s/';
-
     /**
      * @var Closure|Function_|ClassMethod
      */
@@ -58,16 +59,13 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
     protected $is_static = false;
 
     /**
-     * @var StatementsChecker|null
-     */
-    protected $statements_checker;
-
-    /**
      * @var StatementsSource
      */
     protected $source;
 
-    /** @var FileChecker */
+    /**
+     * @var FileChecker
+     */
     public $file_checker;
 
     /**
@@ -79,6 +77,11 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
      * @var array<string, array<string, bool>>
      */
     protected $return_vars_possibly_in_scope = [];
+
+    /**
+     * @var Type\Union|null
+     */
+    private $local_return_type;
 
     /**
      * @var array<string, array>
@@ -129,6 +132,11 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
 
         $implemented_docblock_param_types = [];
 
+        $project_checker = $this->file_checker->project_checker;
+        $codebase = $project_checker->codebase;
+
+        $classlike_storage_provider = $project_checker->classlike_storage_provider;
+
         if ($this->function instanceof ClassMethod) {
             $real_method_id = (string)$this->getMethodId();
 
@@ -154,35 +162,34 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
                 $context->vars_possibly_in_scope['$this'] = true;
             }
 
-            $declaring_method_id = MethodChecker::getDeclaringMethodId($project_checker, $method_id);
-
-            if (!is_string($declaring_method_id)) {
-                throw new \UnexpectedValueException('The declaring method of ' . $method_id . ' should not be null');
-            }
-
             $fq_class_name = (string)$context->self;
-
-            $project_checker = $this->file_checker->project_checker;
-
-            $classlike_storage_provider = $project_checker->classlike_storage_provider;
 
             $class_storage = $classlike_storage_provider->get($fq_class_name);
 
-            $storage = MethodChecker::getStorage($project_checker, $declaring_method_id);
+            try {
+                $storage = $codebase->methods->getStorage($real_method_id);
+            } catch (\UnexpectedValueException $e) {
+                if (!$class_storage->parent_classes) {
+                    throw $e;
+                }
+
+                $declaring_method_id = (string) $codebase->methods->getDeclaringMethodId($method_id);
+
+                // happens for fake constructors
+                $storage = $codebase->methods->getStorage($declaring_method_id);
+            }
 
             $cased_method_id = $fq_class_name . '::' . $storage->cased_name;
 
-            $overridden_method_ids = MethodChecker::getOverriddenMethodIds($project_checker, $method_id);
+            $overridden_method_ids = $codebase->methods->getOverriddenMethodIds($method_id);
 
             if ($this->function->name === '__construct') {
                 $context->inside_constructor = true;
             }
 
             if ($overridden_method_ids && $this->function->name !== '__construct') {
-                $have_emitted = false;
-
                 foreach ($overridden_method_ids as $overridden_method_id) {
-                    $parent_method_storage = MethodChecker::getStorage($project_checker, $overridden_method_id);
+                    $parent_method_storage = $codebase->methods->getStorage($overridden_method_id);
 
                     list($overridden_fq_class_name) = explode('::', $overridden_method_id);
 
@@ -217,22 +224,16 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
 
             $cased_method_id = $this->function->name;
         } else { // Closure
-            $file_storage = $file_storage_provider->get($this->source->getFilePath());
-
             $function_id = $this->getMethodId();
 
-            if (!isset($file_storage->functions[$function_id])) {
-                throw new \UnexpectedValueException('Closure function ' . $function_id . ' should exist');
-            }
-
-            $storage = $file_storage->functions[$function_id];
+            $storage = $codebase->getClosureStorage($this->source->getFilePath(), $function_id);
 
             if ($storage->return_type) {
                 $closure_return_type = ExpressionChecker::fleshOutType(
                     $project_checker,
                     $storage->return_type,
                     $context->self,
-                    $this->getMethodId()
+                    $context->self
                 );
             } else {
                 $closure_return_type = Type::getMixed();
@@ -259,11 +260,6 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
 
         $statements_checker = new StatementsChecker($this);
 
-        // this increases memory, so only do it if running under this flag
-        if ($project_checker->infer_types_from_usage) {
-            $this->statements_checker = $statements_checker;
-        }
-
         $template_types = $storage->template_types;
 
         if ($class_storage && $class_storage->template_types) {
@@ -272,6 +268,7 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
 
         foreach ($storage->params as $offset => $function_param) {
             $signature_type = $function_param->signature_type;
+
             if ($function_param->type) {
                 $param_type = clone $function_param->type;
 
@@ -279,7 +276,7 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
                     $project_checker,
                     $param_type,
                     $context->self,
-                    $this->getMethodId()
+                    $context->self
                 );
             } else {
                 $param_type = Type::getMixed();
@@ -288,7 +285,11 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
             $context->vars_in_scope['$' . $function_param->name] = $param_type;
             $context->vars_possibly_in_scope['$' . $function_param->name] = true;
 
-            if (!$function_param->location) {
+            if ($context->collect_references && $function_param->location) {
+                $context->unreferenced_vars['$' . $function_param->name] = $function_param->location;
+            }
+
+            if (!$function_param->type_location || !$function_param->location) {
                 continue;
             }
 
@@ -301,32 +302,52 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
 
             if ($signature_type) {
                 if (!TypeChecker::isContainedBy(
-                    $project_checker,
+                    $codebase,
                     $param_type,
                     $signature_type
                 )
                 ) {
+                    if ($project_checker->alter_code
+                        && isset($project_checker->getIssuesToFix()['MismatchingDocblockParamType'])
+                    ) {
+                        $this->addOrUpdateParamType($project_checker, $function_param->name, $signature_type, true);
+
+                        continue;
+                    }
+
                     if (IssueBuffer::accepts(
-                        new InvalidDocblock(
+                        new MismatchingDocblockParamType(
                             'Parameter $' . $function_param->name . ' has wrong type \'' . $param_type .
                                 '\', should be \'' . $signature_type . '\'',
-                            $function_param->location
+                            $function_param->type_location
                         ),
                         $storage->suppressed_issues
                     )) {
                         return false;
                     }
 
+                    $signature_type->check(
+                        $this,
+                        $function_param->type_location,
+                        $storage->suppressed_issues,
+                        [],
+                        false
+                    );
+
                     continue;
                 }
             }
 
             if ($parser_param->default) {
-                $default_type = StatementsChecker::getSimpleType($parser_param->default);
+                ExpressionChecker::analyze($statements_checker, $parser_param->default, $context);
+
+                $default_type = isset($parser_param->default->inferredType)
+                    ? $parser_param->default->inferredType
+                    : null;
 
                 if ($default_type &&
                     !TypeChecker::isContainedBy(
-                        $project_checker,
+                        $codebase,
                         $default_type,
                         $param_type
                     )
@@ -335,7 +356,7 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
                         new InvalidParamDefault(
                             'Default value for argument ' . ($offset + 1) . ' of method ' . $cased_method_id .
                                 ' does not match the given type ' . $param_type,
-                            $function_param->location
+                            $function_param->type_location
                         )
                     )) {
                         // fall through
@@ -347,19 +368,43 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
                 $substituted_type = clone $param_type;
                 $generic_types = [];
                 $substituted_type->replaceTemplateTypesWithStandins($template_types, $generic_types, null);
-                $substituted_type->check($this->source, $function_param->location, $this->suppressed_issues, [], false);
+                $substituted_type->check(
+                    $this->source,
+                    $function_param->type_location,
+                    $this->suppressed_issues,
+                    [],
+                    false
+                );
             } else {
-                $param_type->check($this->source, $function_param->location, $this->suppressed_issues, [], false);
+                if ($param_type->isVoid()) {
+                    if (IssueBuffer::accepts(
+                        new ReservedWord(
+                            'Parameter cannot be void',
+                            $function_param->type_location
+                        ),
+                        $this->suppressed_issues
+                    )) {
+                        // fall through
+                    }
+                }
+
+                $param_type->check(
+                    $this->source,
+                    $function_param->type_location,
+                    $this->suppressed_issues,
+                    [],
+                    false
+                );
             }
 
-            if ($this->getFileChecker()->project_checker->collect_references) {
-                if ($function_param->location !== $function_param->signature_location &&
-                    $function_param->signature_location &&
+            if ($codebase->collect_references) {
+                if ($function_param->type_location !== $function_param->signature_type_location &&
+                    $function_param->signature_type_location &&
                     $function_param->signature_type
                 ) {
                     $function_param->signature_type->check(
                         $this->source,
-                        $function_param->signature_location,
+                        $function_param->signature_type_location,
                         $this->suppressed_issues,
                         [],
                         false
@@ -367,8 +412,9 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
                 }
             }
 
-            if ($function_param->by_ref && !$param_type->isMixed()) {
-                $context->byref_constraints['$' . $function_param->name] = new \Psalm\ReferenceConstraint($param_type);
+            if ($function_param->by_ref) {
+                $context->byref_constraints['$' . $function_param->name]
+                    = new \Psalm\ReferenceConstraint(!$param_type->isMixed() ? $param_type : null);
             }
 
             if ($function_param->by_ref) {
@@ -380,35 +426,90 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
 
             $statements_checker->registerVariable(
                 '$' . $function_param->name,
-                $function_param->location
+                $function_param->location,
+                null
             );
         }
 
-        if ($storage->return_type && $storage->signature_return_type && $storage->return_type_location) {
-            if (!TypeChecker::isContainedBy(
-                $project_checker,
-                $storage->return_type,
-                $storage->signature_return_type
-            )
-            ) {
-                if (IssueBuffer::accepts(
-                    new InvalidDocblock(
-                        'Docblock has incorrect return type \'' . $storage->return_type .
-                            '\', should be \'' . $storage->signature_return_type . '\'',
-                        $storage->return_type_location
-                    ),
-                    $storage->suppressed_issues
-                )) {
-                    return false;
+        if ($storage->return_type && $storage->return_type_location && !$storage->has_template_return_type) {
+            if (!$storage->signature_return_type || $storage->signature_return_type === $storage->return_type) {
+                $fleshed_out_return_type = ExpressionChecker::fleshOutType(
+                    $project_checker,
+                    $storage->return_type,
+                    $context->self,
+                    $context->self
+                );
+
+                $fleshed_out_return_type->check(
+                    $this,
+                    $storage->return_type_location,
+                    $storage->suppressed_issues,
+                    [],
+                    false
+                );
+            } else {
+                $fleshed_out_signature_type = ExpressionChecker::fleshOutType(
+                    $project_checker,
+                    $storage->signature_return_type,
+                    $context->self,
+                    $context->self
+                );
+
+                $fleshed_out_signature_type->check(
+                    $this,
+                    $storage->signature_return_type_location ?: $storage->return_type_location,
+                    $storage->suppressed_issues,
+                    [],
+                    false
+                );
+
+                if (!$this->function instanceof Closure) {
+                    $fleshed_out_return_type = ExpressionChecker::fleshOutType(
+                        $project_checker,
+                        $storage->return_type,
+                        $context->self,
+                        $context->self
+                    );
+
+                    $fleshed_out_signature_type = ExpressionChecker::fleshOutType(
+                        $project_checker,
+                        $storage->signature_return_type,
+                        $context->self,
+                        $context->self
+                    );
+
+                    if (!TypeChecker::isContainedBy(
+                        $codebase,
+                        $fleshed_out_return_type,
+                        $fleshed_out_signature_type
+                    )
+                    ) {
+                        if ($project_checker->alter_code
+                            && isset($project_checker->getIssuesToFix()['MismatchingDocblockReturnType'])
+                        ) {
+                            $this->addOrUpdateReturnType($project_checker, $storage->signature_return_type);
+
+                            return null;
+                        }
+
+                        if (IssueBuffer::accepts(
+                            new MismatchingDocblockReturnType(
+                                'Docblock has incorrect return type \'' . $storage->return_type .
+                                    '\', should be \'' . $storage->signature_return_type . '\'',
+                                $storage->return_type_location
+                            ),
+                            $storage->suppressed_issues
+                        )) {
+                            return false;
+                        }
+                    }
                 }
             }
         }
 
-        $statements_checker->analyze($function_stmts, $context, null, $global_context);
+        $statements_checker->analyze($function_stmts, $context, null, $global_context, true);
 
         foreach ($storage->params as $offset => $function_param) {
-            $signature_type = $function_param->signature_type;
-
             // only complain if there's no type defined by a parent type
             if (!$function_param->type
                 && $function_param->location
@@ -424,19 +525,27 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
                     ? ', ' . ($possible_type ? 'should be ' . $possible_type : 'could not infer type')
                     : '';
 
-                IssueBuffer::accepts(
-                    new UntypedParam(
-                        'Parameter $' . $function_param->name . ' has no provided type' . $infer_text,
-                        $function_param->location
-                    ),
-                    $storage->suppressed_issues
-                );
+                if ($this->function instanceof Closure) {
+                    IssueBuffer::accepts(
+                        new MissingClosureParamType(
+                            'Parameter $' . $function_param->name . ' has no provided type' . $infer_text,
+                            $function_param->location
+                        ),
+                        $storage->suppressed_issues
+                    );
+                } else {
+                    IssueBuffer::accepts(
+                        new MissingParamType(
+                            'Parameter $' . $function_param->name . ' has no provided type' . $infer_text,
+                            $function_param->location
+                        ),
+                        $storage->suppressed_issues
+                    );
+                }
             }
         }
 
         if ($this->function instanceof Closure) {
-            $closure_yield_types = [];
-
             $this->verifyReturnType(
                 $project_checker,
                 $storage->return_type,
@@ -450,54 +559,93 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
                     $this->function->stmts,
                     $closure_yield_types,
                     $ignore_nullable_issues,
+                    $ignore_falsable_issues,
                     true
                 );
 
                 if ($closure_return_types && $this->function->inferredType) {
                     /** @var Type\Atomic\Fn */
-                    $closure_atomic = $this->function->inferredType->types['Closure'];
+                    $closure_atomic = $this->function->inferredType->getTypes()['Closure'];
                     $closure_atomic->return_type = new Type\Union($closure_return_types);
                 }
             }
         }
 
-        if ($context->collect_references &&
-            !$this->getFileChecker()->project_checker->find_references_to &&
-            $context->check_variables
+        if ($context->collect_references
+            && !$project_checker->find_references_to
+            && $context->check_variables
         ) {
-            foreach ($context->vars_possibly_in_scope as $var_name => $_) {
-                if (strpos($var_name, '->') === false &&
-                    $var_name !== '$this' &&
-                    strpos($var_name, '::$') === false &&
-                    strpos($var_name, '[') === false &&
-                    $var_name !== '$_'
-                ) {
-                    $original_location = $statements_checker->getFirstAppearance($var_name);
+            foreach ($statements_checker->getUnusedVarLocations() as list($var_name, $original_location)) {
+                if (!array_key_exists(substr($var_name, 1), $storage->param_types)) {
+                    continue;
+                }
 
-                    if (!isset($context->referenced_var_ids[$var_name]) && $original_location) {
-                        if (!isset($storage->param_types[substr($var_name, 1)]) ||
-                            !$storage instanceof MethodStorage ||
-                            $storage->visibility === ClassLikeChecker::VISIBILITY_PRIVATE
+                $position = array_search(substr($var_name, 1), array_keys($storage->param_types), true);
+
+                if ($position === false) {
+                    throw new \UnexpectedValueException('$position should not be false here');
+                }
+
+                if ($storage->params[$position]->by_ref) {
+                    continue;
+                }
+
+                if (!($storage instanceof MethodStorage)
+                    || $storage->visibility === ClassLikeChecker::VISIBILITY_PRIVATE
+                ) {
+                    if (IssueBuffer::accepts(
+                        new UnusedParam(
+                            'Param ' . $var_name . ' is never referenced in this method',
+                            $original_location
+                        ),
+                        $this->getSuppressedIssues()
+                    )) {
+                        // fall through
+                    }
+                } else {
+                    $fq_class_name = (string)$context->self;
+
+                    $class_storage = $codebase->classlike_storage_provider->get($fq_class_name);
+
+                    $method_name_lc = strtolower($storage->cased_name);
+
+                    if ($storage->abstract || !isset($class_storage->overridden_method_ids[$method_name_lc])) {
+                        continue;
+                    }
+
+                    $parent_method_id = end($class_storage->overridden_method_ids[$method_name_lc]);
+
+                    if ($parent_method_id) {
+                        $parent_method_storage = $codebase->methods->getStorage($parent_method_id);
+
+                        // if the parent method has a param at that position and isn't abstract
+                        if (!$parent_method_storage->abstract
+                            && isset($parent_method_storage->params[$position])
                         ) {
-                            if (IssueBuffer::accepts(
-                                new UnusedVariable(
-                                    'Variable ' . $var_name . ' is never referenced',
-                                    $original_location
-                                ),
-                                $this->getSuppressedIssues()
-                            )) {
-                                // fall through
-                            }
-                        } else {
-                            if (IssueBuffer::accepts(
-                                new PossiblyUnusedVariable(
-                                    'Variable ' . $var_name . ' is never referenced in this method',
-                                    $original_location
-                                ),
-                                $this->getSuppressedIssues()
-                            )) {
-                                // fall through
-                            }
+                            continue;
+                        }
+                    }
+
+                    $storage->unused_params[$position] = $original_location;
+                }
+            }
+
+            if ($storage instanceof MethodStorage && $class_storage) {
+                foreach ($storage->params as $i => $_) {
+                    if (!isset($storage->unused_params[$i])) {
+                        $storage->used_params[$i] = true;
+
+                        /** @var ClassMethod $this->function */
+                        $method_name_lc = strtolower($storage->cased_name);
+
+                        if (!isset($class_storage->overridden_method_ids[$method_name_lc])) {
+                            continue;
+                        }
+
+                        foreach ($class_storage->overridden_method_ids[$method_name_lc] as $parent_method_id) {
+                            $parent_method_storage = $codebase->methods->getStorage($parent_method_id);
+
+                            $parent_method_storage->used_params[$i] = true;
                         }
                     }
                 }
@@ -562,13 +710,12 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
         CodeLocation $code_location,
         array $suppressed_issues
     ) {
+        $codebase = $project_checker->codebase;
+
         $implementer_method_id = $implementer_classlike_storage->name . '::'
             . strtolower($guide_method_storage->cased_name);
-        $guide_method_id = $guide_classlike_storage->name . '::' . strtolower($guide_method_storage->cased_name);
-        $implementer_declaring_method_id = MethodChecker::getDeclaringMethodId(
-            $project_checker,
-            $implementer_method_id
-        );
+
+        $implementer_declaring_method_id = $codebase->methods->getDeclaringMethodId($implementer_method_id);
 
         $cased_implementer_method_id = $implementer_classlike_storage->name . '::'
             . $implementer_method_storage->cased_name;
@@ -593,6 +740,7 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
             $guide_signature_return_type = ExpressionChecker::fleshOutType(
                 $project_checker,
                 $guide_method_storage->signature_return_type,
+                $guide_classlike_storage->name,
                 $guide_classlike_storage->name
             );
 
@@ -600,30 +748,18 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
                 ? ExpressionChecker::fleshOutType(
                     $project_checker,
                     $implementer_method_storage->signature_return_type,
+                    $implementer_classlike_storage->name,
                     $implementer_classlike_storage->name
                 ) : null;
 
-            $or_null_implementer_return_type = $implementer_signature_return_type
-                ? clone $implementer_signature_return_type
-                : null;
-
-            if ($or_null_implementer_return_type) {
-                $or_null_implementer_return_type->types['null'] = new Type\Atomic\TNull;
-            }
-
-            if ((!$implementer_signature_return_type
-                    || $implementer_signature_return_type->getId() !== $guide_signature_return_type->getId())
-                && (!$or_null_implementer_return_type
-                    || $or_null_implementer_return_type->getId() !== $guide_signature_return_type->getId())
-            ) {
+            if (!TypeChecker::isContainedByInPhp($implementer_signature_return_type, $guide_signature_return_type)) {
                 if (IssueBuffer::accepts(
                     new MethodSignatureMismatch(
                         'Method ' . $cased_implementer_method_id . ' with return type \''
                             . $implementer_signature_return_type . '\' is different to return type \''
                             . $guide_signature_return_type . '\' of inherited method ' . $cased_guide_method_id,
                         $code_location
-                    ),
-                    $suppressed_issues
+                    )
                 )) {
                     return false;
                 }
@@ -633,11 +769,35 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
         } elseif ($guide_method_storage->return_type
             && $implementer_method_storage->return_type
             && $implementer_classlike_storage->user_defined
+            && !$guide_classlike_storage->stubbed
         ) {
-            if (!TypeChecker::isContainedBy(
+            $implementer_method_storage_return_type = ExpressionChecker::fleshOutType(
                 $project_checker,
                 $implementer_method_storage->return_type,
+                $implementer_classlike_storage->name,
+                $implementer_classlike_storage->name
+            );
+
+            $guide_method_storage_return_type = ExpressionChecker::fleshOutType(
+                $project_checker,
                 $guide_method_storage->return_type,
+                $guide_classlike_storage->name,
+                $guide_classlike_storage->name
+            );
+
+            // treat void as null when comparing against docblock implementer
+            if ($implementer_method_storage_return_type->isVoid()) {
+                $implementer_method_storage_return_type = Type::getNull();
+            }
+
+            if ($guide_method_storage_return_type->isVoid()) {
+                $guide_method_storage_return_type = Type::getNull();
+            }
+
+            if (!TypeChecker::isContainedBy(
+                $codebase,
+                $implementer_method_storage_return_type,
+                $guide_method_storage_return_type,
                 false,
                 false,
                 $has_scalar_match,
@@ -675,8 +835,6 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
             }
         }
 
-        list($implemented_fq_class_name) = explode('::', $implementer_method_id);
-
         foreach ($guide_method_storage->params as $i => $guide_param) {
             if (!isset($implementer_method_storage->params[$i])) {
                 if (IssueBuffer::accepts(
@@ -692,24 +850,16 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
                 return null;
             }
 
-            $or_null_guide_type = $guide_param->signature_type
-                ? clone $guide_param->signature_type
-                : null;
-
-            if ($or_null_guide_type) {
-                $or_null_guide_type->types['null'] = new Type\Atomic\TNull;
-            }
+            $implementer_param = $implementer_method_storage->params[$i];
 
             if ($guide_classlike_storage->user_defined
-                && (string)$implementer_method_storage->params[$i]->signature_type
-                    !== (string)$guide_param->signature_type
-                && (string)$implementer_method_storage->params[$i]->signature_type
-                    !== (string)$or_null_guide_type
+                && $implementer_param->signature_type
+                && !TypeChecker::isContainedByInPhp($guide_param->signature_type, $implementer_param->signature_type)
             ) {
                 if (IssueBuffer::accepts(
                     new MethodSignatureMismatch(
                         'Argument ' . ($i + 1) . ' of ' . $cased_implementer_method_id . ' has wrong type \'' .
-                            $implementer_method_storage->params[$i]->signature_type . '\', expecting \'' .
+                            $implementer_param->signature_type . '\', expecting \'' .
                             $guide_param->signature_type . '\' as defined by ' .
                             $cased_guide_method_id,
                         $implementer_method_storage->params[$i]->location
@@ -722,12 +872,74 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
                 return null;
             }
 
+            if ($guide_classlike_storage->user_defined
+                && $implementer_param->type
+                && $guide_param->type
+                && $implementer_param->type->getId() !== $guide_param->type->getId()
+            ) {
+                if (!TypeChecker::isContainedBy(
+                    $codebase,
+                    $guide_param->type,
+                    $implementer_param->type,
+                    false,
+                    false
+                )) {
+                    if (IssueBuffer::accepts(
+                        new MoreSpecificImplementedParamType(
+                            'Argument ' . ($i + 1) . ' of ' . $cased_implementer_method_id . ' has wrong type \'' .
+                                $implementer_param->type . '\', expecting \'' .
+                                $guide_param->type . '\' as defined by ' .
+                                $cased_guide_method_id,
+                            $implementer_method_storage->params[$i]->location
+                                ?: $code_location
+                        ),
+                        $suppressed_issues
+                    )) {
+                        return false;
+                    }
+                }
+            }
+
+            if ($guide_classlike_storage->user_defined && $implementer_param->by_ref !== $guide_param->by_ref) {
+                if (IssueBuffer::accepts(
+                    new MethodSignatureMismatch(
+                        'Argument ' . ($i + 1) . ' of ' . $cased_implementer_method_id . ' is' .
+                            ($implementer_param->by_ref ? '' : ' not') . ' passed by reference, but argument ' .
+                            ($i + 1) . ' of ' . $cased_guide_method_id . ' is' . ($guide_param->by_ref ? '' : ' not'),
+                        $implementer_method_storage->params[$i]->location
+                            ?: $code_location
+                    )
+                )) {
+                    return false;
+                }
+
+                return null;
+            }
+
             $implemeneter_param_type = $implementer_method_storage->params[$i]->type;
 
-            if (!$guide_classlike_storage->user_defined &&
-                $guide_param->type &&
-                !$guide_param->type->isMixed() &&
-                (!$implemeneter_param_type || $implemeneter_param_type->getId() !== $guide_param->type->getId())
+            $or_null_guide_type = $guide_param->signature_type
+                ? clone $guide_param->signature_type
+                : null;
+
+            if ($or_null_guide_type) {
+                $or_null_guide_type->addType(new Type\Atomic\TNull);
+            }
+
+            if (!$guide_classlike_storage->user_defined
+                && $guide_param->type
+                && !$guide_param->type->isMixed()
+                && !$guide_param->type->from_docblock
+                && (
+                    !$implemeneter_param_type
+                    || (
+                        $implemeneter_param_type->getId() !== $guide_param->type->getId()
+                        && (
+                            !$or_null_guide_type
+                            || $implemeneter_param_type->getId() !== $or_null_guide_type->getId()
+                        )
+                    )
+                )
             ) {
                 if (IssueBuffer::accepts(
                     new MethodSignatureMismatch(
@@ -746,8 +958,9 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
             }
         }
 
-        if ($implementer_method_storage->cased_name !== '__construct' &&
-            $implementer_method_storage->required_param_count > $guide_method_storage->required_param_count
+        if ($guide_classlike_storage->user_defined
+            && $implementer_method_storage->cased_name !== '__construct'
+            && $implementer_method_storage->required_param_count > $guide_method_storage->required_param_count
         ) {
             if (IssueBuffer::accepts(
                 new MethodSignatureMismatch(
@@ -851,21 +1064,24 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
      */
     public function getFunctionLikeStorage(StatementsChecker $statements_checker)
     {
-        $function_id = $this->getMethodId();
-
         $project_checker = $this->getFileChecker()->project_checker;
+        $codebase = $project_checker->codebase;
 
-        if (strpos($function_id, '::')) {
-            $declaring_method_id = MethodChecker::getDeclaringMethodId($project_checker, $function_id);
+        if ($this->function instanceof ClassMethod) {
+            $method_id = (string) $this->getMethodId();
+            $codebase_methods = $codebase->methods;
 
-            if (!$declaring_method_id) {
-                throw new \UnexpectedValueException('The declaring method of ' . $function_id . ' should not be null');
+            try {
+                return $codebase_methods->getStorage($method_id);
+            } catch (\UnexpectedValueException $e) {
+                $declaring_method_id = (string) $codebase_methods->getDeclaringMethodId($method_id);
+
+                // happens for fake constructors
+                return $codebase_methods->getStorage($declaring_method_id);
             }
-
-            return MethodChecker::getStorage($project_checker, $declaring_method_id);
         }
 
-        return FunctionChecker::getStorage($statements_checker, $function_id);
+        return $codebase->functions->getStorage($statements_checker, (string) $this->getMethodId());
     }
 
     /**
@@ -955,8 +1171,6 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
             return null;
         }
 
-        $method_id = (string)$this->getMethodId();
-
         $cased_method_id = $this->getCorrectlyCasedMethodId();
 
         if (!$return_type_location) {
@@ -968,38 +1182,124 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
         /** @var PhpParser\Node\Stmt[] */
         $function_stmts = $this->function->getStmts();
 
-        $inferred_return_types = EffectsAnalyser::getReturnTypes(
+        $inferred_return_type_parts = EffectsAnalyser::getReturnTypes(
             $function_stmts,
             $inferred_yield_types,
             $ignore_nullable_issues,
+            $ignore_falsable_issues,
             true
         );
 
-        $inferred_return_type = $inferred_return_types ? Type::combineTypes($inferred_return_types) : Type::getVoid();
+        if ((!$return_type || $return_type->from_docblock)
+            && ScopeChecker::getFinalControlActions($function_stmts) !== [ScopeChecker::ACTION_END]
+            && !$inferred_yield_types
+            && count($inferred_return_type_parts)
+        ) {
+            // only add null if we have a return statement elsewhere and it wasn't void
+            foreach ($inferred_return_type_parts as $inferred_return_type_part) {
+                if (!$inferred_return_type_part instanceof Type\Atomic\TVoid) {
+                    $atomic_null = new Type\Atomic\TNull();
+                    $atomic_null->from_docblock = true;
+                    $inferred_return_type_parts[] = $atomic_null;
+                    break;
+                }
+            }
+        }
+
+        if ($return_type
+            && !$return_type->from_docblock
+            && !$return_type->isVoid()
+            && !$inferred_yield_types
+            && ScopeChecker::getFinalControlActions($function_stmts) !== [ScopeChecker::ACTION_END]
+        ) {
+            if (IssueBuffer::accepts(
+                new InvalidReturnType(
+                    'Not all code paths of ' . $cased_method_id . ' end in a return statement, return type '
+                        . $return_type . ' expected',
+                    $return_type_location
+                )
+            )) {
+                return false;
+            }
+
+            return null;
+        }
+
+        $inferred_return_type = $inferred_return_type_parts
+            ? Type::combineTypes($inferred_return_type_parts)
+            : Type::getVoid();
         $inferred_yield_type = $inferred_yield_types ? Type::combineTypes($inferred_yield_types) : null;
 
         if ($inferred_yield_type) {
             $inferred_return_type = $inferred_yield_type;
         }
 
-        if (!$return_type && !Config::getInstance()->add_void_docblocks && $inferred_return_type->isVoid()) {
+        $codebase = $project_checker->codebase;
+
+        if (!$return_type && !$codebase->config->add_void_docblocks && $inferred_return_type->isVoid()) {
             return null;
         }
 
-        $project_checker = $this->getFileChecker()->project_checker;
+        $unsafe_return_type = false;
+
+        // prevent any return types that do not return a value from being used in PHP typehints
+        if ($project_checker->alter_code
+            && $inferred_return_type->isNullable()
+            && !$inferred_yield_types
+        ) {
+            foreach ($inferred_return_type_parts as $inferred_return_type_part) {
+                if ($inferred_return_type_part instanceof Type\Atomic\TVoid) {
+                    $unsafe_return_type = true;
+                }
+            }
+        }
 
         $inferred_return_type = TypeChecker::simplifyUnionType(
-            $project_checker,
+            $codebase,
             ExpressionChecker::fleshOutType(
                 $project_checker,
                 $inferred_return_type,
                 $this->source->getFQCLN(),
-                ''
+                $this->source->getFQCLN()
             )
         );
 
-        if (!$return_type && !$project_checker->update_docblocks && !$is_to_string) {
+        if ($is_to_string) {
+            if (!$inferred_return_type->isMixed() && (string)$inferred_return_type !== 'string') {
+                if (IssueBuffer::accepts(
+                    new InvalidToString(
+                        '__toString methods must return a string, ' . $inferred_return_type . ' returned',
+                        $return_type_location
+                    ),
+                    $this->suppressed_issues
+                )) {
+                    return false;
+                }
+            }
+
+            return null;
+        }
+
+        if (!$return_type) {
             if ($this->function instanceof Closure) {
+                if ($project_checker->alter_code
+                    && isset($project_checker->getIssuesToFix()['MissingClosureReturnType'])
+                ) {
+                    if ($inferred_return_type->isMixed() || $inferred_return_type->isNull()) {
+                        return null;
+                    }
+
+                    $this->addOrUpdateReturnType(
+                        $project_checker,
+                        $inferred_return_type,
+                        ($project_checker->only_replace_php_types_with_non_docblock_types
+                            || $unsafe_return_type)
+                            && $inferred_return_type->from_docblock
+                    );
+
+                    return null;
+                }
+
                 if (IssueBuffer::accepts(
                     new MissingClosureReturnType(
                         'Closure does not have a return type, expecting ' . $inferred_return_type,
@@ -1009,6 +1309,24 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
                 )) {
                     // fall through
                 }
+
+                return null;
+            }
+
+            if ($project_checker->alter_code
+                && isset($project_checker->getIssuesToFix()['MissingReturnType'])
+            ) {
+                if ($inferred_return_type->isMixed() || $inferred_return_type->isNull()) {
+                    return null;
+                }
+
+                $this->addOrUpdateReturnType(
+                    $project_checker,
+                    $inferred_return_type,
+                    ($project_checker->only_replace_php_types_with_non_docblock_types
+                        || $unsafe_return_type)
+                        && $inferred_return_type->from_docblock
+                );
 
                 return null;
             }
@@ -1027,41 +1345,17 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
             return null;
         }
 
-        if ($is_to_string) {
-            if (!$inferred_return_type->isMixed() && (string)$inferred_return_type !== 'string') {
-                if (IssueBuffer::accepts(
-                    new InvalidToString(
-                        '__toString methods must return a string, ' . $inferred_return_type . ' returned',
-                        $return_type_location
-                    ),
-                    $this->suppressed_issues
-                )) {
-                    return false;
-                }
-            }
-
-            if (!$project_checker->update_docblocks) {
-                return null;
-            }
-        }
-
-        if (!$return_type) {
-            if (!$inferred_return_type->isMixed()) {
-                $this->addDocblockReturnType($project_checker, $inferred_return_type);
-            }
-
-            return null;
-        }
+        $self_fq_class_name = $fq_class_name ?: $this->source->getFQCLN();
 
         // passing it through fleshOutTypes eradicates errant $ vars
         $declared_return_type = ExpressionChecker::fleshOutType(
             $project_checker,
             $return_type,
-            $fq_class_name ?: $this->source->getFQCLN(),
-            $method_id
+            $self_fq_class_name,
+            $self_fq_class_name
         );
 
-        if (!$inferred_return_types && !$inferred_yield_types) {
+        if (!$inferred_return_type_parts && !$inferred_yield_types) {
             if ($declared_return_type->isVoid()) {
                 return null;
             }
@@ -1072,27 +1366,25 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
                 return null;
             }
 
-            if (IssueBuffer::accepts(
-                new InvalidReturnType(
-                    'No return statements were found for method ' . $cased_method_id .
-                        ' but return type \'' . $declared_return_type . '\' was expected',
-                    $return_type_location
-                )
-            )) {
-                return false;
+            if ($project_checker->alter_code && isset($project_checker->getIssuesToFix()['InvalidReturnType'])) {
+                $this->addOrUpdateReturnType($project_checker, Type::getVoid());
+
+                return null;
+            }
+
+            if (!$declared_return_type->from_docblock || !$declared_return_type->isNullable()) {
+                if (IssueBuffer::accepts(
+                    new InvalidReturnType(
+                        'No return statements were found for method ' . $cased_method_id .
+                            ' but return type \'' . $declared_return_type . '\' was expected',
+                        $return_type_location
+                    )
+                )) {
+                    return false;
+                }
             }
 
             return null;
-        }
-
-        if (!$declared_return_type->isMixed()) {
-            $declared_return_type->check(
-                $this,
-                $return_type_location,
-                $this->getSuppressedIssues(),
-                [],
-                false
-            );
         }
 
         if (!$declared_return_type->isMixed()) {
@@ -1116,23 +1408,15 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
             }
 
             if (!TypeChecker::isContainedBy(
-                $this->source->getFileChecker()->project_checker,
+                $codebase,
                 $inferred_return_type,
                 $declared_return_type,
-                $ignore_nullable_issues,
-                false,
+                true,
+                true,
                 $has_scalar_match,
                 $type_coerced,
                 $type_coerced_from_mixed
             )) {
-                if ($project_checker->update_docblocks) {
-                    if (!in_array('InvalidReturnType', $this->suppressed_issues, true)) {
-                        $this->addDocblockReturnType($project_checker, $inferred_return_type);
-                    }
-
-                    return null;
-                }
-
                 // is the declared return type more specific than the inferred one?
                 if ($type_coerced) {
                     if (IssueBuffer::accepts(
@@ -1146,6 +1430,20 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
                         return false;
                     }
                 } else {
+                    if ($project_checker->alter_code
+                        && isset($project_checker->getIssuesToFix()['InvalidReturnType'])
+                    ) {
+                        $this->addOrUpdateReturnType(
+                            $project_checker,
+                            $inferred_return_type,
+                            ($project_checker->only_replace_php_types_with_non_docblock_types
+                                || $unsafe_return_type)
+                                && $inferred_return_type->from_docblock
+                        );
+
+                        return null;
+                    }
+
                     if (IssueBuffer::accepts(
                         new InvalidReturnType(
                             'The declared return type \'' . $declared_return_type . '\' for ' . $cased_method_id .
@@ -1158,10 +1456,16 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
                     }
                 }
             } elseif (!$inferred_return_type->isNullable() && $declared_return_type->isNullable()) {
-                if ($project_checker->update_docblocks) {
-                    if (!in_array('InvalidReturnType', $this->suppressed_issues, true)) {
-                        $this->addDocblockReturnType($project_checker, $inferred_return_type);
-                    }
+                if ($project_checker->alter_code
+                    && isset($project_checker->getIssuesToFix()['LessSpecificReturnType'])
+                ) {
+                    $this->addOrUpdateReturnType(
+                        $project_checker,
+                        $inferred_return_type,
+                        ($project_checker->only_replace_php_types_with_non_docblock_types
+                            || $unsafe_return_type)
+                            && $inferred_return_type->from_docblock
+                    );
 
                     return null;
                 }
@@ -1177,139 +1481,157 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
                     return false;
                 }
             }
+
+            if (!$ignore_nullable_issues
+                && $inferred_return_type->isNullable()
+                && !$declared_return_type->isNullable()
+                && !$declared_return_type->isVoid()
+            ) {
+                if ($project_checker->alter_code
+                    && isset($project_checker->getIssuesToFix()['InvalidNullableReturnType'])
+                    && !$inferred_return_type->isNull()
+                ) {
+                    $this->addOrUpdateReturnType(
+                        $project_checker,
+                        $inferred_return_type,
+                        ($project_checker->only_replace_php_types_with_non_docblock_types
+                            || $unsafe_return_type)
+                            && $inferred_return_type->from_docblock
+                    );
+
+                    return null;
+                }
+
+                if (IssueBuffer::accepts(
+                    new InvalidNullableReturnType(
+                        'The declared return type \'' . $declared_return_type . '\' for ' . $cased_method_id .
+                            ' is not nullable, but \'' . $inferred_return_type . '\' contains null',
+                        $return_type_location
+                    ),
+                    $this->suppressed_issues
+                )) {
+                    return false;
+                }
+            }
+
+            if (!$ignore_falsable_issues
+                && $inferred_return_type->isFalsable()
+                && !$declared_return_type->isFalsable()
+                && !$declared_return_type->hasBool()
+            ) {
+                if ($project_checker->alter_code
+                    && isset($project_checker->getIssuesToFix()['InvalidFalsableReturnType'])
+                ) {
+                    $this->addOrUpdateReturnType(
+                        $project_checker,
+                        $inferred_return_type,
+                        ($project_checker->only_replace_php_types_with_non_docblock_types
+                            || $unsafe_return_type)
+                            && $inferred_return_type->from_docblock
+                    );
+
+                    return null;
+                }
+
+                if (IssueBuffer::accepts(
+                    new InvalidFalsableReturnType(
+                        'The declared return type \'' . $declared_return_type . '\' for ' . $cased_method_id .
+                            ' does not allow false, but \'' . $inferred_return_type . '\' contains false',
+                        $return_type_location
+                    ),
+                    $this->suppressed_issues
+                )) {
+                    return false;
+                }
+            }
         }
 
         return null;
     }
 
     /**
-     * @param Type\Union $inferred_return_type
+     * @param string $param_name
+     * @param bool $docblock_only
      *
      * @return void
      */
-    private function addDocblockReturnType(ProjectChecker $project_checker, Type\Union $inferred_return_type)
-    {
+    private function addOrUpdateParamType(
+        ProjectChecker $project_checker,
+        $param_name,
+        Type\Union $inferred_return_type,
+        $docblock_only = false
+    ) {
         $manipulator = FunctionDocblockManipulator::getForFunction(
             $project_checker,
             $this->source->getFilePath(),
             $this->getMethodId(),
             $this->function
         );
-
-        $manipulator->setDocblockReturnType(
+        $manipulator->setParamType(
+            $param_name,
+            !$docblock_only && $project_checker->php_major_version >= 7
+                ? $inferred_return_type->toPhpString(
+                    $this->source->getNamespace(),
+                    $this->source->getAliasedClassesFlipped(),
+                    $this->source->getFQCLN(),
+                    $project_checker->php_major_version,
+                    $project_checker->php_minor_version
+                ) : null,
             $inferred_return_type->toNamespacedString(
+                $this->source->getNamespace(),
                 $this->source->getAliasedClassesFlipped(),
                 $this->source->getFQCLN(),
                 false
             ),
             $inferred_return_type->toNamespacedString(
+                $this->source->getNamespace(),
                 $this->source->getAliasedClassesFlipped(),
                 $this->source->getFQCLN(),
                 true
-            )
+            ),
+            $inferred_return_type->canBeFullyExpressedInPhp()
         );
     }
 
     /**
-     * @param  \ReflectionParameter $param
+     * @param bool $docblock_only
      *
-     * @return FunctionLikeParameter
+     * @return void
      */
-    protected static function getReflectionParamData(\ReflectionParameter $param)
-    {
-        $param_type_string = null;
-
-        if ($param->isArray()) {
-            $param_type_string = 'array';
-        } else {
-            try {
-                /** @var \ReflectionClass */
-                $param_class = $param->getClass();
-            } catch (\ReflectionException $e) {
-                $param_class = null;
-            }
-
-            if ($param_class) {
-                $param_type_string = (string)$param_class->getName();
-            }
-        }
-
-        $is_nullable = false;
-
-        $is_optional = (bool)$param->isOptional();
-
-        try {
-            $is_nullable = $param->getDefaultValue() === null;
-
-            if ($param_type_string && $is_nullable) {
-                $param_type_string .= '|null';
-            }
-        } catch (\ReflectionException $e) {
-            // do nothing
-        }
-
-        $param_name = (string)$param->getName();
-        $param_type = $param_type_string ? Type::parseString($param_type_string) : Type::getMixed();
-
-        return new FunctionLikeParameter(
-            $param_name,
-            (bool)$param->isPassedByReference(),
-            $param_type,
-            null,
-            $is_optional,
-            $is_nullable,
-            $param->isVariadic()
-        );
-    }
-
-    /**
-     * @param  string                       $return_type
-     * @param  Aliases                      $aliases
-     * @param  array<string, string>|null   $template_types
-     *
-     * @return string
-     */
-    public static function fixUpLocalType(
-        $return_type,
-        Aliases $aliases,
-        array $template_types = null
+    private function addOrUpdateReturnType(
+        ProjectChecker $project_checker,
+        Type\Union $inferred_return_type,
+        $docblock_only = false
     ) {
-        if (strpos($return_type, '[') !== false) {
-            $return_type = Type::convertSquareBrackets($return_type);
-        }
-
-        $return_type_tokens = Type::tokenize($return_type);
-
-        foreach ($return_type_tokens as $i => &$return_type_token) {
-            if (in_array($return_type_token, ['<', '>', '|', '?', ',', '{', '}', ':'], true)) {
-                continue;
-            }
-
-            if (isset($return_type_tokens[$i + 1]) && $return_type_tokens[$i + 1] === ':') {
-                continue;
-            }
-
-            $return_type_token = Type::fixScalarTerms($return_type_token);
-
-            if ($return_type_token[0] === strtoupper($return_type_token[0]) &&
-                !isset($template_types[$return_type_token])
-            ) {
-                if ($return_type_token[0] === '$') {
-                    if ($return_type === '$this') {
-                        $return_type_token = 'static';
-                    }
-
-                    continue;
-                }
-
-                $return_type_token = ClassLikeChecker::getFQCLNFromString(
-                    $return_type_token,
-                    $aliases
-                );
-            }
-        }
-
-        return implode('', $return_type_tokens);
+        $manipulator = FunctionDocblockManipulator::getForFunction(
+            $project_checker,
+            $this->source->getFilePath(),
+            $this->getMethodId(),
+            $this->function
+        );
+        $manipulator->setReturnType(
+            !$docblock_only && $project_checker->php_major_version >= 7
+                ? $inferred_return_type->toPhpString(
+                    $this->source->getNamespace(),
+                    $this->source->getAliasedClassesFlipped(),
+                    $this->source->getFQCLN(),
+                    $project_checker->php_major_version,
+                    $project_checker->php_minor_version
+                ) : null,
+            $inferred_return_type->toNamespacedString(
+                $this->source->getNamespace(),
+                $this->source->getAliasedClassesFlipped(),
+                $this->source->getFQCLN(),
+                false
+            ),
+            $inferred_return_type->toNamespacedString(
+                $this->source->getNamespace(),
+                $this->source->getAliasedClassesFlipped(),
+                $this->source->getFQCLN(),
+                true
+            ),
+            $inferred_return_type->canBeFullyExpressedInPhp()
+        );
     }
 
     /**
@@ -1322,16 +1644,22 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
     {
         $fq_class_name = strpos($method_id, '::') !== false ? explode('::', $method_id)[0] : null;
 
-        if ($fq_class_name && ClassLikeChecker::isUserDefined($project_checker, $fq_class_name)) {
-            $method_params = MethodChecker::getMethodParams($project_checker, $method_id);
+        $codebase = $project_checker->codebase;
 
-            return $method_params;
+        if ($fq_class_name) {
+            $class_storage = $project_checker->codebase->classlike_storage_provider->get($fq_class_name);
+
+            if ($class_storage->user_defined || $class_storage->stubbed) {
+                $method_params = $codebase->methods->getMethodParams($method_id);
+
+                return $method_params;
+            }
         }
 
-        $declaring_method_id = MethodChecker::getDeclaringMethodId($project_checker, $method_id);
+        $declaring_method_id = $codebase->methods->getDeclaringMethodId($method_id);
 
-        if (FunctionChecker::inCallMap($declaring_method_id ?: $method_id)) {
-            $function_param_options = FunctionChecker::getParamsFromCallMap($declaring_method_id ?: $method_id);
+        if (CallMap::inCallMap($declaring_method_id ?: $method_id)) {
+            $function_param_options = CallMap::getParamsFromCallMap($declaring_method_id ?: $method_id);
 
             if ($function_param_options === null) {
                 throw new \UnexpectedValueException(
@@ -1342,7 +1670,7 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
             return self::getMatchingParamsFromCallMapOptions($project_checker, $function_param_options, $args);
         }
 
-        return MethodChecker::getMethodParams($project_checker, $method_id);
+        return $codebase->methods->getMethodParams($method_id);
     }
 
     /**
@@ -1353,7 +1681,7 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
      */
     public static function getFunctionParamsFromCallMapById(ProjectChecker $project_checker, $method_id, array $args)
     {
-        $function_param_options = FunctionChecker::getParamsFromCallMap($method_id);
+        $function_param_options = CallMap::getParamsFromCallMap($method_id);
 
         if ($function_param_options === null) {
             throw new \UnexpectedValueException(
@@ -1422,7 +1750,7 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
                     continue;
                 }
 
-                if (TypeChecker::isContainedBy($project_checker, $arg->value->inferredType, $param_type)) {
+                if (TypeChecker::isContainedBy($project_checker->codebase, $arg->value->inferredType, $param_type)) {
                     continue;
                 }
 
@@ -1495,5 +1823,24 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
     public function getFileChecker()
     {
         return $this->file_checker;
+    }
+
+    /**
+     * @return Type\Union
+     */
+    public function getLocalReturnType(Type\Union $storage_return_type)
+    {
+        if ($this->local_return_type) {
+            return $this->local_return_type;
+        }
+
+        $this->local_return_type = ExpressionChecker::fleshOutType(
+            $this->file_checker->project_checker,
+            $storage_return_type,
+            $this->getFQCLN(),
+            $this->getFQCLN()
+        );
+
+        return $this->local_return_type;
     }
 }

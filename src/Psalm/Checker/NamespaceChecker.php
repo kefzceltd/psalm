@@ -27,21 +27,6 @@ class NamespaceChecker extends SourceChecker implements StatementsSource
     private $namespace_name;
 
     /**
-     * @var array<int, FunctionChecker>
-     */
-    public $function_checkers = [];
-
-    /**
-     * @var array<int, ClassChecker>
-     */
-    public $class_checkers = [];
-
-    /**
-     * @var array<int, ClassChecker>
-     */
-    public $interface_checkers = [];
-
-    /**
      * A lookup table for public namespace constants
      *
      * @var array<string, array<string, Type\Union>>
@@ -71,8 +56,10 @@ class NamespaceChecker extends SourceChecker implements StatementsSource
             self::$public_namespace_constants[$this->namespace_name] = [];
         }
 
+        $codebase = $this->getFileChecker()->project_checker->codebase;
+
         $namespace_context = new Context();
-        $namespace_context->collect_references = $this->getFileChecker()->project_checker->collect_references;
+        $namespace_context->collect_references = $codebase->collect_references;
 
         foreach ($this->namespace->stmts as $stmt) {
             if ($stmt instanceof PhpParser\Node\Stmt\ClassLike) {
@@ -107,7 +94,7 @@ class NamespaceChecker extends SourceChecker implements StatementsSource
         if ($leftover_stmts) {
             $statements_checker = new StatementsChecker($this);
             $context = new Context();
-            $context->collect_references = $this->getFileChecker()->project_checker->collect_references;
+            $context->collect_references = $codebase->collect_references;
             $statements_checker->analyze($leftover_stmts, $context);
         }
     }
@@ -123,7 +110,7 @@ class NamespaceChecker extends SourceChecker implements StatementsSource
             throw new \UnexpectedValueException('Did not expect anonymous class here');
         }
 
-        $fq_class_name = ClassLikeChecker::getFQCLNFromString($stmt->name, $this->getAliases());
+        $fq_class_name = Type::getFQCLNFromString($stmt->name, $this->getAliases());
 
         if ($stmt instanceof PhpParser\Node\Stmt\Class_) {
             $this->source->addNamespacedClassChecker(
@@ -165,9 +152,6 @@ class NamespaceChecker extends SourceChecker implements StatementsSource
      */
     public static function getConstantsForNamespace($namespace_name, $visibility)
     {
-        // remove for PHP 7.1 support
-        $visibility = \ReflectionProperty::IS_PUBLIC;
-
         // @todo this does not allow for loading in namespace constants not already defined in the current sweep
         if (!isset(self::$public_namespace_constants[$namespace_name])) {
             self::$public_namespace_constants[$namespace_name] = [];

@@ -3,12 +3,10 @@ namespace Psalm\Tests;
 
 use Psalm\Checker\FileChecker;
 use Psalm\Config;
+use Psalm\Context;
 
 class ConfigTest extends TestCase
 {
-    /** @var \PhpParser\Parser */
-    protected static $parser;
-
     /** @var TestConfig */
     protected static $config;
 
@@ -30,11 +28,6 @@ class ConfigTest extends TestCase
     {
         FileChecker::clearCache();
         $this->file_provider = new Provider\FakeFileProvider();
-
-        $this->project_checker = new \Psalm\Checker\ProjectChecker(
-            $this->file_provider,
-            new Provider\FakeParserCacheProvider()
-        );
     }
 
     /**
@@ -61,8 +54,25 @@ class ConfigTest extends TestCase
              * @return bool
              */
             function ($issue_name) {
-                return !empty($issue_name) && $issue_name !== 'CodeError' && $issue_name !== 'CodeIssue';
+                return !empty($issue_name)
+                    && $issue_name !== 'CodeError'
+                    && $issue_name !== 'CodeIssue'
+                    && $issue_name !== 'FixableCodeIssue';
             }
+        );
+    }
+
+    /**
+     * @param  Config $config
+     *
+     * @return \Psalm\Checker\ProjectChecker
+     */
+    private function getProjectCheckerWithConfig(Config $config)
+    {
+        return new \Psalm\Checker\ProjectChecker(
+            $config,
+            $this->file_provider,
+            new Provider\FakeParserCacheProvider()
         );
     }
 
@@ -71,16 +81,19 @@ class ConfigTest extends TestCase
      */
     public function testBarebonesConfig()
     {
-        $config = Config::loadFromXML(
-            'psalm.xml',
-            (string)getcwd(),
-            '<?xml version="1.0"?>
-            <psalm>
-                <projectFiles>
-                    <directory name="src" />
-                </projectFiles>
-            </psalm>'
+        $this->project_checker = $this->getProjectCheckerWithConfig(
+            Config::loadFromXML(
+                (string)getcwd(),
+                '<?xml version="1.0"?>
+                <psalm>
+                    <projectFiles>
+                        <directory name="src" />
+                    </projectFiles>
+                </psalm>'
+            )
         );
+
+        $config = $this->project_checker->getConfig();
 
         $this->assertTrue($config->isInProjectDirs(realpath('src/Psalm/Type.php')));
         $this->assertFalse($config->isInProjectDirs(realpath('examples/StringChecker.php')));
@@ -91,19 +104,22 @@ class ConfigTest extends TestCase
      */
     public function testIgnoreProjectDirectory()
     {
-        $config = Config::loadFromXML(
-            'psalm.xml',
-            dirname(__DIR__),
-            '<?xml version="1.0"?>
-            <psalm>
-                <projectFiles>
-                    <directory name="src" />
-                    <ignoreFiles>
-                        <directory name="src/Psalm/Checker" />
-                    </ignoreFiles>
-                </projectFiles>
-            </psalm>'
+        $this->project_checker = $this->getProjectCheckerWithConfig(
+            Config::loadFromXML(
+                dirname(__DIR__),
+                '<?xml version="1.0"?>
+                <psalm>
+                    <projectFiles>
+                        <directory name="src" />
+                        <ignoreFiles>
+                            <directory name="src/Psalm/Checker" />
+                        </ignoreFiles>
+                    </projectFiles>
+                </psalm>'
+            )
         );
+
+        $config = $this->project_checker->getConfig();
 
         $this->assertTrue($config->isInProjectDirs(realpath('src/Psalm/Type.php')));
         $this->assertFalse($config->isInProjectDirs(realpath('src/Psalm/Checker/FileChecker.php')));
@@ -115,21 +131,24 @@ class ConfigTest extends TestCase
      */
     public function testIssueHandler()
     {
-        $config = Config::loadFromXML(
-            'psalm.xml',
-            dirname(__DIR__),
-            '<?xml version="1.0"?>
-            <psalm>
-                <projectFiles>
-                    <directory name="src" />
-                    <directory name="tests" />
-                </projectFiles>
+        $this->project_checker = $this->getProjectCheckerWithConfig(
+            Config::loadFromXML(
+                dirname(__DIR__),
+                '<?xml version="1.0"?>
+                <psalm>
+                    <projectFiles>
+                        <directory name="src" />
+                        <directory name="tests" />
+                    </projectFiles>
 
-                <issueHandlers>
-                    <MissingReturnType errorLevel="suppress" />
-                </issueHandlers>
-            </psalm>'
+                    <issueHandlers>
+                        <MissingReturnType errorLevel="suppress" />
+                    </issueHandlers>
+                </psalm>'
+            )
         );
+
+        $config = $this->project_checker->getConfig();
 
         $this->assertFalse($config->reportIssueInFile('MissingReturnType', realpath('tests/ConfigTest.php')));
         $this->assertFalse($config->reportIssueInFile('MissingReturnType', realpath('src/Psalm/Type.php')));
@@ -140,28 +159,31 @@ class ConfigTest extends TestCase
      */
     public function testIssueHandlerWithCustomErrorLevels()
     {
-        $config = Config::loadFromXML(
-            'psalm.xml',
-            dirname(__DIR__),
-            '<?xml version="1.0"?>
-            <psalm>
-                <projectFiles>
-                    <directory name="src" />
-                    <directory name="tests" />
-                </projectFiles>
+        $this->project_checker = $this->getProjectCheckerWithConfig(
+            Config::loadFromXML(
+                dirname(__DIR__),
+                '<?xml version="1.0"?>
+                <psalm>
+                    <projectFiles>
+                        <directory name="src" />
+                        <directory name="tests" />
+                    </projectFiles>
 
-                <issueHandlers>
-                    <MissingReturnType errorLevel="info">
-                        <errorLevel type="suppress">
-                            <directory name="tests" />
-                        </errorLevel>
-                        <errorLevel type="error">
-                            <directory name="src/Psalm/Checker" />
-                        </errorLevel>
-                    </MissingReturnType>
-                </issueHandlers>
-            </psalm>'
+                    <issueHandlers>
+                        <MissingReturnType errorLevel="info">
+                            <errorLevel type="suppress">
+                                <directory name="tests" />
+                            </errorLevel>
+                            <errorLevel type="error">
+                                <directory name="src/Psalm/Checker" />
+                            </errorLevel>
+                        </MissingReturnType>
+                    </issueHandlers>
+                </psalm>'
+            )
         );
+
+        $config = $this->project_checker->getConfig();
 
         $this->assertSame(
             'info',
@@ -200,19 +222,20 @@ class ConfigTest extends TestCase
             )
         );
 
-        Config::loadFromXML(
-            'psalm.xml',
-            dirname(__DIR__),
-            '<?xml version="1.0"?>
-            <psalm>
-                <projectFiles>
-                    <directory name="src" />
-                </projectFiles>
+        $this->project_checker = $this->getProjectCheckerWithConfig(
+            Config::loadFromXML(
+                dirname(__DIR__),
+                '<?xml version="1.0"?>
+                <psalm>
+                    <projectFiles>
+                        <directory name="src" />
+                    </projectFiles>
 
-                <issueHandlers>
-                ' . $all_possible_handlers . '
-                </issueHandlers>
-            </psalm>'
+                    <issueHandlers>
+                    ' . $all_possible_handlers . '
+                    </issueHandlers>
+                </psalm>'
+            )
         );
     }
 
@@ -224,19 +247,20 @@ class ConfigTest extends TestCase
      */
     public function testImpossibleIssue()
     {
-        Config::loadFromXML(
-            'psalm.xml',
-            dirname(__DIR__),
-            '<?xml version="1.0"?>
-            <psalm>
-                <projectFiles>
-                    <directory name="src" />
-                </projectFiles>
+        $this->project_checker = $this->getProjectCheckerWithConfig(
+            Config::loadFromXML(
+                dirname(__DIR__),
+                '<?xml version="1.0"?>
+                <psalm>
+                    <projectFiles>
+                        <directory name="src" />
+                    </projectFiles>
 
-                <issueHandlers>
-                    <ImpossibleIssue errorLevel="suppress" />
-                </issueHandlers>
-            </psalm>'
+                    <issueHandlers>
+                        <ImpossibleIssue errorLevel="suppress" />
+                    </issueHandlers>
+                </psalm>'
+            )
         );
     }
 
@@ -248,19 +272,20 @@ class ConfigTest extends TestCase
      */
     public function testNonexistentStubFile()
     {
-        Config::loadFromXML(
-            'psalm.xml',
-            dirname(__DIR__),
-            '<?xml version="1.0"?>
-            <psalm>
-                <projectFiles>
-                    <directory name="src" />
-                </projectFiles>
+        $this->project_checker = $this->getProjectCheckerWithConfig(
+            Config::loadFromXML(
+                dirname(__DIR__),
+                '<?xml version="1.0"?>
+                <psalm>
+                    <projectFiles>
+                        <directory name="src" />
+                    </projectFiles>
 
-                <stubs>
-                    <file name="stubs/invalidfile.php" />
-                </stubs>
-            </psalm>'
+                    <stubs>
+                        <file name="stubs/invalidfile.php" />
+                    </stubs>
+                </psalm>'
+            )
         );
     }
 
@@ -269,9 +294,8 @@ class ConfigTest extends TestCase
      */
     public function testStubFile()
     {
-        $this->project_checker->setConfig(
+        $this->project_checker = $this->getProjectCheckerWithConfig(
             TestConfig::loadFromXML(
-                'psalm.xml',
                 dirname(__DIR__),
                 '<?xml version="1.0"?>
                 <psalm>
@@ -286,8 +310,10 @@ class ConfigTest extends TestCase
             )
         );
 
+        $file_path = getcwd() . '/src/somefile.php';
+
         $this->addFile(
-            getcwd() . '/src/somefile.php',
+            $file_path,
             '<?php
                 $a = new SystemClass();
                 echo SystemClass::HELLO;
@@ -296,9 +322,7 @@ class ConfigTest extends TestCase
                 $c = SystemClass::bar(5, "hello");'
         );
 
-        $file_checker = new FileChecker(getcwd() . '/src/somefile.php', $this->project_checker);
-        $file_checker->visitAndAnalyzeMethods();
-        $this->project_checker->checkClassReferences();
+        $this->analyzeFile($file_path, new Context());
     }
 
     /**
@@ -306,9 +330,8 @@ class ConfigTest extends TestCase
      */
     public function testNamespacedStubClass()
     {
-        $this->project_checker->setConfig(
+        $this->project_checker = $this->getProjectCheckerWithConfig(
             TestConfig::loadFromXML(
-                'psalm.xml',
                 dirname(__DIR__),
                 '<?xml version="1.0"?>
                 <psalm>
@@ -323,8 +346,10 @@ class ConfigTest extends TestCase
             )
         );
 
+        $file_path = getcwd() . '/src/somefile.php';
+
         $this->addFile(
-            getcwd() . '/src/somefile.php',
+            $file_path,
             '<?php
                 $a = new Foo\SystemClass();
                 echo Foo\SystemClass::HELLO;
@@ -333,9 +358,7 @@ class ConfigTest extends TestCase
                 $c = Foo\SystemClass::bar(5, "hello");'
         );
 
-        $file_checker = new FileChecker(getcwd() . '/src/somefile.php', $this->project_checker);
-        $file_checker->visitAndAnalyzeMethods();
-        $this->project_checker->checkClassReferences();
+        $this->analyzeFile($file_path, new Context());
     }
 
     /**
@@ -343,9 +366,8 @@ class ConfigTest extends TestCase
      */
     public function testStubFunction()
     {
-        $this->project_checker->setConfig(
+        $this->project_checker = $this->getProjectCheckerWithConfig(
             TestConfig::loadFromXML(
-                'psalm.xml',
                 dirname(__DIR__),
                 '<?xml version="1.0"?>
                 <psalm>
@@ -360,15 +382,46 @@ class ConfigTest extends TestCase
             )
         );
 
+        $file_path = getcwd() . '/src/somefile.php';
+
         $this->addFile(
-            getcwd() . '/src/somefile.php',
+            $file_path,
             '<?php
                 echo barBar("hello");'
         );
 
-        $file_checker = new FileChecker(getcwd() . '/src/somefile.php', $this->project_checker);
-        $file_checker->visitAndAnalyzeMethods();
-        $this->project_checker->checkClassReferences();
+        $this->analyzeFile($file_path, new Context());
+    }
+
+    /**
+     * @expectedException        \Psalm\Exception\CodeException
+     * @expectedExceptionMessage UndefinedFunction - /src/somefile.php:2 - Function barBar does not exist
+     *
+     * @return                   void
+     */
+    public function testNoStubFunction()
+    {
+        $this->project_checker = $this->getProjectCheckerWithConfig(
+            TestConfig::loadFromXML(
+                dirname(__DIR__),
+                '<?xml version="1.0"?>
+                <psalm>
+                    <projectFiles>
+                        <directory name="src" />
+                    </projectFiles>
+                </psalm>'
+            )
+        );
+
+        $file_path = getcwd() . '/src/somefile.php';
+
+        $this->addFile(
+            $file_path,
+            '<?php
+                echo barBar("hello");'
+        );
+
+        $this->analyzeFile($file_path, new Context());
     }
 
     /**
@@ -376,9 +429,8 @@ class ConfigTest extends TestCase
      */
     public function testNamespacedStubFunction()
     {
-        $this->project_checker->setConfig(
+        $this->project_checker = $this->getProjectCheckerWithConfig(
             TestConfig::loadFromXML(
-                'psalm.xml',
                 dirname(__DIR__),
                 '<?xml version="1.0"?>
                 <psalm>
@@ -393,15 +445,15 @@ class ConfigTest extends TestCase
             )
         );
 
+        $file_path = getcwd() . '/src/somefile.php';
+
         $this->addFile(
-            getcwd() . '/src/somefile.php',
+            $file_path,
             '<?php
                 echo Foo\barBar("hello");'
         );
 
-        $file_checker = new FileChecker(getcwd() . '/src/somefile.php', $this->project_checker);
-        $file_checker->visitAndAnalyzeMethods();
-        $this->project_checker->checkClassReferences();
+        $this->analyzeFile($file_path, new Context());
     }
 
     /**
@@ -409,9 +461,8 @@ class ConfigTest extends TestCase
      */
     public function testConditionalNamespacedStubFunction()
     {
-        $this->project_checker->setConfig(
+        $this->project_checker = $this->getProjectCheckerWithConfig(
             TestConfig::loadFromXML(
-                'psalm.xml',
                 dirname(__DIR__),
                 '<?xml version="1.0"?>
                 <psalm>
@@ -426,15 +477,15 @@ class ConfigTest extends TestCase
             )
         );
 
+        $file_path = getcwd() . '/src/somefile.php';
+
         $this->addFile(
-            getcwd() . '/src/somefile.php',
+            $file_path,
             '<?php
                 echo Foo\barBar("hello");'
         );
 
-        $file_checker = new FileChecker(getcwd() . '/src/somefile.php', $this->project_checker);
-        $file_checker->visitAndAnalyzeMethods();
-        $this->project_checker->checkClassReferences();
+        $this->analyzeFile($file_path, new Context());
     }
 
     /**
@@ -442,9 +493,8 @@ class ConfigTest extends TestCase
      */
     public function testStubFileWithExistingClassDefinition()
     {
-        $this->project_checker->setConfig(
+        $this->project_checker = $this->getProjectCheckerWithConfig(
             TestConfig::loadFromXML(
-                'psalm.xml',
                 dirname(__DIR__),
                 '<?xml version="1.0"?>
                 <psalm>
@@ -459,15 +509,15 @@ class ConfigTest extends TestCase
             )
         );
 
+        $file_path = getcwd() . '/src/somefile.php';
+
         $this->addFile(
-            getcwd() . '/src/somefile.php',
+            $file_path,
             '<?php
                 $a = new LogicException(5);'
         );
 
-        $file_checker = new FileChecker(getcwd() . '/src/somefile.php', $this->project_checker);
-        $file_checker->visitAndAnalyzeMethods();
-        $this->project_checker->checkClassReferences();
+        $this->analyzeFile($file_path, new Context());
     }
 
     /**
@@ -478,9 +528,8 @@ class ConfigTest extends TestCase
      */
     public function testRequireVoidReturnTypeExists()
     {
-        $this->project_checker->setConfig(
+        $this->project_checker = $this->getProjectCheckerWithConfig(
             TestConfig::loadFromXML(
-                'psalm.xml',
                 dirname(__DIR__),
                 '<?xml version="1.0"?>
                 <psalm
@@ -492,15 +541,15 @@ class ConfigTest extends TestCase
             )
         );
 
+        $file_path = getcwd() . '/src/somefile.php';
+
         $this->addFile(
-            getcwd() . '/src/somefile.php',
+            $file_path,
             '<?php
                 function foo() {}'
         );
 
-        $file_checker = new FileChecker(getcwd() . '/src/somefile.php', $this->project_checker);
-        $file_checker->visitAndAnalyzeMethods();
-        $this->project_checker->checkClassReferences();
+        $this->analyzeFile($file_path, new Context());
     }
 
     /**
@@ -508,9 +557,8 @@ class ConfigTest extends TestCase
      */
     public function testDoNotRequireVoidReturnTypeExists()
     {
-        $this->project_checker->setConfig(
+        $this->project_checker = $this->getProjectCheckerWithConfig(
             TestConfig::loadFromXML(
-                'psalm.xml',
                 dirname(__DIR__),
                 '<?xml version="1.0"?>
                 <psalm
@@ -522,15 +570,15 @@ class ConfigTest extends TestCase
             )
         );
 
+        $file_path = getcwd() . '/src/somefile.php';
+
         $this->addFile(
-            getcwd() . '/src/somefile.php',
+            $file_path,
             '<?php
                 function foo() {}'
         );
 
-        $file_checker = new FileChecker(getcwd() . '/src/somefile.php', $this->project_checker);
-        $file_checker->visitAndAnalyzeMethods();
-        $this->project_checker->checkClassReferences();
+        $this->analyzeFile($file_path, new Context());
     }
 
     /**

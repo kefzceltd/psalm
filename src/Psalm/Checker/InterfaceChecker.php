@@ -2,6 +2,7 @@
 namespace Psalm\Checker;
 
 use PhpParser;
+use Psalm\CodeLocation;
 use Psalm\StatementsSource;
 
 class InterfaceChecker extends ClassLikeChecker
@@ -17,55 +18,33 @@ class InterfaceChecker extends ClassLikeChecker
     }
 
     /**
-     * @param  ProjectChecker $project_checker
-     * @param  string         $fq_interface_name
-     *
-     * @return bool
+     * @return void
      */
-    public static function interfaceExists(ProjectChecker $project_checker, $fq_interface_name)
+    public function analyze()
     {
-        if (isset(self::$SPECIAL_TYPES[strtolower($fq_interface_name)])) {
-            return false;
+        if (!$this->class instanceof PhpParser\Node\Stmt\Interface_) {
+            throw new \LogicException('Something went badly wrong');
         }
 
-        return $project_checker->hasFullyQualifiedInterfaceName($fq_interface_name);
-    }
+        if ($this->class->extends) {
+            foreach ($this->class->extends as $extended_interface) {
+                $extended_interface_name = self::getFQCLNFromNameObject(
+                    $extended_interface,
+                    $this->getAliases()
+                );
 
-    /**
-     * @param  ProjectChecker $project_checker
-     * @param  string         $fq_interface_name
-     *
-     * @return bool
-     */
-    public static function hasCorrectCasing(ProjectChecker $project_checker, $fq_interface_name)
-    {
-        return isset($project_checker->existing_interfaces[$fq_interface_name]);
-    }
+                $parent_reference_location = new CodeLocation($this, $extended_interface);
 
-    /**
-     * @param  ProjectChecker $project_checker
-     * @param  string         $interface_name
-     * @param  string         $possible_parent
-     *
-     * @return bool
-     */
-    public static function interfaceExtends(ProjectChecker $project_checker, $interface_name, $possible_parent)
-    {
-        return in_array($possible_parent, self::getParentInterfaces($project_checker, $interface_name), true);
-    }
+                $project_checker = $this->file_checker->project_checker;
 
-    /**
-     * @param  ProjectChecker $project_checker
-     * @param  string         $fq_interface_name
-     *
-     * @return array<string>   all interfaces extended by $interface_name
-     */
-    public static function getParentInterfaces(ProjectChecker $project_checker, $fq_interface_name)
-    {
-        $fq_interface_name = strtolower($fq_interface_name);
-
-        $storage = $project_checker->classlike_storage_provider->get($fq_interface_name);
-
-        return $storage->parent_interfaces;
+                if (!$project_checker->codebase->classOrInterfaceExists(
+                    $extended_interface_name,
+                    $parent_reference_location
+                )) {
+                    // we should not normally get here
+                    return;
+                }
+            }
+        }
     }
 }

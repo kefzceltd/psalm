@@ -3,6 +3,7 @@ namespace Psalm\Tests;
 
 use Psalm\Checker\FileChecker;
 use Psalm\Checker\ProjectChecker;
+use Psalm\Context;
 use Psalm\IssueBuffer;
 
 class JsonOutputTest extends TestCase
@@ -17,7 +18,11 @@ class JsonOutputTest extends TestCase
         FileChecker::clearCache();
         $this->file_provider = new Provider\FakeFileProvider();
 
-        $this->project_checker = new \Psalm\Checker\ProjectChecker(
+        $config = new TestConfig();
+        $config->throw_exception = false;
+
+        $this->project_checker = new ProjectChecker(
+            $config,
             $this->file_provider,
             new Provider\FakeParserCacheProvider(),
             false,
@@ -25,10 +30,7 @@ class JsonOutputTest extends TestCase
             ProjectChecker::TYPE_JSON
         );
 
-        $config = new TestConfig();
-        $config->throw_exception = false;
-        $config->stop_on_first_error = false;
-        $this->project_checker->setConfig($config);
+        $this->project_checker->getCodebase()->collectReferences();
     }
 
     /**
@@ -44,9 +46,7 @@ class JsonOutputTest extends TestCase
     public function testJsonOutputErrors($code, $message, $line_number, $error)
     {
         $this->addFile('somefile.php', $code);
-
-        $file_checker = new FileChecker('somefile.php', $this->project_checker);
-        $file_checker->visitAndAnalyzeMethods();
+        $this->analyzeFile('somefile.php', new Context());
         $issue_data = IssueBuffer::getIssuesData()[0];
 
         $this->assertSame('somefile.php', $issue_data['file_path']);
@@ -65,7 +65,7 @@ class JsonOutputTest extends TestCase
     public function testJsonOutputForGetPsalmDotOrg()
     {
         $file_contents = '<?php
-function psalmCanVerify(int $your_code) : ?string {
+function psalmCanVerify(int $your_code): ?string {
   return $as_you . "type";
 }
 
@@ -85,8 +85,10 @@ echo $a;';
             $file_contents
         );
 
-        $file_checker = new FileChecker('somefile.php', $this->project_checker);
-        $file_checker->visitAndAnalyzeMethods();
+        $this->project_checker->getCodebase()->classlikes->checkClassReferences();
+
+        $this->analyzeFile('somefile.php', new Context());
+
         $issue_data = IssueBuffer::getIssuesData();
         $this->assertSame(
             [
@@ -98,10 +100,11 @@ echo $a;';
                     'file_name' => 'somefile.php',
                     'file_path' => 'somefile.php',
                     'snippet' => 'echo CHANGE_ME;',
-                    'from' => 126,
-                    'to' => 135,
-                    'snippet_from' => 121,
-                    'snippet_to' => 136,
+                    'selected_text' => 'CHANGE_ME',
+                    'from' => 125,
+                    'to' => 134,
+                    'snippet_from' => 120,
+                    'snippet_to' => 135,
                     'column' => 6,
                 ],
                 [
@@ -112,10 +115,11 @@ echo $a;';
                     'file_name' => 'somefile.php',
                     'file_path' => 'somefile.php',
                     'snippet' => 'echo $a',
-                    'from' => 202,
-                    'to' => 204,
-                    'snippet_from' => 197,
-                    'snippet_to' => 204,
+                    'selected_text' => '$a',
+                    'from' => 201,
+                    'to' => 203,
+                    'snippet_from' => 196,
+                    'snippet_to' => 203,
                     'column' => 6,
                 ],
                 [
@@ -126,11 +130,27 @@ echo $a;';
                     'file_name' => 'somefile.php',
                     'file_path' => 'somefile.php',
                     'snippet' => '  return $as_you . "type";',
-                    'from' => 67,
-                    'to' => 74,
-                    'snippet_from' => 58,
-                    'snippet_to' => 84,
+                    'selected_text' => '$as_you',
+                    'from' => 66,
+                    'to' => 73,
+                    'snippet_from' => 57,
+                    'snippet_to' => 83,
                     'column' => 10,
+                ],
+                [
+                    'severity' => 'error',
+                    'line_number' => 2,
+                    'type' => 'UnusedParam',
+                    'message' => 'Param $your_code is never referenced in this method',
+                    'file_name' => 'somefile.php',
+                    'file_path' => 'somefile.php',
+                    'snippet' => 'function psalmCanVerify(int $your_code): ?string {',
+                    'selected_text' => '$your_code',
+                    'from' => 34,
+                    'to' => 44,
+                    'snippet_from' => 6,
+                    'snippet_to' => 56,
+                    'column' => 29,
                 ],
                 [
                     'severity' => 'error',
@@ -139,14 +159,15 @@ echo $a;';
                     'message' => 'Could not verify return type \'string|null\' for psalmCanVerify',
                     'file_name' => 'somefile.php',
                     'file_path' => 'somefile.php',
-                    'snippet' => 'function psalmCanVerify(int $your_code) : ?string {
+                    'snippet' => 'function psalmCanVerify(int $your_code): ?string {
   return $as_you . "type";
 }',
-                    'from' => 48,
-                    'to' => 55,
+                    'selected_text' => '?string',
+                    'from' => 47,
+                    'to' => 54,
                     'snippet_from' => 6,
-                    'snippet_to' => 86,
-                    'column' => 43,
+                    'snippet_to' => 85,
+                    'column' => 42,
                 ],
             ],
             $issue_data
@@ -161,7 +182,7 @@ echo $a;';
         return [
             'returnTypeError' => [
                 '<?php
-                    function fooFoo(int $a) : string {
+                    function fooFoo(int $a): string {
                         return $a + 1;
                     }',
                 'message' => "The type 'int' does not match the declared return type 'string' for fooFoo",
@@ -170,7 +191,7 @@ echo $a;';
             ],
             'undefinedVar' => [
                 '<?php
-                    function fooFoo(int $a) : int {
+                    function fooFoo(int $a): int {
                         return $b + 1;
                     }',
                 'message' => 'Cannot find referenced variable $b',
@@ -179,7 +200,7 @@ echo $a;';
             ],
             'unknownParamClass' => [
                 '<?php
-                    function fooFoo(Badger\Bodger $a) : Badger\Bodger {
+                    function fooFoo(Badger\Bodger $a): Badger\Bodger {
                         return $a;
                     }',
                 'message' => 'Class or interface Badger\\Bodger does not exist',

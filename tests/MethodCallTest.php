@@ -33,7 +33,7 @@ class MethodCallTest extends TestCase
             'nonStaticInvocation' => [
                 '<?php
                     class Foo {
-                        public static function barBar() : void {}
+                        public static function barBar(): void {}
                     }
 
                     (new Foo())->barBar();',
@@ -41,7 +41,7 @@ class MethodCallTest extends TestCase
             'staticInvocation' => [
                 '<?php
                     class A {
-                        public static function fooFoo() : void {}
+                        public static function fooFoo(): void {}
                     }
 
                     class B extends A {
@@ -53,7 +53,7 @@ class MethodCallTest extends TestCase
             'staticCallOnVar' => [
                 '<?php
                     class A {
-                        public static function bar() : int {
+                        public static function bar(): int {
                             return 5;
                         }
                     }
@@ -63,11 +63,33 @@ class MethodCallTest extends TestCase
             'uppercasedSelf' => [
                 '<?php
                     class X33{
-                        public static function main() : void {
+                        public static function main(): void {
                             echo SELF::class . "\n";  // Class or interface SELF does not exist
                         }
                     }
                     X33::main();',
+            ],
+            'dateTimeImmutableStatic' => [
+                '<?php
+                    final class MyDate extends DateTimeImmutable {}
+
+                    $today = new MyDate();
+                    $yesterday = $today->sub(new DateInterval("P1D"));
+
+                    $b = (new DateTimeImmutable())->modify("+3 hours");',
+                'assertions' => [
+                    '$yesterday' => 'MyDate',
+                    '$b' => 'DateTimeImmutable',
+                ],
+            ],
+            'magicCall' => [
+                '<?php
+                    class A {
+                        public function __call(string $method_name) {}
+                    }
+
+                    $a = new A;
+                    $a->bar();',
             ],
         ];
     }
@@ -81,7 +103,7 @@ class MethodCallTest extends TestCase
             'staticInvocation' => [
                 '<?php
                     class Foo {
-                        public function barBar() : void {}
+                        public function barBar(): void {}
                     }
 
                     Foo::barBar();',
@@ -105,7 +127,7 @@ class MethodCallTest extends TestCase
             'mixedMethodCall' => [
                 '<?php
                     class Foo {
-                        public static function barBar() : void {}
+                        public static function barBar(): void {}
                     }
 
                     /** @var mixed */
@@ -141,9 +163,9 @@ class MethodCallTest extends TestCase
             'selfNonStaticInvocation' => [
                 '<?php
                     class A {
-                        public function fooFoo() : void {}
+                        public function fooFoo(): void {}
 
-                        public function barBar() : void {
+                        public function barBar(): void {
                             self::fooFoo();
                         }
                     }',
@@ -152,7 +174,7 @@ class MethodCallTest extends TestCase
             'noParent' => [
                 '<?php
                     class Foo {
-                        public function barBar() : void {
+                        public function barBar(): void {
                             parent::barBar();
                         }
                     }',
@@ -174,14 +196,14 @@ class MethodCallTest extends TestCase
                         }
 
                         /**
-                         * @return NullableClass
+                         * @return ?NullableClass
                          */
                         public function returns_nullable_class() {
                             return self::mock("NullableClass");
                         }
                     }',
                 'error_message' => 'LessSpecificReturnStatement',
-                'error_levels' => ['MixedInferredReturnType'],
+                'error_levels' => ['MixedInferredReturnType', 'MixedReturnStatement'],
             ],
             'undefinedVariableStaticCall' => [
                 '<?php
@@ -191,13 +213,38 @@ class MethodCallTest extends TestCase
             'staticCallOnString' => [
                 '<?php
                     class A {
-                        public static function bar() : int {
+                        public static function bar(): int {
                             return 5;
                         }
                     }
                     $foo = "A";
                     $b = $foo::bar();',
                 'error_message' => 'MixedAssignment',
+            ],
+            'possiblyNullFunctionCall' => [
+                '<?php
+                    $this->foo();',
+                'error_message' => 'InvalidScope',
+            ],
+            'possiblyFalseReference' => [
+                '<?php
+                    class A {
+                        public function bar(): void {}
+                    }
+
+                    $a = rand(0, 1) ? new A : false;
+                    $a->bar();',
+                'error_message' => 'PossiblyFalseReference',
+            ],
+            'undefinedParentClass' => [
+                '<?php
+                    /**
+                     * @psalm-suppress UndefinedClass
+                     */
+                    class B extends A {}
+
+                    $b = new B();',
+                'error_message' => 'UndefinedClass - src/somefile.php:7',
             ],
         ];
     }

@@ -4,6 +4,7 @@ namespace Psalm\Tests;
 use LSS\XML2Array;
 use Psalm\Checker\FileChecker;
 use Psalm\Checker\ProjectChecker;
+use Psalm\Context;
 use Psalm\IssueBuffer;
 
 class ReportOutputTest extends TestCase
@@ -18,17 +19,16 @@ class ReportOutputTest extends TestCase
         FileChecker::clearCache();
         $this->file_provider = new Provider\FakeFileProvider();
 
-        $this->project_checker = new \Psalm\Checker\ProjectChecker(
+        $config = new TestConfig();
+        $config->throw_exception = false;
+
+        $this->project_checker = new ProjectChecker(
+            $config,
             $this->file_provider,
             new Provider\FakeParserCacheProvider(),
             false
         );
         $this->project_checker->reports['json'] = __DIR__ . '/test-report.json';
-
-        $config = new TestConfig();
-        $config->throw_exception = false;
-        $config->stop_on_first_error = false;
-        $this->project_checker->setConfig($config);
     }
 
     /**
@@ -36,19 +36,20 @@ class ReportOutputTest extends TestCase
      */
     public function testReportFormatValid()
     {
+        $config = new TestConfig();
+        $config->throw_exception = false;
+
         // No exception
         foreach (['.xml', '.txt', '.json', '.emacs'] as $extension) {
-            new \Psalm\Checker\ProjectChecker(
+            new ProjectChecker(
+                $config,
                 $this->file_provider,
                 new Provider\FakeParserCacheProvider(),
                 false,
                 true,
-                \Psalm\Checker\ProjectChecker::TYPE_CONSOLE,
+                ProjectChecker::TYPE_CONSOLE,
                 1,
                 false,
-                false,
-                false,
-                null,
                 '/tmp/report' . $extension
             );
         }
@@ -61,17 +62,18 @@ class ReportOutputTest extends TestCase
      */
     public function testReportFormatException()
     {
-        new \Psalm\Checker\ProjectChecker(
+        $config = new TestConfig();
+        $config->throw_exception = false;
+
+        new ProjectChecker(
+            $config,
             $this->file_provider,
             new Provider\FakeParserCacheProvider(),
             false,
             true,
-            \Psalm\Checker\ProjectChecker::TYPE_CONSOLE,
+            ProjectChecker::TYPE_CONSOLE,
             1,
             false,
-            false,
-            false,
-            null,
             '/tmp/report.log'
         );
     }
@@ -82,7 +84,7 @@ class ReportOutputTest extends TestCase
     public function testJsonOutputForGetPsalmDotOrg()
     {
         $file_contents = '<?php
-function psalmCanVerify(int $your_code) : ?string {
+function psalmCanVerify(int $your_code): ?string {
   return $as_you . "type";
 }
 
@@ -102,72 +104,76 @@ echo $a;';
             $file_contents
         );
 
-        $file_checker = new FileChecker('somefile.php', $this->project_checker);
-        $file_checker->visitAndAnalyzeMethods();
+        $this->analyzeFile('somefile.php', new Context());
+
         $issue_data = [
             [
-                'severity' => 'error',
-                'line_number' => 7,
-                'type' => 'UndefinedConstant',
-                'message' => 'Const CHANGE_ME is not defined',
-                'file_name' => 'somefile.php',
-                'file_path' => 'somefile.php',
-                'snippet' => 'echo CHANGE_ME;',
-                'from' => 126,
-                'to' => 135,
-                'snippet_from' => 121,
-                'snippet_to' => 136,
-                'column' => 6,
-            ],
-            [
-                'severity' => 'error',
-                'line_number' => 15,
-                'type' => 'PossiblyUndefinedGlobalVariable',
-                'message' => 'Possibly undefined global variable $a, first seen on line 10',
-                'file_name' => 'somefile.php',
-                'file_path' => 'somefile.php',
-                'snippet' => 'echo $a',
-                'from' => 202,
-                'to' => 204,
-                'snippet_from' => 197,
-                'snippet_to' => 204,
-                'column' => 6,
-            ],
-            [
-                'severity' => 'error',
-                'line_number' => 3,
-                'type' => 'UndefinedVariable',
-                'message' => 'Cannot find referenced variable $as_you',
-                'file_name' => 'somefile.php',
-                'file_path' => 'somefile.php',
-                'snippet' => '  return $as_you . "type";',
-                'from' => 67,
-                'to' => 74,
-                'snippet_from' => 58,
-                'snippet_to' => 84,
-                'column' => 10,
-            ],
-            [
-                'severity' => 'error',
-                'line_number' => 2,
-                'type' => 'MixedInferredReturnType',
-                'message' => 'Could not verify return type \'string|null\' for psalmCanVerify',
-                'file_name' => 'somefile.php',
-                'file_path' => 'somefile.php',
-                'snippet' => 'function psalmCanVerify(int $your_code) : ?string {
+                    'severity' => 'error',
+                    'line_number' => 7,
+                    'type' => 'UndefinedConstant',
+                    'message' => 'Const CHANGE_ME is not defined',
+                    'file_name' => 'somefile.php',
+                    'file_path' => 'somefile.php',
+                    'snippet' => 'echo CHANGE_ME;',
+                    'selected_text' => 'CHANGE_ME',
+                    'from' => 125,
+                    'to' => 134,
+                    'snippet_from' => 120,
+                    'snippet_to' => 135,
+                    'column' => 6,
+                ],
+                [
+                    'severity' => 'error',
+                    'line_number' => 15,
+                    'type' => 'PossiblyUndefinedGlobalVariable',
+                    'message' => 'Possibly undefined global variable $a, first seen on line 10',
+                    'file_name' => 'somefile.php',
+                    'file_path' => 'somefile.php',
+                    'snippet' => 'echo $a',
+                    'selected_text' => '$a',
+                    'from' => 201,
+                    'to' => 203,
+                    'snippet_from' => 196,
+                    'snippet_to' => 203,
+                    'column' => 6,
+                ],
+                [
+                    'severity' => 'error',
+                    'line_number' => 3,
+                    'type' => 'UndefinedVariable',
+                    'message' => 'Cannot find referenced variable $as_you',
+                    'file_name' => 'somefile.php',
+                    'file_path' => 'somefile.php',
+                    'snippet' => '  return $as_you . "type";',
+                    'selected_text' => '$as_you',
+                    'from' => 66,
+                    'to' => 73,
+                    'snippet_from' => 57,
+                    'snippet_to' => 83,
+                    'column' => 10,
+                ],
+                [
+                    'severity' => 'error',
+                    'line_number' => 2,
+                    'type' => 'MixedInferredReturnType',
+                    'message' => 'Could not verify return type \'string|null\' for psalmCanVerify',
+                    'file_name' => 'somefile.php',
+                    'file_path' => 'somefile.php',
+                    'snippet' => 'function psalmCanVerify(int $your_code): ?string {
   return $as_you . "type";
 }',
-                'from' => 48,
-                'to' => 55,
-                'snippet_from' => 6,
-                'snippet_to' => 86,
-                'column' => 43,
-            ],
+                    'selected_text' => '?string',
+                    'from' => 47,
+                    'to' => 54,
+                    'snippet_from' => 6,
+                    'snippet_to' => 85,
+                    'column' => 42,
+                ],
         ];
         $emacs = 'somefile.php:7:6:error - Const CHANGE_ME is not defined
 somefile.php:15:6:error - Possibly undefined global variable $a, first seen on line 10
 somefile.php:3:10:error - Cannot find referenced variable $as_you
-somefile.php:2:43:error - Could not verify return type \'string|null\' for psalmCanVerify
+somefile.php:2:42:error - Could not verify return type \'string|null\' for psalmCanVerify
 ';
         $this->assertSame(
             $issue_data,
@@ -194,8 +200,7 @@ somefile.php:2:43:error - Could not verify return type \'string|null\' for psalm
             '<?php ?>'
         );
 
-        $file_checker = new FileChecker('somefile.php', $this->project_checker);
-        $file_checker->visitAndAnalyzeMethods();
+        $this->analyzeFile('somefile.php', new Context());
         $this->assertSame(
             '[]
 ',
@@ -214,7 +219,7 @@ somefile.php:2:43:error - Could not verify return type \'string|null\' for psalm
             IssueBuffer::getOutput(ProjectChecker::TYPE_XML, false)
         );
 
-        IssueBuffer::finish($this->project_checker, true, null, ['somefile.php' => true]);
+        IssueBuffer::finish($this->project_checker, true, 0);
         $this->assertFileExists(__DIR__ . '/test-report.json');
         $this->assertSame('[]
 ', file_get_contents(__DIR__ . '/test-report.json'));

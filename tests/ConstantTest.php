@@ -17,7 +17,7 @@ class ConstantTest extends TestCase
                     useTest();
                     const TEST = 2;
 
-                    function useTest() : int {
+                    function useTest(): int {
                         return TEST;
                     }',
             ],
@@ -25,7 +25,7 @@ class ConstantTest extends TestCase
                 '<?php
                     const TEST = 2;
 
-                    $useTest = function() : int {
+                    $useTest = function(): int {
                         return TEST;
                     };
                     $useTest();',
@@ -52,6 +52,50 @@ class ConstantTest extends TestCase
                     '$b' => 'string',
                 ],
             ],
+            'getClassConstantValue' => [
+                '<?php
+                    class A {
+                        const B = [0, 1, 2];
+                    }
+
+                    $a = A::B[1];',
+            ],
+            'staticConstEval' => [
+                '<?php
+                    abstract class Enum {
+                        /**
+                         * @var string[]
+                         */
+                        protected const VALUES = [];
+                        public static function export(): string
+                        {
+                            assert(!empty(static::VALUES));
+                            $values = array_map(
+                                function(string $val): string {
+                                    return "\'" . $val . "\'";
+                                },
+                                static::VALUES
+                            );
+                            return join(",", $values);
+                        }
+                    }',
+                'assertions' => [],
+                'error_levels' => ['MixedArgument'],
+            ],
+            'undefinedConstant' => [
+                '<?php
+                    switch (rand(0, 50)) {
+                        case FORTY: // Observed a valid UndeclaredConstant warning
+                            $x = "value";
+                            break;
+                        default:
+                            $x = "other";
+                        }
+
+                        echo $x;',
+                'assertions' => [],
+                'error_levels' => ['UndefinedConstant'],
+            ],
         ];
     }
 
@@ -71,6 +115,13 @@ class ConstantTest extends TestCase
                     }
 
                     echo CONSTANT;',
+                'error_message' => 'UndefinedConstant',
+            ],
+            'undefinedClassConstantInParamDefault' => [
+                '<?php
+                    class A {
+                        public function doSomething(int $howManyTimes = self::DEFAULT_TIMES): void {}
+                    }',
                 'error_message' => 'UndefinedConstant',
             ],
         ];

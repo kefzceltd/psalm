@@ -22,13 +22,14 @@ trait GenericTrait
     }
 
     /**
+     * @param  string|null   $namespace
      * @param  array<string> $aliased_classes
      * @param  string|null   $this_class
      * @param  bool          $use_phpdoc_format
      *
      * @return string
      */
-    public function toNamespacedString(array $aliased_classes, $this_class, $use_phpdoc_format)
+    public function toNamespacedString($namespace, array $aliased_classes, $this_class, $use_phpdoc_format)
     {
         if ($use_phpdoc_format) {
             if ($this->value !== 'array') {
@@ -41,9 +42,9 @@ trait GenericTrait
                 return $this->value;
             }
 
-            $value_type_string = $value_type->toNamespacedString($aliased_classes, $this_class, true);
+            $value_type_string = $value_type->toNamespacedString($namespace, $aliased_classes, $this_class, true);
 
-            if (count($value_type->types) > 1) {
+            if (count($value_type->getTypes()) > 1) {
                 return '(' . $value_type_string . ')[]';
             }
 
@@ -58,8 +59,8 @@ trait GenericTrait
                         /**
                          * @return string
                          */
-                        function (Union $type_param) use ($aliased_classes, $this_class) {
-                            return $type_param->toNamespacedString($aliased_classes, $this_class, false);
+                        function (Union $type_param) use ($namespace, $aliased_classes, $this_class) {
+                            return $type_param->toNamespacedString($namespace, $aliased_classes, $this_class, false);
                         },
                         $this->type_params
                     )
@@ -79,6 +80,8 @@ trait GenericTrait
      */
     public function setFromDocblock()
     {
+        $this->from_docblock = true;
+
         foreach ($this->type_params as $type_param) {
             $type_param->setFromDocblock();
         }
@@ -105,9 +108,9 @@ trait GenericTrait
                 $input_type_param = $input_type->type_params[$offset];
             } elseif ($input_type instanceof Atomic\ObjectLike) {
                 if ($offset === 0) {
-                    $input_type_param = new Union([new Atomic\TString()]);
+                    $input_type_param = $input_type->getGenericKeyType();
                 } elseif ($offset === 1) {
-                    $input_type_param = $input_type->getGenericTypeParam();
+                    $input_type_param = $input_type->getGenericValueType();
                 } else {
                     throw new \UnexpectedValueException('Not expecting offset of ' . $offset);
                 }
@@ -122,13 +125,13 @@ trait GenericTrait
     }
 
     /**
-     * @param  array<string, string|Type\Union>     $template_types
+     * @param  array<string, string|Union>     $template_types
      *
      * @return void
      */
     public function replaceTemplateTypesWithArgTypes(array $template_types)
     {
-        foreach ($this->type_params as $offset => $type_param) {
+        foreach ($this->type_params as $type_param) {
             $type_param->replaceTemplateTypesWithArgTypes($template_types);
         }
     }

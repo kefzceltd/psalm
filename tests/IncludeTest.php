@@ -15,15 +15,19 @@ class IncludeTest extends TestCase
      */
     public function testValidInclude(array $files, array $files_to_check)
     {
+        $codebase = $this->project_checker->getCodebase();
+
         foreach ($files as $filename => $contents) {
             $this->addFile($filename, $contents);
-            $this->project_checker->registerAnalyzableFile($filename);
+            $codebase->addFilesToAnalyze([$filename => $filename]);
         }
 
-        $this->project_checker->scanFiles();
+        $codebase->scanFiles();
 
-        foreach ($files_to_check as $filename) {
-            $file_checker = new FileChecker($filename, $this->project_checker);
+        $config = $codebase->config;
+
+        foreach ($files_to_check as $file_path) {
+            $file_checker = new FileChecker($this->project_checker, $file_path, $config->shortenFileName($file_path));
             $file_checker->analyze();
         }
     }
@@ -39,18 +43,22 @@ class IncludeTest extends TestCase
      */
     public function testInvalidInclude(array $files, array $files_to_check, $error_message)
     {
+        $codebase = $this->project_checker->getCodebase();
+
         foreach ($files as $filename => $contents) {
             $this->addFile($filename, $contents);
-            $this->project_checker->registerAnalyzableFile($filename);
+            $codebase->addFilesToAnalyze([$filename => $filename]);
         }
 
-        $this->project_checker->scanFiles();
+        $codebase->scanFiles();
 
         $this->expectException('\Psalm\Exception\CodeException');
         $this->expectExceptionMessageRegexp('/\b' . preg_quote($error_message, '/') . '\b/');
 
-        foreach ($files_to_check as $filename) {
-            $file_checker = new FileChecker($filename, $this->project_checker);
+        $config = $codebase->config;
+
+        foreach ($files_to_check as $file_path) {
+            $file_checker = new FileChecker($this->project_checker, $file_path, $config->shortenFileName($file_path));
             $file_checker->analyze();
         }
     }
@@ -67,13 +75,13 @@ class IncludeTest extends TestCase
                         require("file1.php");
 
                         class B {
-                            public function foo() : void {
+                            public function foo(): void {
                                 (new A)->fooFoo();
                             }
                         }',
                     getcwd() . DIRECTORY_SEPARATOR . 'file1.php' => '<?php
                         class A{
-                            public function fooFoo() : void {
+                            public function fooFoo(): void {
 
                             }
                         }',
@@ -86,7 +94,7 @@ class IncludeTest extends TestCase
                 'files' => [
                     getcwd() . DIRECTORY_SEPARATOR . 'file1.php' => '<?php
                         class A{
-                            public function fooFoo() : void {
+                            public function fooFoo(): void {
 
                             }
                         }',
@@ -99,7 +107,7 @@ class IncludeTest extends TestCase
                         require("file2.php");
 
                         class C extends B {
-                            public function doFoo() : void {
+                            public function doFoo(): void {
                                 $this->fooFoo();
                             }
                         }',
@@ -119,7 +127,7 @@ class IncludeTest extends TestCase
                         require("file1.php");
 
                         class B {
-                            public function foo() : void {
+                            public function foo(): void {
                                 (new Foo\A);
                             }
                         }',
@@ -131,10 +139,27 @@ class IncludeTest extends TestCase
             'requireFunction' => [
                 'files' => [
                     getcwd() . DIRECTORY_SEPARATOR . 'file1.php' => '<?php
-                        function fooFoo() : void {
+                        function fooFoo(): void {
 
                         }',
                     getcwd() . DIRECTORY_SEPARATOR . 'file2.php' => '<?php
+                        require("file1.php");
+
+                        fooFoo();',
+                ],
+                'files_to_check' => [
+                    getcwd() . DIRECTORY_SEPARATOR . 'file2.php',
+                ],
+            ],
+            'namespacedRequireFunction' => [
+                'files' => [
+                    getcwd() . DIRECTORY_SEPARATOR . 'file1.php' => '<?php
+                        function fooFoo(): void {
+
+                        }',
+                    getcwd() . DIRECTORY_SEPARATOR . 'file2.php' => '<?php
+                        namespace Foo;
+
                         require("file1.php");
 
                         fooFoo();',
@@ -171,7 +196,7 @@ class IncludeTest extends TestCase
                         use Foo\A;
 
                         class B {
-                            public function foo() : void {
+                            public function foo(): void {
                                 (new A);
                             }
                         }',
@@ -187,7 +212,7 @@ class IncludeTest extends TestCase
                         require_once("file3.php");
 
                         class B extends A {
-                            public function doFoo() : void {
+                            public function doFoo(): void {
                                 $this->fooFoo();
                             }
                         }
@@ -199,7 +224,7 @@ class IncludeTest extends TestCase
                         require_once("file3.php");
 
                         class A{
-                            public function fooFoo() : void { }
+                            public function fooFoo(): void { }
                         }
 
                         new C();',
@@ -222,20 +247,20 @@ class IncludeTest extends TestCase
                     getcwd() . DIRECTORY_SEPARATOR . 'file1.php' => '<?php
                         require_once("file2.php");
                         class B extends A {
-                            public function doFoo() : void {
+                            public function doFoo(): void {
                                 $this->fooFoo();
                             }
                         }
                         class C {
-                            public function barBar() : void { }
+                            public function barBar(): void { }
                         }',
                     getcwd() . DIRECTORY_SEPARATOR . 'file2.php' => '<?php
                         require_once("file1.php");
                         class A{
-                            public function fooFoo() : void { }
+                            public function fooFoo(): void { }
                         }
                         class D extends C {
-                            public function doBar() : void {
+                            public function doBar(): void {
                                 $this->barBar();
                             }
                         }',
@@ -278,13 +303,13 @@ class IncludeTest extends TestCase
                         require("file1.php");
 
                         class B {
-                            public function foo() : void {
+                            public function foo(): void {
                                 (new A)->fooFo();
                             }
                         }',
                     getcwd() . DIRECTORY_SEPARATOR . 'file1.php' => '<?php
                         class A{
-                            public function fooFoo() : void {
+                            public function fooFoo(): void {
 
                             }
                         }',

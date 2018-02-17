@@ -33,8 +33,8 @@ class ListTest extends TestCase
                     $bar = ["a", 2];
                     list($a, $b) = $bar;',
                 'assertions' => [
-                    '$a' => 'int|string',
-                    '$b' => 'int|string',
+                    '$a' => 'string',
+                    '$b' => 'int',
                 ],
             ],
             'thisVar' => [
@@ -46,13 +46,26 @@ class ListTest extends TestCase
                         /** @var string */
                         public $b = "";
 
-                        public function fooFoo() : string
+                        public function fooFoo(): string
                         {
                             list($this->a, $this->b) = ["a", "b"];
 
                             return $this->a;
                         }
                     }',
+            ],
+            'mixedNestedAssignment' => [
+                '<?php
+                    /** @psalm-suppress MissingReturnType */
+                    function getMixed() {}
+
+                    /** @psalm-suppress MixedAssignment */
+                    list($a, list($b, $c)) = getMixed();',
+                'assertions' => [
+                    '$a' => 'mixed',
+                    '$b' => 'mixed',
+                    '$c' => 'mixed',
+                ],
             ],
         ];
     }
@@ -72,14 +85,14 @@ class ListTest extends TestCase
                         /** @var string */
                         public $b = "";
 
-                        public function fooFoo() : string
+                        public function fooFoo(): string
                         {
                             list($this->a, $this->b) = ["a", "b"];
 
                             return $this->a;
                         }
                     }',
-                'error_message' => 'InvalidPropertyAssignment - src/somefile.php:11',
+                'error_message' => 'InvalidPropertyAssignmentValue - src/somefile.php:11',
             ],
         ];
     }

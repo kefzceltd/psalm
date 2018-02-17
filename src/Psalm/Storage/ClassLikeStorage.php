@@ -35,7 +35,7 @@ class ClassLikeStorage
     /**
      * @var bool
      */
-    public $reflected = false;
+    public $stubbed = false;
 
     /**
      * @var bool
@@ -63,11 +63,6 @@ class ClassLikeStorage
     public $name;
 
     /**
-     * @var array<string, string>
-     */
-    public $aliased_classes;
-
-    /**
      * Is this class user-defined
      *
      * @var bool
@@ -91,7 +86,7 @@ class ClassLikeStorage
     /**
      * Parent interfaces
      *
-     * @var  array<string>
+     * @var array<string, string>
      */
     public $parent_classes = [];
 
@@ -146,6 +141,11 @@ class ClassLikeStorage
     public $overridden_method_ids = [];
 
     /**
+     * @var array<string, array<string>>
+     */
+    public $interface_method_ids = [];
+
+    /**
      * @var array<string, string>
      */
     public $inheritable_method_ids = [];
@@ -189,4 +189,14 @@ class ClassLikeStorage
      * @var array<string, array<int, CodeLocation>>|null
      */
     public $referencing_locations;
+
+    /**
+     * @var array<string, bool>
+     */
+    public $initialized_properties = [];
+
+    /**
+     * @var array<string>
+     */
+    public $invalid_dependencies = [];
 }

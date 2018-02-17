@@ -7,9 +7,12 @@ use Psalm\Checker\ScopeChecker;
 use Psalm\Checker\StatementsChecker;
 use Psalm\CodeLocation;
 use Psalm\Context;
+use Psalm\Issue\InvalidCatch;
+use Psalm\IssueBuffer;
 use Psalm\Scope\LoopScope;
 use Psalm\Type;
 use Psalm\Type\Atomic\TNamedObject;
+use Psalm\Type\Union;
 
 class TryChecker
 {
@@ -35,14 +38,25 @@ class TryChecker
             $all_catches_leave = $all_catches_leave && !in_array(ScopeChecker::ACTION_NONE, $catch_actions[$i], true);
         }
 
+        $project_checker = $statements_checker->getFileChecker()->project_checker;
+        $codebase = $project_checker->codebase;
+
         if ($all_catches_leave) {
             $try_context = $context;
         } else {
             $try_context = clone $context;
+
+            if ($project_checker->alter_code) {
+                $try_context->branch_point = $try_context->branch_point ?: (int) $stmt->getAttribute('startFilePos');
+            }
         }
 
         $assigned_var_ids = $context->assigned_var_ids;
         $context->assigned_var_ids = [];
+
+        $old_unreferenced_vars = $try_context->unreferenced_vars;
+        $newly_unreferenced_vars = [];
+        $reassigned_vars = [];
 
         if ($statements_checker->analyze($stmt->stmts, $context, $loop_scope) === false) {
             return false;
@@ -64,6 +78,29 @@ class TryChecker
             }
 
             $try_context->vars_possibly_in_scope = $context->vars_possibly_in_scope;
+
+            $context->referenced_var_ids = array_merge(
+                $try_context->referenced_var_ids,
+                $context->referenced_var_ids
+            );
+
+            if ($context->collect_references) {
+                $newly_unreferenced_vars = array_merge(
+                    $newly_unreferenced_vars,
+                    array_diff_key(
+                        $context->unreferenced_vars,
+                        $old_unreferenced_vars
+                    )
+                );
+
+                foreach ($context->unreferenced_vars as $var_id => $location) {
+                    if (isset($old_unreferenced_vars[$var_id])
+                        && $old_unreferenced_vars[$var_id] !== $location
+                    ) {
+                        $reassigned_vars[$var_id] = $location;
+                    }
+                }
+            }
         }
 
         $try_leaves_loop = $loop_scope
@@ -99,11 +136,31 @@ class TryChecker
 
                 if ($original_context->check_classes) {
                     if (ClassLikeChecker::checkFullyQualifiedClassLikeName(
-                        $statements_checker->getFileChecker()->project_checker,
+                        $statements_checker,
                         $fq_catch_class,
                         new CodeLocation($statements_checker->getSource(), $catch_type, $context->include_location),
-                        $statements_checker->getSuppressedIssues()
+                        $statements_checker->getSuppressedIssues(),
+                        false
                     ) === false) {
+                        return false;
+                    }
+                }
+
+                if (($codebase->classExists($fq_catch_class)
+                        && strtolower($fq_catch_class) !== 'exception'
+                        && !($codebase->classExtends($fq_catch_class, 'Exception')
+                            || $codebase->classImplements($fq_catch_class, 'Throwable')))
+                    || ($codebase->interfaceExists($fq_catch_class)
+                        && strtolower($fq_catch_class) !== 'throwable'
+                        && !$codebase->interfaceExtends($fq_catch_class, 'Throwable'))
+                ) {
+                    if (IssueBuffer::accepts(
+                        new InvalidCatch(
+                            'Class/interface ' . $fq_catch_class . ' cannot be caught',
+                            new CodeLocation($statements_checker->getSource(), $stmt)
+                        ),
+                        $statements_checker->getSuppressedIssues()
+                    )) {
                         return false;
                     }
                 }
@@ -120,8 +177,17 @@ class TryChecker
                      *
                      * @return Type\Atomic
                      */
-                    function ($fq_catch_class) {
-                        return new TNamedObject($fq_catch_class);
+                    function ($fq_catch_class) use ($codebase) {
+                        $catch_class_type = new TNamedObject($fq_catch_class);
+
+                        if (version_compare(PHP_VERSION, '7.0.0dev', '>=')
+                            && $codebase->interfaceExists($fq_catch_class)
+                            && !$codebase->interfaceExtends($fq_catch_class, 'Throwable')
+                        ) {
+                            $catch_class_type->addIntersectionType(new TNamedObject('Throwable'));
+                        }
+
+                        return $catch_class_type;
                     },
                     $fq_catch_classes
                 )
@@ -133,14 +199,23 @@ class TryChecker
             $catch_context->vars_possibly_in_scope[$catch_var_id] = true;
 
             if (!$statements_checker->hasVariable($catch_var_id)) {
+                $location = new CodeLocation(
+                    $statements_checker,
+                    $catch,
+                    $context->include_location,
+                    true,
+                    CodeLocation::CATCH_VAR
+                );
                 $statements_checker->registerVariable(
                     $catch_var_id,
-                    new CodeLocation($statements_checker, $catch, $context->include_location, true)
+                    $location,
+                    $try_context->branch_point
                 );
+                $catch_context->unreferenced_vars[$catch_var_id] = $location;
             }
 
             // this registers the variable to avoid unfair deadcode issues
-            $catch_context->hasVariable($catch_var_id);
+            $catch_context->hasVariable($catch_var_id, $statements_checker);
 
             $suppressed_issues = $statements_checker->getSuppressedIssues();
 
@@ -158,6 +233,34 @@ class TryChecker
                 $catch_context->referenced_var_ids,
                 $context->referenced_var_ids
             );
+
+            if ($context->collect_references) {
+                foreach ($context->unreferenced_vars as $var_id => $_) {
+                    if (!isset($catch_context->unreferenced_vars[$var_id])) {
+                        unset($context->unreferenced_vars[$var_id]);
+                    }
+                }
+
+                $newly_unreferenced_vars = array_merge(
+                    $newly_unreferenced_vars,
+                    array_diff_key(
+                        $catch_context->unreferenced_vars,
+                        $old_unreferenced_vars
+                    )
+                );
+
+                foreach ($catch_context->unreferenced_vars as $var_id => $location) {
+                    if (!isset($old_unreferenced_vars[$var_id])
+                        && isset($context->unreferenced_vars[$var_id])
+                    ) {
+                        $statements_checker->registerVariableUse($location);
+                    } elseif (isset($old_unreferenced_vars[$var_id])
+                        && $old_unreferenced_vars[$var_id] !== $location
+                    ) {
+                        $statements_checker->registerVariableUse($location);
+                    }
+                }
+            }
 
             if ($catch_actions[$i] !== [ScopeChecker::ACTION_END]) {
                 foreach ($catch_context->vars_in_scope as $var_id => $type) {
@@ -188,6 +291,14 @@ class TryChecker
 
         if ($stmt->finally) {
             $statements_checker->analyze($stmt->finally->stmts, $context, $loop_scope);
+        }
+
+        if ($context->collect_references) {
+            foreach ($old_unreferenced_vars as $var_id => $location) {
+                if (isset($context->unreferenced_vars[$var_id]) && $context->unreferenced_vars[$var_id] !== $location) {
+                    $statements_checker->registerVariableUse($location);
+                }
+            }
         }
 
         return null;

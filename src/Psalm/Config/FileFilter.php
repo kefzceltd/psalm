@@ -22,11 +22,6 @@ class FileFilter
     protected $files_lowercase = [];
 
     /**
-     * @var array<string>
-     */
-    protected $patterns = [];
-
-    /**
      * @var bool
      */
     protected $inclusive;
@@ -34,7 +29,7 @@ class FileFilter
     /**
      * @param  bool             $inclusive
      *
-     * @psalm-suppress RedundantCondition
+     * @psalm-suppress RedundantConditionGivenDocblockType
      */
     public function __construct($inclusive)
     {

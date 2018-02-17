@@ -1,29 +1,11 @@
 <?php
 namespace Psalm\Tests;
 
-use Psalm\Checker\FileChecker;
 use Psalm\Context;
 
 class VariadicTest extends TestCase
 {
-    /**
-     * @dataProvider providerTestValidVariadic
-     *
-     * @param string $code
-     *
-     * @return void
-     */
-    public function testVariadic($code)
-    {
-        $this->addFile(
-            'somefile.php',
-            $code
-        );
-
-        $file_checker = new FileChecker('somefile.php', $this->project_checker);
-        $context = new Context();
-        $file_checker->visitAndAnalyzeMethods($context);
-    }
+    use Traits\FileCheckerValidCodeParseTestTrait;
 
     /**
      * @expectedException        \Psalm\Exception\CodeException
@@ -46,15 +28,13 @@ class VariadicTest extends TestCase
                 '
         );
 
-        $file_checker = new FileChecker('somefile.php', $this->project_checker);
-        $context = new Context();
-        $file_checker->visitAndAnalyzeMethods($context);
+        $this->analyzeFile('somefile.php', new Context());
     }
 
     /**
      * @return array
      */
-    public function providerTestValidVariadic()
+    public function providerFileCheckerValidCodeParse()
     {
         return [
             'variadic' => [
@@ -77,7 +57,7 @@ class VariadicTest extends TestCase
             ],
             'funcNumArgsVariadic' => [
                 '<?php
-                    function test() : array {
+                    function test(): array {
                         return func_get_args();
                     }
                     var_export(test(2));',

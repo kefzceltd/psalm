@@ -4,13 +4,11 @@ namespace Psalm\Type\Atomic;
 use Psalm\FunctionLikeParameter;
 use Psalm\Type\Union;
 
+/**
+ * Represents a closure where we know the return type and params
+ */
 class Fn extends TNamedObject
 {
-    /**
-     * @var string
-     */
-    public $value = 'Closure';
-
     /**
      * @var array<int, FunctionLikeParameter>
      */
@@ -30,6 +28,7 @@ class Fn extends TNamedObject
      */
     public function __construct($value, array $params, Union $return_type)
     {
+        $this->value = 'Closure';
         $this->params = $params;
         $this->return_type = $return_type;
     }

@@ -27,6 +27,11 @@ class IfScope
     public $redefined_vars = null;
 
     /**
+     * @var array<string, bool>|null
+     */
+    public $assigned_var_ids = null;
+
+    /**
      * @var array<string, Type\Union>
      */
     public $possibly_redefined_vars = [];
@@ -42,14 +47,14 @@ class IfScope
     public $negated_types = [];
 
     /**
+     * @var array<mixed, string>
+     */
+    public $if_cond_changed_var_ids = [];
+
+    /**
      * @var array<string, string>|null
      */
     public $negatable_if_types = null;
-
-    /**
-     * @var bool
-     */
-    public $has_elseifs;
 
     /**
      * @var array<int, Clause>
@@ -64,7 +69,7 @@ class IfScope
     /**
      * Variables that were mixed, but are no longer
      *
-     * @var array<string, Type\Union>
+     * @var array<string, Type\Union>|null
      */
     public $possible_param_types = null;
 

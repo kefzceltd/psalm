@@ -4,6 +4,7 @@ namespace Psalm\Tests;
 class IssetTest extends TestCase
 {
     use Traits\FileCheckerValidCodeParseTestTrait;
+    use Traits\FileCheckerInvalidCodeParseTestTrait;
 
     /**
      * @return array
@@ -59,7 +60,7 @@ class IssetTest extends TestCase
                         takesString($bar["foo"]);
                     }',
                 'assertions' => [],
-                'error_levels' => [],
+                'error_levels' => ['PossiblyInvalidArrayAccess'],
                 'scope_vars' => [
                     '$foo' => \Psalm\Type::getArray(),
                 ],
@@ -77,7 +78,7 @@ class IssetTest extends TestCase
             ],
             'noRedundantConditionOnMixed' => [
                 '<?php
-                    function testarray(array $data) : void {
+                    function testarray(array $data): void {
                         foreach ($data as $item) {
                             if (isset($item["a"]) && isset($item["b"]) && isset($item["b"]["c"])) {
                                 echo "Found\n";
@@ -85,7 +86,7 @@ class IssetTest extends TestCase
                         }
                     }',
                 'assertions' => [],
-                'error_levels' => ['MixedAssignment'],
+                'error_levels' => ['MixedAssignment', 'MixedArrayAccess'],
             ],
             'testUnset' => [
                 '<?php
@@ -93,11 +94,57 @@ class IssetTest extends TestCase
                     foreach ($foo as $bar) {}
                     unset($foo, $bar);
 
-                    function foo() : void {
+                    function foo(): void {
                         $foo = ["a", "b", "c"];
                         foreach ($foo as $bar) {}
                         unset($foo, $bar);
                     }',
+            ],
+            'issetObjectLike' => [
+                '<?php
+                    $arr = [
+                        "profile" => [
+                            "foo" => "bar",
+                        ],
+                        "groups" => [
+                            "foo" => "bar",
+                            "hide"  => rand() % 2 > 0,
+                        ],
+                    ];
+
+                    foreach ($arr as $item) {
+                        if (!isset($item["hide"]) || !$item["hide"]) {}
+                    }',
+            ],
+            'issetPropertyAffirmsObject' => [
+                '<?php
+                    class A {
+                        /** @var ?int */
+                        public $id;
+                    }
+
+                    function takesA(?A $a): A {
+                        if (isset($a->id)) {
+                            return $a;
+                        }
+
+                        return new A();
+                    }',
+            ],
+        ];
+    }
+
+    /**
+     * @return array
+     */
+    public function providerFileCheckerInvalidCodeParse()
+    {
+        return [
+            'complainAboutBadCallInIsset' => [
+                '<?php
+                    class A {}
+                    $a = isset(A::foo()[0]);',
+                'error_message' => 'UndefinedMethod',
             ],
         ];
     }

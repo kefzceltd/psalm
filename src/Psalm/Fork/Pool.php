@@ -73,7 +73,6 @@ class Pool
             }
 
             // Fork
-            $pid = 0;
             if (($pid = pcntl_fork()) < 0) {
                 error_log(posix_strerror(posix_get_last_error()));
                 exit(self::EXIT_FAILURE);
@@ -232,6 +231,7 @@ class Pool
                 function ($data) {
                     /** @var array */
                     $result = unserialize($data);
+                    /** @psalm-suppress RedundantConditionGivenDocblockType */
                     if (!\is_array($result)) {
                         error_log(
                             'Child terminated without returning a serialized array - response type=' . gettype($result)
@@ -280,6 +280,8 @@ class Pool
      * Returns true if this had an error, e.g. due to memory limits or due to a child process crashing.
      *
      * @return  bool
+     *
+     * @psalm-suppress PossiblyUnusedMethod because we may in the future
      */
     public function didHaveError()
     {

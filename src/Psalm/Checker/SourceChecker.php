@@ -101,21 +101,6 @@ abstract class SourceChecker implements StatementsSource
     }
 
     /**
-     * @param string|null $file_name
-     * @param string|null $file_path
-     *
-     * @return void
-     */
-    public function setFileName($file_name, $file_path)
-    {
-        if ($this->source === null) {
-            throw new \UnexpectedValueException('$source cannot be null');
-        }
-
-        $this->source->setFileName($file_name, $file_path);
-    }
-
-    /**
      * @return string
      */
     public function getCheckedFileName()
@@ -190,7 +175,7 @@ abstract class SourceChecker implements StatementsSource
     }
 
     /**
-     * @return ?string
+     * @return null|string
      */
     public function getNamespace()
     {

@@ -28,11 +28,14 @@ class Php56Test extends TestCase
                         const ONE_THIRD = self::ONE / self::THREE;
                         const SENTENCE = "The value of THREE is " . self::THREE;
 
+                        /** @var int */
+                        public $four = self::ONE + self::THREE;
+
                         /**
                          * @param  int $a
                          * @return int
                          */
-                        public function f($a = ONE + self::THREE) {
+                        public function f($a = self::ONE + self::THREE) {
                             return $a;
                         }
                     }
@@ -42,7 +45,8 @@ class Php56Test extends TestCase
                     $c3 = C::THREE;
                     $c1_3rd = C::ONE_THIRD;
                     $c_sentence = C::SENTENCE;
-                    $cf = (new C)->f();',
+                    $cf = (new C)->f();
+                    $c4 = (new C)->four',
                 'assertions' => [
                     '$c1' => 'int',
                     '$c2' => 'int',
@@ -50,6 +54,7 @@ class Php56Test extends TestCase
                     '$c1_3rd' => 'float|int',
                     '$c_sentence' => 'string',
                     '$cf' => 'int',
+                    '$c4' => 'int',
                 ],
             ],
             'constFeatures' => [
@@ -78,6 +83,14 @@ class Php56Test extends TestCase
 
                     $operators = [2, 3];
                     echo add(1, ...$operators);',
+            ],
+            'arrayMergeArgumentUnpacking' => [
+                '<?php
+                    $a = [[1, 2]];
+                    $b = array_merge([], ...$a);',
+                'assertions' => [
+                    '$b' => 'array{0:int, 1:int}',
+                ],
             ],
             'exponentiation' => [
                 '<?php
