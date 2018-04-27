@@ -338,6 +338,21 @@ class InterfaceTest extends TestCase
                       }
                     }',
             ],
+            'implementThisReturn' => [
+                '<?php
+                    class A {}
+                    interface I {
+                      /** @return A */
+                      public function foo();
+                    }
+
+                    class B extends A implements I {
+                      /** @return $this */
+                      public function foo() {
+                        return $this;
+                      }
+                    }',
+            ],
             'inheritMultipleInterfacesWithDocblocks' => [
                 '<?php
                     interface I1 {
@@ -381,6 +396,30 @@ class InterfaceTest extends TestCase
                     }
 
                     function takesIterable(iterable $i): void {}',
+            ],
+            'PHP7-interfaceInstanceofInterfaceOrClass' => [
+                '<?php
+                    interface A {}
+                    class B extends Exception {}
+
+                    function foo(Throwable $e): void {
+                        if ($e instanceof A || $e instanceof B) {
+                            return;
+                        }
+
+                        return;
+                    }
+
+                    class C extends Exception {}
+                    interface D {}
+
+                    function bar(Throwable $e): void {
+                        if ($e instanceof C || $e instanceof D) {
+                            return;
+                        }
+
+                        return;
+                    }',
             ],
         ];
     }
@@ -573,6 +612,12 @@ class InterfaceTest extends TestCase
                       }
                     }',
                 'error_message' => 'InvalidReturnType',
+            ],
+            'interfaceInstantiation' => [
+                '<?php
+                    interface myInterface{}
+                    new myInterface();',
+                'error_message' => 'InterfaceInstantiation',
             ],
         ];
     }

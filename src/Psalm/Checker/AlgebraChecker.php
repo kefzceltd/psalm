@@ -5,24 +5,27 @@ use PhpParser;
 use Psalm\Checker\Statements\Expression\AssertionFinder;
 use Psalm\Clause;
 use Psalm\CodeLocation;
+use Psalm\FileSource;
 use Psalm\Issue\ParadoxicalCondition;
 use Psalm\Issue\RedundantCondition;
 use Psalm\IssueBuffer;
-use Psalm\StatementsSource;
 
 class AlgebraChecker
 {
+    /** @var array<string, array<int, string>> */
+    private static $broken_paths = [];
+
     /**
      * @param  PhpParser\Node\Expr      $conditional
      * @param  string|null              $this_class_name
-     * @param  StatementsSource         $source
+     * @param  FileSource         $source
      *
      * @return array<int, Clause>
      */
     public static function getFormula(
         PhpParser\Node\Expr $conditional,
         $this_class_name,
-        StatementsSource $source
+        FileSource $source
     ) {
         if ($conditional instanceof PhpParser\Node\Expr\BinaryOp\BooleanAnd ||
             $conditional instanceof PhpParser\Node\Expr\BinaryOp\LogicalAnd
@@ -88,7 +91,7 @@ class AlgebraChecker
 
             foreach ($assertions as $var => $type) {
                 if ($type === 'isset' || $type === '!empty') {
-                    $key_parts = preg_split('/(->|\[|\])/', $var, -1, PREG_SPLIT_DELIM_CAPTURE | PREG_SPLIT_NO_EMPTY);
+                    $key_parts = self::breakUpPathIntoParts($var);
 
                     $base_key = array_shift($key_parts);
 
@@ -142,6 +145,83 @@ class AlgebraChecker
         }
 
         return [new Clause([], true)];
+    }
+
+    /**
+     * @param  string $path
+     *
+     * @return array<int, string>
+     */
+    public static function breakUpPathIntoParts($path)
+    {
+        if (isset(self::$broken_paths[$path])) {
+            return self::$broken_paths[$path];
+        }
+
+        $chars = str_split($path);
+
+        $string_char = null;
+        $escape_char = false;
+
+        $parts = [''];
+        $parts_offset = 0;
+
+        for ($i = 0, $char_count = count($chars); $i < $char_count; ++$i) {
+            $char = $chars[$i];
+
+            if ($string_char) {
+                if ($char === $string_char && !$escape_char) {
+                    $string_char = null;
+                }
+
+                if ($char === '\\') {
+                    $escape_char = !$escape_char;
+                }
+
+                $parts[$parts_offset] .= $char;
+                continue;
+            }
+
+            switch ($char) {
+                case '[':
+                case ']':
+                    $parts_offset++;
+                    $parts[$parts_offset] = $char;
+                    $parts_offset++;
+                    continue;
+
+                case '\'':
+                case '"':
+                    if (!isset($parts[$parts_offset])) {
+                        $parts[$parts_offset] = '';
+                    }
+                    $parts[$parts_offset] .= $char;
+                    $string_char = $char;
+
+                    continue;
+
+                case '-':
+                    if ($i < $char_count - 1 && $chars[$i + 1] === '>') {
+                        ++$i;
+
+                        $parts_offset++;
+                        $parts[$parts_offset] = '->';
+                        $parts_offset++;
+                        continue;
+                    }
+                    // fall through
+
+                default:
+                    if (!isset($parts[$parts_offset])) {
+                        $parts[$parts_offset] = '';
+                    }
+                    $parts[$parts_offset] .= $char;
+            }
+        }
+
+        self::$broken_paths[$path] = $parts;
+
+        return $parts;
     }
 
     /**
@@ -504,7 +584,6 @@ class AlgebraChecker
             return [new Clause([], true)];
         }
 
-        /** @var array<string, array<string>> */
         $possibilities = [];
 
         if ($left_clauses[0]->wedge && $right_clauses[0]->wedge) {

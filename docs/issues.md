@@ -186,12 +186,21 @@ function foo() : string {
 }
 ```
 
+
+### FalseOperand
+
+Emitted when using `false` as part of an operation (e.g. `+`, `.`, `^` etc.`)
+
+```php
+echo false . 'hello';
+```
+
 ### ForbiddenCode
 
 Emitted when Psalm encounters a var_dump, exec or similar expression that may make your code more vulnerable
 
 ```php
-var_dump($foo);
+var_dump("bah");
 ```
 
 ### ImplementedReturnTypeMismatch
@@ -249,6 +258,15 @@ class A {
     protected function foo() : void {}
 }
 echo (new A)->foo();
+```
+
+### InterfaceInstantiation
+
+Emitted when an attempt is made to instatiate an interface:
+
+```php
+interface I {}
+new I();
 ```
 
 ### InaccessibleProperty
@@ -329,6 +347,16 @@ Emitted when referencing a class with the wrong casing
 ```php
 class Foo {}
 (new foo());
+```
+
+### InvalidStringClass
+
+Emitted when you have `allowStringToStandInForClass="false"` in your config and you’re passing a string instead of calling a class directly
+
+```php
+class Foo {}
+$a = "Foo";
+new $a();
 ```
 
 ### InvalidClone
@@ -552,6 +580,25 @@ class A {
 }
 ```
 
+### LessSpecificImplementedReturnType
+
+Emitted when a class implements an interface method but its return type is less specific than the interface method return type
+
+```php
+class A {}
+class B extends A {}
+interface I {
+    /** @return B[] */
+    public function foo();
+}
+class D implements I {
+    /** @return A[] */
+    public function foo() {
+        return [new A, new A];
+    }
+}
+```
+
 ### LessSpecificReturnStatement
 
 Emitted when a return statement is more general than the return type given for the function
@@ -595,6 +642,16 @@ class A {
 }
 class B extends A {
     public function foo(string $s) : void {}
+}
+```
+
+### MethodSignatureMustOmitReturnType
+
+Emmitted when a `__clone`, `__construct`, or `__destruct` method is defined with a return type.
+
+```php
+class A {
+    public function __clone() : void {}
 }
 ```
 
@@ -698,6 +755,19 @@ class A {
     /** @var string */
     public $foo;
 }
+```
+
+### MissingDependency
+
+Emitted when referencing a class that doesn’t exist
+
+```php
+/**
+ * @psalm-suppress UndefinedClass
+ */
+class A extends B {}
+
+$a = new A();
 ```
 
 ### MissingDocblockType
@@ -893,25 +963,6 @@ class E extends D {
 }
 ```
 
-### MoreSpecificImplementedReturnType
-
-Emitted when a class implements an interface method but its return type is less specific than the interface method return type
-
-```php
-class A {}
-class B extends A {}
-interface I {
-    /** @return B[] */
-    public function foo();
-}
-class D implements I {
-    /** @return A[] */
-    public function foo() {
-        return [new A, new A];
-    }
-}
-```
-
 ### MoreSpecificReturnType
 
 Emitted when the declared return type for a method is more specific than the inferred one (emitted in the same methods that `LessSpecificReturnStatement` is)
@@ -1060,6 +1111,21 @@ class B extends A {
 }
 ```
 
+### OverriddenPropertyAccess
+
+Emitted when a property is less accessible than the same-named property in its parent class
+
+```php
+class A {
+    /** @var string|null */
+    public $foo;
+}
+class B extends A {
+    /** @var string|null */
+    protected $foo;
+}
+```
+
 ### ParadoxicalCondition
 
 Emitted when a paradox is encountered in your programs logic that could not be caught by `RedundantCondition`
@@ -1091,6 +1157,25 @@ Emitted when a function argument is possibly `false`, but the function doesn’t
 function foo(string $s) : void {
     $a_pos = strpos($s, "a");
     echo substr($s, $a_pos);
+}
+```
+
+### PossiblyFalseIterator
+
+Emitted when trying to iterate over a value that may be `false`
+
+```php
+$arr = rand(0, 1) ? [1, 2, 3] : false;
+foreach ($arr as $a) {}
+```
+
+### PossiblyFalseOperand
+
+Emitted when using a possibly `false` value as part of an operation (e.g. `+`, `.`, `^` etc.`)
+
+```php
+function foo(string $a) : void {
+    echo strpos($a, ":") + 5;
 }
 ```
 
@@ -1176,6 +1261,15 @@ $a = rand(0, 1) ? 5 : function() : int { return 5; };
 $b = $a();
 ```
 
+### PossiblyInvalidIterator
+
+Emitted when trying to iterate over a value that may be invalid
+
+```php
+$arr = rand(0, 1) ? [1, 2, 3] : "hello";
+foreach ($arr as $a) {}
+```
+
 ### PossiblyInvalidMethodCall
 
 Emitted when trying to call a method on a value that may not be an object
@@ -1191,6 +1285,17 @@ function foo() {
 }
 
 foo()->bar();
+```
+
+### PossiblyInvalidOperand
+
+Emitted when using a possibly invalid value as part of an operation (e.g. `+`, `.`, `^` etc.`)
+
+```php
+function foo() : void {
+    $b = rand(0, 1) ? [] : 4;
+    echo $b + 5;
+}
 ```
 
 ### PossiblyInvalidPropertyAssignment
@@ -1375,6 +1480,21 @@ function foo(?A $a) : void {
 }
 ```
 
+### PossiblyUndefinedArrayOffset
+
+Emitted when trying to access a possibly undefined array offset
+
+```php
+if (rand(0, 1)) {
+    $arr = ["a" => 1, "b" => 2];
+} else {
+    $arr = ["a" => 3];
+}
+
+echo $arr["b"];
+
+```
+
 ### PossiblyUndefinedGlobalVariable
 
 Emitted when trying to access a variable in the global scope that may not be defined
@@ -1494,9 +1614,9 @@ Emitted when conditional is redundant given previous assertions
 
 ```php
 class A {}
-function foo(?A $a) : ?A {
+function foo(A $a) : ?A {
     if ($a) return $a;
-    if ($a) echo "cannot happen";
+    return null;
 }
 ```
 
@@ -1808,4 +1928,3 @@ function foo() : void {
     echo $b;
 }
 ```
-

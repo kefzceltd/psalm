@@ -101,6 +101,32 @@ class ArrayAccessTest extends TestCase
                         takesBool($b[2]);
                     }',
             ],
+            'stringKeysWithInts' => [
+                '<?php
+                    $array = ["01" => "01", "02" => "02"];
+
+                    foreach ($array as $key => $value) {
+                        $len = strlen($key);
+                    }',
+            ],
+            'listAssignmentKeyOffset' => [
+                '<?php
+                    $a = [];
+                    list($a["foo"]) = explode("+", "a+b");
+                    echo $a["foo"];',
+            ],
+            'objectlikeOptionalNamespacedParam' => [
+                '<?php
+                    namespace N;
+
+                    /**
+                     * @psalm-param array{key?:string} $p
+                     */
+                    function f(array $p): void
+                    {
+                        echo isset($p["key"]) ? $p["key"] : "";
+                    }',
+            ],
         ];
     }
 
@@ -185,7 +211,7 @@ class ArrayAccessTest extends TestCase
                 '<?php
                     $params = ["key" => "value"];
                     echo $params["fieldName"];',
-                'error_message' => 'InvalidArrayOffset - src/somefile.php:3 - Cannot access '
+                'error_message' => 'InvalidArrayOffset - src' . DIRECTORY_SEPARATOR . 'somefile.php:3 - Cannot access '
                     . 'value on variable $params using offset value of',
             ],
         ];

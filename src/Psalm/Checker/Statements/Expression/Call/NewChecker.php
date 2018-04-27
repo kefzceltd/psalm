@@ -11,7 +11,10 @@ use Psalm\CodeLocation;
 use Psalm\Context;
 use Psalm\Issue\AbstractInstantiation;
 use Psalm\Issue\DeprecatedClass;
+use Psalm\Issue\InterfaceInstantiation;
+use Psalm\Issue\InvalidStringClass;
 use Psalm\Issue\TooManyArguments;
+use Psalm\Issue\UndefinedClass;
 use Psalm\IssueBuffer;
 use Psalm\Type;
 use Psalm\Type\Atomic\TNamedObject;
@@ -59,6 +62,20 @@ class NewChecker extends \Psalm\Checker\Statements\Expression\CallChecker
                     ) === false) {
                         return false;
                     }
+
+                    if ($codebase->interfaceExists($fq_class_name)) {
+                        if (IssueBuffer::accepts(
+                            new InterfaceInstantiation(
+                                'Interface ' . $fq_class_name . ' cannot be instantiated',
+                                new CodeLocation($statements_checker->getSource(), $stmt->class)
+                            ),
+                            $statements_checker->getSuppressedIssues()
+                        )) {
+                            return false;
+                        }
+
+                        return null;
+                    }
                 }
             } else {
                 switch ($stmt->class->parts[0]) {
@@ -96,7 +113,71 @@ class NewChecker extends \Psalm\Checker\Statements\Expression\CallChecker
                 return false;
             }
 
-            $stmt->inferredType = Type::getObject();
+            if (isset($stmt->class->inferredType)) {
+                foreach ($stmt->class->inferredType->getTypes() as $lhs_type_part) {
+                    // this is always OK
+                    if ($lhs_type_part instanceof Type\Atomic\TClassString) {
+                        if (!isset($stmt->inferredType)) {
+                            $stmt->inferredType = Type::parseString($lhs_type_part->class_type);
+                        }
+
+                        continue;
+                    }
+
+                    if ($lhs_type_part instanceof Type\Atomic\TString) {
+                        if ($config->allow_string_standin_for_class
+                            && !$lhs_type_part instanceof Type\Atomic\TNumericString
+                        ) {
+                            $stmt->inferredType = Type::getObject();
+
+                            continue;
+                        }
+
+                        if (IssueBuffer::accepts(
+                            new InvalidStringClass(
+                                'String cannot be used as a class',
+                                new CodeLocation($statements_checker->getSource(), $stmt)
+                            ),
+                            $statements_checker->getSuppressedIssues()
+                        )) {
+                            // fall through
+                        }
+
+                        $stmt->inferredType = Type::getObject();
+
+                        continue;
+                    }
+
+                    if ($lhs_type_part instanceof Type\Atomic\TMixed
+                        || $lhs_type_part instanceof Type\Atomic\TGenericParam
+                    ) {
+                        $stmt->inferredType = Type::getObject();
+
+                        continue;
+                    }
+
+                    if ($lhs_type_part instanceof Type\Atomic\TNull
+                        && $stmt->class->inferredType->ignore_nullable_issues
+                    ) {
+                        $stmt->inferredType = Type::getObject();
+
+                        continue;
+                    }
+
+                    if (IssueBuffer::accepts(
+                        new UndefinedClass(
+                            'Type ' . $lhs_type_part . ' cannot be called as a class',
+                            new CodeLocation($statements_checker->getSource(), $stmt),
+                            (string)$lhs_type_part
+                        ),
+                        $statements_checker->getSuppressedIssues()
+                    )) {
+                        // fall through
+                    }
+
+                    $stmt->inferredType = Type::getObject();
+                }
+            }
 
             return null;
         }
@@ -106,7 +187,7 @@ class NewChecker extends \Psalm\Checker\Statements\Expression\CallChecker
 
             if (strtolower($fq_class_name) !== 'stdclass' &&
                 $context->check_classes &&
-                $codebase->classExists($fq_class_name)
+                $codebase->classlikes->classExists($fq_class_name)
             ) {
                 $storage = $project_checker->classlike_storage_provider->get($fq_class_name);
 
@@ -175,7 +256,6 @@ class NewChecker extends \Psalm\Checker\Statements\Expression\CallChecker
                     }
 
                     if ($fq_class_name === 'ArrayIterator' && isset($stmt->args[0]->value->inferredType)) {
-                        /** @var Type\Union */
                         $first_arg_type = $stmt->args[0]->value->inferredType;
 
                         if ($first_arg_type->hasGeneric()) {

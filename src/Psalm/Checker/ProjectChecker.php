@@ -4,10 +4,11 @@ namespace Psalm\Checker;
 use Psalm\Codebase;
 use Psalm\Config;
 use Psalm\Context;
-use Psalm\Issue\PossiblyUnusedMethod;
+use Psalm\Provider\ClassLikeStorageCacheProvider;
 use Psalm\Provider\ClassLikeStorageProvider;
 use Psalm\Provider\FileProvider;
 use Psalm\Provider\FileReferenceProvider;
+use Psalm\Provider\FileStorageCacheProvider;
 use Psalm\Provider\FileStorageProvider;
 use Psalm\Provider\ParserCacheProvider;
 use Psalm\Provider\StatementsProvider;
@@ -68,11 +69,6 @@ class ProjectChecker
     public $output_format;
 
     /**
-     * @var string|null
-     */
-    public $find_references_to;
-
-    /**
      * @var bool
      */
     public $debug_output = false;
@@ -80,7 +76,17 @@ class ProjectChecker
     /**
      * @var bool
      */
+    public $debug_lines = false;
+
+    /**
+     * @var bool
+     */
     public $alter_code = false;
+
+    /**
+     * @var bool
+     */
+    public $show_issues = true;
 
     /** @var int */
     public $threads;
@@ -122,20 +128,19 @@ class ProjectChecker
      */
     public $only_replace_php_types_with_non_docblock_types = false;
 
-    /**
-     * @var array<string, FileChecker>
-     */
-    private $file_checkers = [];
-
-    /**
-     * @var bool
-     */
-    private $cache = false;
-
     const TYPE_CONSOLE = 'console';
+    const TYPE_PYLINT = 'pylint';
     const TYPE_JSON = 'json';
     const TYPE_EMACS = 'emacs';
     const TYPE_XML = 'xml';
+
+    const SUPPORTED_OUTPUT_TYPES = [
+        self::TYPE_CONSOLE,
+        self::TYPE_PYLINT,
+        self::TYPE_JSON,
+        self::TYPE_EMACS,
+        self::TYPE_XML,
+    ];
 
     /**
      * @param FileProvider  $file_provider
@@ -151,6 +156,8 @@ class ProjectChecker
         Config $config,
         FileProvider $file_provider,
         ParserCacheProvider $cache_provider,
+        FileStorageCacheProvider $file_storage_cache_provider,
+        ClassLikeStorageCacheProvider $classlike_storage_cache_provider,
         $use_color = true,
         $show_info = true,
         $output_format = self::TYPE_CONSOLE,
@@ -166,12 +173,13 @@ class ProjectChecker
         $this->threads = $threads;
         $this->config = $config;
 
-        $this->file_storage_provider = new FileStorageProvider();
-        $this->classlike_storage_provider = new ClassLikeStorageProvider();
+        $this->file_storage_provider = new FileStorageProvider($file_storage_cache_provider);
+        $this->classlike_storage_provider = new ClassLikeStorageProvider($classlike_storage_cache_provider);
 
         $statements_provider = new StatementsProvider(
             $file_provider,
-            $cache_provider
+            $cache_provider,
+            $file_storage_cache_provider
         );
 
         $this->codebase = new Codebase(
@@ -183,7 +191,7 @@ class ProjectChecker
             $debug_output
         );
 
-        if (!in_array($output_format, [self::TYPE_CONSOLE, self::TYPE_JSON, self::TYPE_EMACS, self::TYPE_XML], true)) {
+        if (!in_array($output_format, self::SUPPORTED_OUTPUT_TYPES, true)) {
             throw new \UnexpectedValueException('Unrecognised output format ' . $output_format);
         }
 
@@ -196,6 +204,7 @@ class ProjectChecker
                 '.json' => self::TYPE_JSON,
                 '.txt' => self::TYPE_EMACS,
                 '.emacs' => self::TYPE_EMACS,
+                '.pylint' => self::TYPE_PYLINT,
             ];
             foreach ($mapping as $extension => $type) {
                 if (substr($reports, -strlen($extension)) === $extension) {
@@ -214,7 +223,6 @@ class ProjectChecker
         $this->cache_provider->use_igbinary = $config->use_igbinary;
 
         $config->visitStubFiles($this->codebase);
-        $config->visitComposerAutoloadFiles($this);
         $config->initializePlugins($this);
     }
 
@@ -253,7 +261,7 @@ class ProjectChecker
         }
 
         if ($this->output_format === self::TYPE_CONSOLE) {
-            echo 'Scanning files...' . PHP_EOL;
+            echo 'Scanning files...' . "\n";
         }
 
         if ($diff_files === null || $deleted_files === null || count($diff_files) > 200) {
@@ -264,21 +272,23 @@ class ProjectChecker
             $this->codebase->scanFiles();
         } else {
             if ($this->debug_output) {
-                echo count($diff_files) . ' changed files' . PHP_EOL;
+                echo count($diff_files) . ' changed files' . "\n";
             }
 
-            $file_list = self::getReferencedFilesFromDiff($diff_files);
+            if ($diff_files) {
+                $file_list = self::getReferencedFilesFromDiff($diff_files);
 
-            // strip out deleted files
-            $file_list = array_diff($file_list, $deleted_files);
+                // strip out deleted files
+                $file_list = array_diff($file_list, $deleted_files);
 
-            $this->checkDiffFilesWithConfig($this->config, $file_list);
+                $this->checkDiffFilesWithConfig($this->config, $file_list);
 
-            $this->codebase->scanFiles();
+                $this->codebase->scanFiles();
+            }
         }
 
         if ($this->output_format === self::TYPE_CONSOLE) {
-            echo 'Analyzing files...' . PHP_EOL;
+            echo 'Analyzing files...' . "\n";
         }
 
         $this->codebase->analyzer->analyzeFiles($this, $this->threads, $this->alter_code);
@@ -288,7 +298,7 @@ class ProjectChecker
         );
 
         if ($this->debug_output && $removed_parser_files) {
-            echo 'Removed ' . $removed_parser_files . ' old parser caches' . PHP_EOL;
+            echo 'Removed ' . $removed_parser_files . ' old parser caches' . "\n";
         }
 
         if ($is_diff) {
@@ -335,14 +345,14 @@ class ProjectChecker
                 $selection_start = $selection_bounds[0] - $snippet_bounds[0];
                 $selection_length = $selection_bounds[1] - $selection_bounds[0];
 
-                echo $location->file_name . ':' . $location->getLineNumber() . PHP_EOL .
+                echo $location->file_name . ':' . $location->getLineNumber() . "\n" .
                     (
                         $this->use_color
                         ? substr($snippet, 0, $selection_start) .
                         "\e[97;42m" . substr($snippet, $selection_start, $selection_length) .
                         "\e[0m" . substr($snippet, $selection_length + $selection_start)
                         : $snippet
-                    ) . PHP_EOL . PHP_EOL;
+                    ) . "\n" . "\n";
             }
         }
     }
@@ -359,13 +369,13 @@ class ProjectChecker
         $this->checkDirWithConfig($dir_name, $this->config, true);
 
         if ($this->output_format === self::TYPE_CONSOLE) {
-            echo 'Scanning files...' . PHP_EOL;
+            echo 'Scanning files...' . "\n";
         }
 
         $this->codebase->scanFiles();
 
         if ($this->output_format === self::TYPE_CONSOLE) {
-            echo 'Analyzing files...' . PHP_EOL;
+            echo 'Analyzing files...' . "\n";
         }
 
         $this->codebase->analyzer->analyzeFiles($this, $this->threads, $this->alter_code);
@@ -490,7 +500,7 @@ class ProjectChecker
 
             if (!$config->isInProjectDirs($file_path)) {
                 if ($this->debug_output) {
-                    echo 'skipping ' . $file_path . PHP_EOL;
+                    echo 'skipping ' . $file_path . "\n";
                 }
 
                 continue;
@@ -510,7 +520,7 @@ class ProjectChecker
     public function checkFile($file_path)
     {
         if ($this->debug_output) {
-            echo 'Checking ' . $file_path . PHP_EOL;
+            echo 'Checking ' . $file_path . "\n";
         }
 
         $this->config->hide_external_errors = $this->config->isInProjectDirs($file_path);
@@ -520,13 +530,13 @@ class ProjectChecker
         FileReferenceProvider::loadReferenceCache();
 
         if ($this->output_format === self::TYPE_CONSOLE) {
-            echo 'Scanning files...' . PHP_EOL;
+            echo 'Scanning files...' . "\n";
         }
 
         $this->codebase->scanFiles();
 
         if ($this->output_format === self::TYPE_CONSOLE) {
-            echo 'Analyzing files...' . PHP_EOL;
+            echo 'Analyzing files...' . "\n";
         }
 
         $this->codebase->analyzer->analyzeFiles($this, $this->threads, $this->alter_code);
@@ -594,6 +604,7 @@ class ProjectChecker
         $safe_types = false
     ) {
         $this->alter_code = true;
+        $this->show_issues = false;
         $this->php_major_version = $php_major_version;
         $this->php_minor_version = $php_minor_version;
         $this->dry_run = $dry_run;
@@ -639,19 +650,11 @@ class ProjectChecker
 
         $file_path = $this->codebase->scanner->getClassLikeFilePath($fq_class_name_lc);
 
-        if ($this->cache && isset($this->file_checkers[$file_path])) {
-            return $this->file_checkers[$file_path];
-        }
-
         $file_checker = new FileChecker(
             $this,
             $file_path,
             $this->config->shortenFileName($file_path)
         );
-
-        if ($this->cache) {
-            $this->file_checkers[$file_path] = $file_checker;
-        }
 
         return $file_checker;
     }
@@ -697,29 +700,5 @@ class ProjectChecker
         }
 
         $file_checker->getMethodMutations($appearing_method_id, $this_context);
-    }
-
-    /**
-     * @return void
-     */
-    public function enableCheckerCache()
-    {
-        $this->cache = true;
-    }
-
-    /**
-     * @return void
-     */
-    public function disableCheckerCache()
-    {
-        $this->cache = false;
-    }
-
-    /**
-     * @return bool
-     */
-    public function canCacheCheckers()
-    {
-        return $this->cache;
     }
 }

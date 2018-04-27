@@ -13,6 +13,8 @@ use Psalm\Exception\DocblockParseException;
 use Psalm\Issue\InvalidDocblock;
 use Psalm\Issue\InvalidIterator;
 use Psalm\Issue\NullIterator;
+use Psalm\Issue\PossiblyFalseIterator;
+use Psalm\Issue\PossiblyInvalidIterator;
 use Psalm\Issue\PossiblyNullIterator;
 use Psalm\Issue\RawObjectIteration;
 use Psalm\IssueBuffer;
@@ -57,7 +59,6 @@ class ForeachChecker
         );
 
         if (isset($stmt->expr->inferredType)) {
-            /** @var Type\Union */
             $iterator_type = $stmt->expr->inferredType;
         } elseif ($var_id && $foreach_context->hasVariable($var_id, $statements_checker)) {
             $iterator_type = $foreach_context->vars_in_scope[$var_id];
@@ -86,17 +87,31 @@ class ForeachChecker
                 )) {
                     return false;
                 }
+            } elseif ($iterator_type->isFalsable() && !$iterator_type->ignore_falsable_issues) {
+                if (IssueBuffer::accepts(
+                    new PossiblyFalseIterator(
+                        'Cannot iterate over falsable var ' . $iterator_type,
+                        new CodeLocation($statements_checker->getSource(), $stmt->expr)
+                    ),
+                    $statements_checker->getSuppressedIssues()
+                )) {
+                    return false;
+                }
             }
+
+            $has_valid_iterator = false;
+            $invalid_iterator_types = [];
 
             foreach ($iterator_type->getTypes() as $iterator_type) {
                 // if it's an empty array, we cannot iterate over it
                 if ($iterator_type instanceof Type\Atomic\TArray
                     && $iterator_type->type_params[1]->isEmpty()
                 ) {
+                    $has_valid_iterator = true;
                     continue;
                 }
 
-                if ($iterator_type instanceof Type\Atomic\TNull) {
+                if ($iterator_type instanceof Type\Atomic\TNull || $iterator_type instanceof Type\Atomic\TFalse) {
                     continue;
                 }
 
@@ -120,27 +135,22 @@ class ForeachChecker
                     } else {
                         $key_type = Type::combineUnionTypes($key_type, $key_type_part);
                     }
+
+                    $has_valid_iterator = true;
                     continue;
                 }
 
                 if ($iterator_type instanceof Type\Atomic\Scalar ||
                     $iterator_type instanceof Type\Atomic\TVoid
                 ) {
-                    if (IssueBuffer::accepts(
-                        new InvalidIterator(
-                            'Cannot iterate over ' . $iterator_type->getKey(),
-                            new CodeLocation($statements_checker->getSource(), $stmt->expr)
-                        ),
-                        $statements_checker->getSuppressedIssues()
-                    )) {
-                        return false;
-                    }
+                    $invalid_iterator_types[] = $iterator_type->getKey();
 
                     $value_type = Type::getMixed();
                 } elseif ($iterator_type instanceof Type\Atomic\TObject ||
                     $iterator_type instanceof Type\Atomic\TMixed ||
                     $iterator_type instanceof Type\Atomic\TEmpty
                 ) {
+                    $has_valid_iterator = true;
                     $value_type = Type::getMixed();
                 } elseif ($iterator_type instanceof Type\Atomic\TNamedObject) {
                     if ($iterator_type->value !== 'Traversable' &&
@@ -155,6 +165,8 @@ class ForeachChecker
                             return false;
                         }
                     }
+
+                    $has_valid_iterator = true;
 
                     if ($iterator_type instanceof Type\Atomic\TGenericObject &&
                         (strtolower($iterator_type->value) === 'iterable' ||
@@ -185,7 +197,76 @@ class ForeachChecker
                         continue;
                     }
 
+                    if (!$codebase->classlikes->classOrInterfaceExists($iterator_type->value)) {
+                        continue;
+                    }
+
                     if ($codebase->classImplements(
+                        $iterator_type->value,
+                        'IteratorAggregate'
+                    ) ||
+                        (
+                            $codebase->interfaceExists($iterator_type->value)
+                            && $codebase->interfaceExtends(
+                                $iterator_type->value,
+                                'IteratorAggregate'
+                            )
+                        )
+                    ) {
+                        $iterator_method = $iterator_type->value . '::getIterator';
+                        $self_class = $iterator_type->value;
+                        $iterator_class_type = $codebase->methods->getMethodReturnType(
+                            $iterator_method,
+                            $self_class
+                        );
+
+                        if ($iterator_class_type) {
+                            $array_type = ExpressionChecker::fleshOutType(
+                                $project_checker,
+                                $iterator_class_type,
+                                $self_class,
+                                $self_class
+                            );
+
+                            foreach ($array_type->getTypes() as $array_atomic_type) {
+                                if ($array_atomic_type instanceof Type\Atomic\TArray
+                                    || $array_atomic_type instanceof Type\Atomic\ObjectLike
+                                ) {
+                                    if ($array_atomic_type instanceof Type\Atomic\ObjectLike) {
+                                        $array_atomic_type = $array_atomic_type->getGenericArrayType();
+                                    }
+
+                                    $key_type_part = $array_atomic_type->type_params[0];
+                                    $value_type_part = $array_atomic_type->type_params[1];
+                                } elseif ($array_atomic_type instanceof Type\Atomic\TGenericObject) {
+                                    $type_param_count = count($array_atomic_type->type_params);
+
+                                    $value_type_part = $array_atomic_type->type_params[$type_param_count - 1];
+                                    $key_type_part = $type_param_count > 1
+                                        ? $array_atomic_type->type_params[0]
+                                        : Type::getMixed();
+                                } else {
+                                    $key_type = Type::getMixed();
+                                    $value_type = Type::getMixed();
+                                    break;
+                                }
+
+                                if (!$key_type) {
+                                    $key_type = $key_type_part;
+                                } else {
+                                    $key_type = Type::combineUnionTypes($key_type, $key_type_part);
+                                }
+
+                                if (!$value_type) {
+                                    $value_type = $value_type_part;
+                                } else {
+                                    $value_type = Type::combineUnionTypes($value_type, $value_type_part);
+                                }
+                            }
+                        } else {
+                            $value_type = Type::getMixed();
+                        }
+                    } elseif ($codebase->classImplements(
                         $iterator_type->value,
                         'Iterator'
                     ) ||
@@ -247,6 +328,30 @@ class ForeachChecker
                         )) {
                             return false;
                         }
+                    }
+                }
+            }
+
+            if ($invalid_iterator_types) {
+                if ($has_valid_iterator) {
+                    if (IssueBuffer::accepts(
+                        new PossiblyInvalidIterator(
+                            'Cannot iterate over ' . $invalid_iterator_types[0],
+                            new CodeLocation($statements_checker->getSource(), $stmt->expr)
+                        ),
+                        $statements_checker->getSuppressedIssues()
+                    )) {
+                        return false;
+                    }
+                } else {
+                    if (IssueBuffer::accepts(
+                        new InvalidIterator(
+                            'Cannot iterate over ' . $invalid_iterator_types[0],
+                            new CodeLocation($statements_checker->getSource(), $stmt->expr)
+                        ),
+                        $statements_checker->getSuppressedIssues()
+                    )) {
+                        return false;
                     }
                 }
             }

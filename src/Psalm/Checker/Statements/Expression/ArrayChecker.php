@@ -43,6 +43,7 @@ class ArrayChecker
 
         $array_keys = [];
 
+        /** @var int $int_offset */
         foreach ($stmt->items as $int_offset => $item) {
             if ($item === null) {
                 continue;
@@ -57,7 +58,6 @@ class ArrayChecker
                     if ($item_key_type) {
                         $item_key_type = Type::combineUnionTypes($item->key->inferredType, $item_key_type);
                     } else {
-                        /** @var Type\Union */
                         $item_key_type = $item->key->inferredType;
                     }
                 }

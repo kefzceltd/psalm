@@ -21,7 +21,7 @@ class TypeCombinationTest extends TestCase
             $types[$k] = self::getAtomic($type);
         }
 
-        /** @psalm-suppress PossiblyInvalidArgument */
+        /** @psalm-suppress InvalidArgument */
         $this->assertSame(
             $expected,
             (string) Type::combineTypes($types)
@@ -200,14 +200,14 @@ class TypeCombinationTest extends TestCase
                 ],
             ],
             'combineObjectType1' => [
-                'array{a:int, b:string}',
+                'array{a?:int, b?:string}',
                 [
                     'array{a:int}',
                     'array{b:string}',
                 ],
             ],
             'combineObjectType2' => [
-                'array{a:int|string, b:string}',
+                'array{a:int|string, b?:string}',
                 [
                     'array{a:int}',
                     'array{a:string,b:string}',
@@ -239,6 +239,21 @@ class TypeCombinationTest extends TestCase
                 [
                     'array{a:array{a:int}}',
                     'array<int, array<int, string>>',
+                ],
+            ],
+            'combinePossiblyUndefinedKeys' => [
+                'array{a:bool, b?:mixed, d?:mixed}',
+                [
+                    'array{a:false, b:mixed}',
+                    'array{a:true, d:mixed}',
+                    'array{a:true, d:mixed}',
+                ],
+            ],
+            'combinePossiblyUndefinedKeysAndString' => [
+                'array{a:string, b?:int}|string',
+                [
+                    'array{a:string, b?:int}',
+                    'string',
                 ],
             ],
         ];

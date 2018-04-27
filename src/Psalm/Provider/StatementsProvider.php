@@ -16,14 +16,29 @@ class StatementsProvider
     private $cache_provider;
 
     /**
+     * @var int
+     */
+    private $this_modified_time;
+
+    /**
+     * @var FileStorageCacheProvider
+     */
+    private $file_storage_cache_provider;
+
+    /**
      * @var PhpParser\Parser|null
      */
     protected static $parser;
 
-    public function __construct(FileProvider $file_provider, ParserCacheProvider $cache_provider)
-    {
+    public function __construct(
+        FileProvider $file_provider,
+        ParserCacheProvider $cache_provider,
+        FileStorageCacheProvider $file_storage_cache_provider
+    ) {
         $this->file_provider = $file_provider;
         $this->cache_provider = $cache_provider;
+        $this->this_modified_time = filemtime(__FILE__);
+        $this->file_storage_cache_provider = $file_storage_cache_provider;
     }
 
     /**
@@ -36,13 +51,13 @@ class StatementsProvider
     {
         $from_cache = false;
 
-        $version = 'parsercache5';
+        $version = (string) PHP_PARSER_VERSION . $this->this_modified_time;
 
         $file_contents = $this->file_provider->getContents($file_path);
         $modified_time = $this->file_provider->getModifiedTime($file_path);
 
         $file_content_hash = md5($version . $file_contents);
-        $file_cache_key = $this->cache_provider->getParserCacheKey($file_path);
+        $file_cache_key = $this->cache_provider->getParserCacheKey($file_path, $this->cache_provider->use_igbinary);
 
         $stmts = $this->cache_provider->loadStatementsFromCache(
             $modified_time,
@@ -52,10 +67,11 @@ class StatementsProvider
 
         if ($stmts === null) {
             if ($debug_output) {
-                echo 'Parsing ' . $file_path . PHP_EOL;
+                echo 'Parsing ' . $file_path . "\n";
             }
 
-            $stmts = self::parseStatementsInFile($file_contents);
+            $stmts = self::parseStatements($file_contents);
+            $this->file_storage_cache_provider->removeCacheForFile($file_path);
         } else {
             $from_cache = true;
         }
@@ -74,20 +90,14 @@ class StatementsProvider
      *
      * @return array<int, \PhpParser\Node\Stmt>
      */
-    private static function parseStatementsInFile($file_contents)
+    public static function parseStatements($file_contents)
     {
         if (!self::$parser) {
-            $lexer = version_compare(PHP_VERSION, '7.0.0dev', '>=')
-                ? new PhpParser\Lexer([
-                    'usedAttributes' => [
-                        'comments', 'startLine', 'startFilePos', 'endFilePos',
-                    ],
-                ])
-                : new PhpParser\Lexer\Emulative([
-                    'usedAttributes' => [
-                        'comments', 'startLine', 'startFilePos', 'endFilePos',
-                    ],
-                ]);
+            $lexer = new PhpParser\Lexer([
+                'usedAttributes' => [
+                    'comments', 'startLine', 'startFilePos', 'endFilePos',
+                ],
+            ]);
 
             self::$parser = (new PhpParser\ParserFactory())->create(PhpParser\ParserFactory::PREFER_PHP7, $lexer);
         }

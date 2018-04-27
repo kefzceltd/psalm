@@ -15,6 +15,7 @@ use Psalm\Issue\ImplicitToStringCast;
 use Psalm\Issue\InvalidPropertyAssignment;
 use Psalm\Issue\InvalidPropertyAssignmentValue;
 use Psalm\Issue\LoopInvalidation;
+use Psalm\Issue\MixedAssignment;
 use Psalm\Issue\MixedPropertyAssignment;
 use Psalm\Issue\MixedTypeCoercion;
 use Psalm\Issue\NoInterfaceProperties;
@@ -238,7 +239,8 @@ class PropertyAssignmentChecker
                     if (IssueBuffer::accepts(
                         new UndefinedClass(
                             'Cannot set properties of undefined class ' . $lhs_type_part->value,
-                            new CodeLocation($statements_checker->getSource(), $stmt)
+                            new CodeLocation($statements_checker->getSource(), $stmt),
+                            $lhs_type_part->value
                         ),
                         $statements_checker->getSuppressedIssues()
                     )) {
@@ -380,6 +382,18 @@ class PropertyAssignmentChecker
                         $lhs_type_part->value,
                         $lhs_type_part->value
                     );
+
+                    if (!$class_property_type->isMixed() && $assignment_value_type->isMixed()) {
+                        if (IssueBuffer::accepts(
+                            new MixedAssignment(
+                                'Cannot assign ' . $var_id . ' to a mixed type',
+                                new CodeLocation($statements_checker->getSource(), $stmt)
+                            ),
+                            $statements_checker->getSuppressedIssues()
+                        )) {
+                            // fall through
+                        }
+                    }
                 }
 
                 $class_property_types[] = $class_property_type;
@@ -550,6 +564,18 @@ class PropertyAssignmentChecker
             }
 
             if (!$type_match_found && !$type_coerced) {
+                foreach ($assignment_value_type->getTypes() as $assignment_value_type_part) {
+                    if (TypeChecker::isContainedBy(
+                        $project_checker->codebase,
+                        new Type\Union([$assignment_value_type_part]),
+                        $class_property_type,
+                        true,
+                        true
+                    )) {
+                        $has_valid_assignment_value_type = true;
+                    }
+                }
+
                 $invalid_assignment_value_types[] = (string) $class_property_type;
             } else {
                 $has_valid_assignment_value_type = true;
@@ -625,7 +651,7 @@ class PropertyAssignmentChecker
 
         $prop_name = $stmt->name;
 
-        if (!is_string($prop_name)) {
+        if (!$prop_name instanceof PhpParser\Node\Identifier) {
             return;
         }
 
@@ -668,12 +694,12 @@ class PropertyAssignmentChecker
         }
 
         $declaring_property_class = $codebase->properties->getDeclaringClassForProperty(
-            $fq_class_name . '::$' . $prop_name
+            $fq_class_name . '::$' . $prop_name->name
         );
 
         $class_storage = $project_checker->classlike_storage_provider->get((string)$declaring_property_class);
 
-        $property_storage = $class_storage->properties[$prop_name];
+        $property_storage = $class_storage->properties[$prop_name->name];
 
         if ($var_id) {
             $context->vars_in_scope[$var_id] = $assignment_value_type;
@@ -721,18 +747,34 @@ class PropertyAssignmentChecker
             $assignment_value_type,
             $class_property_type
         )) {
-            if (IssueBuffer::accepts(
-                new InvalidPropertyAssignment(
-                    $var_id . ' with declared type \'' . $class_property_type . '\' cannot be assigned type \'' .
-                        $assignment_value_type . '\'',
-                    new CodeLocation(
-                        $statements_checker->getSource(),
-                        $assignment_value ?: $stmt
-                    )
-                ),
-                $statements_checker->getSuppressedIssues()
-            )) {
-                return false;
+            if (TypeChecker::canBeIdenticalTo($codebase, $assignment_value_type, $class_property_type)) {
+                if (IssueBuffer::accepts(
+                    new PossiblyInvalidPropertyAssignmentValue(
+                        $var_id . ' with declared type \'' . $class_property_type . '\' cannot be assigned type \'' .
+                            $assignment_value_type . '\'',
+                        new CodeLocation(
+                            $statements_checker->getSource(),
+                            $assignment_value ?: $stmt
+                        )
+                    ),
+                    $statements_checker->getSuppressedIssues()
+                )) {
+                    return false;
+                }
+            } else {
+                if (IssueBuffer::accepts(
+                    new InvalidPropertyAssignmentValue(
+                        $var_id . ' with declared type \'' . $class_property_type . '\' cannot be assigned type \'' .
+                            $assignment_value_type . '\'',
+                        new CodeLocation(
+                            $statements_checker->getSource(),
+                            $assignment_value ?: $stmt
+                        )
+                    ),
+                    $statements_checker->getSuppressedIssues()
+                )) {
+                    return false;
+                }
             }
         }
 

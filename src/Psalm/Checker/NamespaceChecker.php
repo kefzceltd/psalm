@@ -50,7 +50,6 @@ class NamespaceChecker extends SourceChecker implements StatementsSource
     public function collectAnalyzableInformation()
     {
         $leftover_stmts = [];
-        $function_stmts = [];
 
         if (!isset(self::$public_namespace_constants[$this->namespace_name])) {
             self::$public_namespace_constants[$this->namespace_name] = [];
@@ -70,31 +69,20 @@ class NamespaceChecker extends SourceChecker implements StatementsSource
                 $this->visitGroupUse($stmt);
             } elseif ($stmt instanceof PhpParser\Node\Stmt\Const_) {
                 foreach ($stmt->consts as $const) {
-                    self::$public_namespace_constants[$this->namespace_name][$const->name] = Type::getMixed();
+                    self::$public_namespace_constants[$this->namespace_name][$const->name->name] = Type::getMixed();
                 }
 
                 $leftover_stmts[] = $stmt;
-            } elseif ($stmt instanceof PhpParser\Node\Stmt\Function_) {
-                $function_stmts[] = $stmt;
             } else {
                 $leftover_stmts[] = $stmt;
             }
-        }
-
-        // hoist functions to the top
-        foreach ($function_stmts as $stmt) {
-            $function_checker = new FunctionChecker($stmt, $this);
-
-            $this->source->addNamespacedFunctionChecker(
-                (string)$function_checker->getMethodId(),
-                $function_checker
-            );
         }
 
         if ($leftover_stmts) {
             $statements_checker = new StatementsChecker($this);
             $context = new Context();
             $context->collect_references = $codebase->collect_references;
+            $context->is_global = true;
             $statements_checker->analyze($leftover_stmts, $context);
         }
     }
@@ -110,7 +98,7 @@ class NamespaceChecker extends SourceChecker implements StatementsSource
             throw new \UnexpectedValueException('Did not expect anonymous class here');
         }
 
-        $fq_class_name = Type::getFQCLNFromString($stmt->name, $this->getAliases());
+        $fq_class_name = Type::getFQCLNFromString($stmt->name->name, $this->getAliases());
 
         if ($stmt instanceof PhpParser\Node\Stmt\Class_) {
             $this->source->addNamespacedClassChecker(

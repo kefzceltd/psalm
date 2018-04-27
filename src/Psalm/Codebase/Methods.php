@@ -20,9 +20,9 @@ class Methods
     private $classlike_storage_provider;
 
     /**
-     * @var array<string, MethodChecker>
+     * @var \Psalm\Config
      */
-    private $method_checkers = [];
+    private $config;
 
     /**
      * @var bool
@@ -33,9 +33,11 @@ class Methods
      * @param ClassLikeStorageProvider $storage_provider
      */
     public function __construct(
+        \Psalm\Config $config,
         ClassLikeStorageProvider $storage_provider
     ) {
         $this->classlike_storage_provider = $storage_provider;
+        $this->config = $config;
     }
 
     /**
@@ -113,7 +115,9 @@ class Methods
             $old_method_id = $fq_class_name . '::' . $old_constructor_name;
         }
 
-        if (CallMap::inCallMap($method_id) || ($old_method_id && CallMap::inCallMap($method_id))) {
+        if (!$class_storage->user_defined
+            && (CallMap::inCallMap($method_id) || ($old_method_id && CallMap::inCallMap($method_id)))
+        ) {
             return true;
         }
 
@@ -158,6 +162,16 @@ class Methods
      */
     public function getMethodReturnType($method_id, &$self_class)
     {
+        if ($this->config->use_phpdoc_methods_without_call) {
+            list($original_fq_class_name, $original_method_name) = explode('::', $method_id);
+
+            $original_class_storage = $this->classlike_storage_provider->get($original_fq_class_name);
+
+            if (isset($original_class_storage->pseudo_methods[strtolower($original_method_name)])) {
+                return $original_class_storage->pseudo_methods[strtolower($original_method_name)]->return_type;
+            }
+        }
+
         $declaring_method_id = $this->getDeclaringMethodId($method_id);
 
         if (!$declaring_method_id) {
@@ -285,6 +299,32 @@ class Methods
     }
 
     /**
+     * @param  string $method_id
+     *
+     * @return array<int, \Psalm\Storage\Assertion>
+     */
+    public function getMethodAssertions($method_id)
+    {
+        $method_id = $this->getDeclaringMethodId($method_id);
+
+        if (!$method_id) {
+            return [];
+        }
+
+        list($fq_class_name) = explode('::', $method_id);
+
+        $fq_class_storage = $this->classlike_storage_provider->get($fq_class_name);
+
+        if (!$fq_class_storage->user_defined && CallMap::inCallMap($method_id)) {
+            return [];
+        }
+
+        $storage = $this->getStorage($method_id);
+
+        return $storage->assertions;
+    }
+
+    /**
      * @param string $method_id
      * @param string $declaring_method_id
      *
@@ -361,23 +401,6 @@ class Methods
     }
 
     /**
-     * @param string  $method_id
-     * @param string  $overridden_method_id
-     *
-     * @return void
-     */
-    public function setOverriddenMethodId(
-        $method_id,
-        $overridden_method_id
-    ) {
-        list($fq_class_name, $method_name) = explode('::', $method_id);
-
-        $class_storage = $this->classlike_storage_provider->get($fq_class_name);
-
-        $class_storage->overridden_method_ids[$method_name][] = $overridden_method_id;
-    }
-
-    /**
      * @param  string $method_id
      *
      * @return array<string>
@@ -433,30 +456,5 @@ class Methods
         }
 
         return $class_storage->methods[$method_name_lc];
-    }
-
-    /**
-     * @param  string $method_id
-     *
-     * @return MethodChecker|null
-     */
-    public function getCachedChecker($method_id)
-    {
-        if (isset($this->method_checkers[$method_id])) {
-            return $this->method_checkers[$method_id];
-        }
-
-        return null;
-    }
-
-    /**
-     * @param  string        $method_id
-     * @param  MethodChecker $checker
-     *
-     * @return void
-     */
-    public function cacheChecker($method_id, MethodChecker $checker)
-    {
-        $this->method_checkers[$method_id] = $checker;
     }
 }

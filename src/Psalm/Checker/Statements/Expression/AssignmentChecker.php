@@ -90,21 +90,32 @@ class AssignmentChecker
             }
 
             foreach ($var_comments as $var_comment) {
-                $var_comment_type = ExpressionChecker::fleshOutType(
-                    $statements_checker->getFileChecker()->project_checker,
-                    $var_comment->type,
-                    $context->self,
-                    $context->self
-                );
+                try {
+                    $var_comment_type = ExpressionChecker::fleshOutType(
+                        $statements_checker->getFileChecker()->project_checker,
+                        $var_comment->type,
+                        $context->self,
+                        $context->self
+                    );
 
-                $var_comment_type->setFromDocblock();
+                    $var_comment_type->setFromDocblock();
 
-                if (!$var_comment->var_id || $var_comment->var_id === $var_id) {
-                    $comment_type = $var_comment_type;
-                    continue;
+                    if (!$var_comment->var_id || $var_comment->var_id === $var_id) {
+                        $comment_type = $var_comment_type;
+                        continue;
+                    }
+
+                    $context->vars_in_scope[$var_comment->var_id] = $var_comment_type;
+                } catch (\UnexpectedValueException $e) {
+                    if (IssueBuffer::accepts(
+                        new InvalidDocblock(
+                            (string)$e->getMessage(),
+                            new CodeLocation($statements_checker->getSource(), $assign_var)
+                        )
+                    )) {
+                        // fall through
+                    }
                 }
-
-                $context->vars_in_scope[$var_comment->var_id] = $var_comment_type;
             }
         }
 
@@ -125,7 +136,6 @@ class AssignmentChecker
             $assign_value_type = $comment_type;
         } elseif (!$assign_value_type) {
             if (isset($assign_value->inferredType)) {
-                /** @var Type\Union */
                 $assign_value_type = $assign_value->inferredType;
             } else {
                 $assign_value_type = Type::getMixed();
@@ -162,14 +172,16 @@ class AssignmentChecker
         if ($assign_value_type->isMixed()) {
             $codebase->analyzer->incrementMixedCount($statements_checker->getCheckedFilePath());
 
-            if (IssueBuffer::accepts(
-                new MixedAssignment(
-                    'Cannot assign ' . $var_id . ' to a mixed type',
-                    new CodeLocation($statements_checker->getSource(), $assign_var)
-                ),
-                $statements_checker->getSuppressedIssues()
-            )) {
-                // fall through
+            if (!$assign_var instanceof PhpParser\Node\Expr\PropertyFetch) {
+                if (IssueBuffer::accepts(
+                    new MixedAssignment(
+                        'Cannot assign ' . $var_id . ' to a mixed type',
+                        new CodeLocation($statements_checker->getSource(), $assign_var)
+                    ),
+                    $statements_checker->getSuppressedIssues()
+                )) {
+                    // fall through
+                }
             }
         } else {
             $codebase->analyzer->incrementNonMixedCount($statements_checker->getCheckedFilePath());
@@ -298,17 +310,26 @@ class AssignmentChecker
                 if ($var instanceof PhpParser\Node\Expr\List_
                     || $var instanceof PhpParser\Node\Expr\Array_
                 ) {
+                    /** @var Type\Atomic\ObjectLike|Type\Atomic\TArray|null */
+                    $array_value_type = isset($assign_value_type->getTypes()['array'])
+                        ? $assign_value_type->getTypes()['array']
+                        : null;
+
+                    if ($array_value_type instanceof Type\Atomic\ObjectLike) {
+                        $array_value_type = $array_value_type->getGenericArrayType();
+                    }
+
                     self::analyze(
                         $statements_checker,
                         $var,
                         null,
-                        Type::getMixed(),
+                        $array_value_type ? clone $array_value_type->type_params[1] : Type::getMixed(),
                         $context,
                         $doc_comment
                     );
                 }
 
-                $list_var_id = ExpressionChecker::getVarId(
+                $list_var_id = ExpressionChecker::getArrayVarId(
                     $var,
                     $statements_checker->getFQCLN(),
                     $statements_checker
@@ -375,21 +396,18 @@ class AssignmentChecker
                 }
             }
         } elseif ($assign_var instanceof PhpParser\Node\Expr\ArrayDimFetch) {
-            if (ArrayAssignmentChecker::analyze(
+            ArrayAssignmentChecker::analyze(
                 $statements_checker,
                 $assign_var,
                 $context,
                 $assign_value_type
-            ) === false
-            ) {
-                return false;
-            }
+            );
         } elseif ($assign_var instanceof PhpParser\Node\Expr\PropertyFetch) {
-            if (is_string($assign_var->name)) {
+            if ($assign_var->name instanceof PhpParser\Node\Identifier) {
                 PropertyAssignmentChecker::analyzeInstance(
                     $statements_checker,
                     $assign_var,
-                    $assign_var->name,
+                    $assign_var->name->name,
                     $assign_value,
                     $assign_value_type,
                     $context
@@ -408,8 +426,7 @@ class AssignmentChecker
                 $context->vars_possibly_in_scope[$var_id] = true;
             }
         } elseif ($assign_var instanceof PhpParser\Node\Expr\StaticPropertyFetch &&
-            $assign_var->class instanceof PhpParser\Node\Name &&
-            is_string($assign_var->name)
+            $assign_var->class instanceof PhpParser\Node\Name
         ) {
             if (ExpressionChecker::analyze($statements_checker, $assign_var, $context) === false) {
                 return false;

@@ -130,6 +130,15 @@ function array_reverse(array $arr, bool $preserve_keys = false) {}
  * @template TValue
  *
  * @param array<TKey, TValue> $arr
+ * @return array<TValue, TKey>
+ */
+function array_flip(array $arr) {}
+
+/**
+ * @template TKey
+ * @template TValue
+ *
+ * @param array<TKey, TValue> $arr
  * @return TValue|false
  * @psalm-ignore-falsable-return
  */
@@ -154,6 +163,15 @@ function reset(array &$arr) {}
  * @psalm-ignore-falsable-return
  */
 function end(array &$arr) {}
+
+/**
+ * @template TKey
+ *
+ * @param array<TKey, mixed> $arr
+ * @return TKey|false
+ * @psalm-ignore-falsable-return
+ */
+function key($arr) {}
 
 /**
  * @template T

@@ -11,7 +11,9 @@ use Psalm\Config;
 use Psalm\Context;
 use Psalm\FileManipulation\FileManipulationBuffer;
 use Psalm\Issue\DeprecatedClass;
+use Psalm\Issue\InvalidStringClass;
 use Psalm\Issue\ParentNotFound;
+use Psalm\Issue\UndefinedClass;
 use Psalm\IssueBuffer;
 use Psalm\Type;
 use Psalm\Type\Atomic\TNamedObject;
@@ -40,6 +42,8 @@ class StaticCallChecker extends \Psalm\Checker\Statements\Expression\CallChecker
         $source = $statements_checker->getSource();
 
         $stmt->inferredType = null;
+
+        $config = $project_checker->config;
 
         if ($stmt->class instanceof PhpParser\Node\Name) {
             $fq_class_name = null;
@@ -74,8 +78,8 @@ class StaticCallChecker extends \Psalm\Checker\Statements\Expression\CallChecker
 
                     $fq_class_name = $class_storage->name;
 
-                    if (is_string($stmt->name) && $class_storage->user_defined) {
-                        $method_id = $fq_class_name . '::' . strtolower($stmt->name);
+                    if ($stmt->name instanceof PhpParser\Node\Identifier && $class_storage->user_defined) {
+                        $method_id = $fq_class_name . '::' . strtolower($stmt->name->name);
 
                         $old_context_include_location = $context->include_location;
                         $old_self = $context->self;
@@ -178,23 +182,7 @@ class StaticCallChecker extends \Psalm\Checker\Statements\Expression\CallChecker
             }
         } else {
             ExpressionChecker::analyze($statements_checker, $stmt->class, $context);
-
-            /** @var Type\Union */
             $lhs_type = $stmt->class->inferredType;
-
-            if (!isset($lhs_type) || $lhs_type->hasString()) {
-                if (self::checkFunctionArguments(
-                    $statements_checker,
-                    $stmt->args,
-                    null,
-                    null,
-                    $context
-                ) === false) {
-                    return false;
-                }
-
-                return null;
-            }
         }
 
         if (!$context->check_methods || !$lhs_type) {
@@ -203,11 +191,56 @@ class StaticCallChecker extends \Psalm\Checker\Statements\Expression\CallChecker
 
         $has_mock = false;
 
-        $config = Config::getInstance();
-
         foreach ($lhs_type->getTypes() as $lhs_type_part) {
             if (!$lhs_type_part instanceof TNamedObject) {
-                // @todo deal with it
+                // this is always OK
+                if ($lhs_type_part instanceof Type\Atomic\TClassString) {
+                    continue;
+                }
+
+                if ($lhs_type_part instanceof Type\Atomic\TString) {
+                    if ($config->allow_string_standin_for_class
+                        && !$lhs_type_part instanceof Type\Atomic\TNumericString
+                    ) {
+                        continue;
+                    }
+
+                    if (IssueBuffer::accepts(
+                        new InvalidStringClass(
+                            'String cannot be used as a class',
+                            new CodeLocation($statements_checker->getSource(), $stmt)
+                        ),
+                        $statements_checker->getSuppressedIssues()
+                    )) {
+                        // fall through
+                    }
+
+                    continue;
+                }
+
+                if ($lhs_type_part instanceof Type\Atomic\TMixed
+                    || $lhs_type_part instanceof Type\Atomic\TGenericParam
+                ) {
+                    continue;
+                }
+
+                if ($lhs_type_part instanceof Type\Atomic\TNull
+                    && $lhs_type->ignore_nullable_issues
+                ) {
+                    continue;
+                }
+
+                if (IssueBuffer::accepts(
+                    new UndefinedClass(
+                        'Type ' . $lhs_type_part . ' cannot be called as a class',
+                        new CodeLocation($statements_checker->getSource(), $stmt),
+                        (string) $lhs_type_part
+                    ),
+                    $statements_checker->getSuppressedIssues()
+                )) {
+                    // fall through
+                }
+
                 continue;
             }
 
@@ -219,12 +252,12 @@ class StaticCallChecker extends \Psalm\Checker\Statements\Expression\CallChecker
 
             $method_id = null;
 
-            if (is_string($stmt->name) &&
-                !$codebase->methodExists($fq_class_name . '::__callStatic') &&
-                !$is_mock
+            if ($stmt->name instanceof PhpParser\Node\Identifier
+                && !$codebase->methodExists($fq_class_name . '::__callStatic')
+                && !$is_mock
             ) {
-                $method_id = $fq_class_name . '::' . strtolower($stmt->name);
-                $cased_method_id = $fq_class_name . '::' . $stmt->name;
+                $method_id = $fq_class_name . '::' . strtolower($stmt->name->name);
+                $cased_method_id = $fq_class_name . '::' . $stmt->name->name;
 
                 $does_method_exist = MethodChecker::checkMethodExists(
                     $project_checker,

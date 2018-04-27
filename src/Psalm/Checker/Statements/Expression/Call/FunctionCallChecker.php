@@ -10,7 +10,6 @@ use Psalm\Checker\Statements\ExpressionChecker;
 use Psalm\Checker\StatementsChecker;
 use Psalm\Codebase\CallMap;
 use Psalm\CodeLocation;
-use Psalm\Config;
 use Psalm\Context;
 use Psalm\Issue\ForbiddenCode;
 use Psalm\Issue\InvalidFunctionCall;
@@ -20,6 +19,7 @@ use Psalm\Issue\PossiblyNullFunctionCall;
 use Psalm\IssueBuffer;
 use Psalm\Type;
 use Psalm\Type\Atomic\TCallable;
+use Psalm\Type\Atomic\TGenericParam;
 use Psalm\Type\Atomic\TMixed;
 use Psalm\Type\Atomic\TNamedObject;
 use Psalm\Type\Atomic\TNull;
@@ -41,58 +41,9 @@ class FunctionCallChecker extends \Psalm\Checker\Statements\Expression\CallCheck
         PhpParser\Node\Expr\FuncCall $stmt,
         Context $context
     ) {
-        $method = $stmt->name;
+        $function = $stmt->name;
 
-        if ($method instanceof PhpParser\Node\Name) {
-            $first_arg = isset($stmt->args[0]) ? $stmt->args[0] : null;
-
-            if ($method->parts === ['method_exists']) {
-                $context->check_methods = false;
-            } elseif ($method->parts === ['class_exists']) {
-                if ($first_arg && $first_arg->value instanceof PhpParser\Node\Scalar\String_) {
-                    $context->addPhantomClass($first_arg->value->value);
-                } else {
-                    $context->check_classes = false;
-                }
-            } elseif ($method->parts === ['extension_loaded']) {
-                $context->check_classes = false;
-            } elseif ($method->parts === ['function_exists']) {
-                $context->check_functions = false;
-            } elseif ($method->parts === ['is_callable']) {
-                $context->check_methods = false;
-                $context->check_functions = false;
-            } elseif ($method->parts === ['defined']) {
-                $context->check_consts = false;
-            } elseif ($method->parts === ['extract']) {
-                $context->check_variables = false;
-            } elseif ($method->parts === ['var_dump'] || $method->parts === ['shell_exec']) {
-                if (IssueBuffer::accepts(
-                    new ForbiddenCode(
-                        'Unsafe ' . implode('', $method->parts),
-                        new CodeLocation($statements_checker->getSource(), $stmt)
-                    ),
-                    $statements_checker->getSuppressedIssues()
-                )) {
-                    return false;
-                }
-            } elseif ($method->parts === ['define']) {
-                if ($first_arg && $first_arg->value instanceof PhpParser\Node\Scalar\String_) {
-                    $second_arg = $stmt->args[1];
-                    ExpressionChecker::analyze($statements_checker, $second_arg->value, $context);
-                    $const_name = $first_arg->value->value;
-
-                    $statements_checker->setConstType(
-                        $const_name,
-                        isset($second_arg->value->inferredType) ? $second_arg->value->inferredType : Type::getMixed(),
-                        $context
-                    );
-                } else {
-                    $context->check_consts = false;
-                }
-            }
-        }
-
-        $method_id = null;
+        $function_id = null;
         $function_params = null;
         $in_call_map = false;
 
@@ -144,29 +95,31 @@ class FunctionCallChecker extends \Psalm\Checker\Statements\Expression\CallCheck
                 $has_valid_function_call_type = false;
 
                 foreach ($stmt->name->inferredType->getTypes() as $var_type_part) {
-                    if ($var_type_part instanceof Type\Atomic\Fn) {
+                    if ($var_type_part instanceof Type\Atomic\Fn || $var_type_part instanceof Type\Atomic\TCallable) {
                         $function_params = $var_type_part->params;
 
-                        if (isset($stmt->inferredType)) {
+                        if (isset($stmt->inferredType) && $var_type_part->return_type) {
                             $stmt->inferredType = Type::combineUnionTypes(
                                 $stmt->inferredType,
                                 $var_type_part->return_type
                             );
                         } else {
-                            $stmt->inferredType = $var_type_part->return_type;
+                            $stmt->inferredType = $var_type_part->return_type ?: Type::getMixed();
                         }
 
                         $function_exists = true;
                         $has_valid_function_call_type = true;
-                    } elseif ($var_type_part instanceof TMixed) {
+                    } elseif ($var_type_part instanceof TMixed || $var_type_part instanceof TGenericParam) {
                         $has_valid_function_call_type = true;
-                    // @todo maybe emit issue here
-                    } elseif (($var_type_part instanceof TNamedObject && $var_type_part->value === 'Closure') ||
-                        $var_type_part instanceof TCallable
-                    ) {
+                        // @todo maybe emit issue here
+                    } elseif (($var_type_part instanceof TNamedObject && $var_type_part->value === 'Closure')) {
                         // this is fine
                         $has_valid_function_call_type = true;
-                    } elseif ($var_type_part instanceof TString) {
+                    } elseif ($var_type_part instanceof TString
+                        || $var_type_part instanceof Type\Atomic\TArray
+                        || ($var_type_part instanceof Type\Atomic\ObjectLike
+                            && count($var_type_part->properties) === 2)
+                    ) {
                         // this is also kind of fine
                         $has_valid_function_call_type = true;
                     } elseif ($var_type_part instanceof TNull) {
@@ -176,6 +129,17 @@ class FunctionCallChecker extends \Psalm\Checker\Statements\Expression\CallCheck
                         || !$codebase->methods->methodExists($var_type_part->value . '::__invoke')
                     ) {
                         $invalid_function_call_types[] = (string)$var_type_part;
+                    } else {
+                        if (self::checkMethodArgs(
+                            $var_type_part->value . '::__invoke',
+                            $stmt->args,
+                            $class_template_params,
+                            $context,
+                            new CodeLocation($statements_checker->getSource(), $stmt),
+                            $statements_checker
+                        ) === false) {
+                            return false;
+                        }
                     }
                 }
 
@@ -210,21 +174,24 @@ class FunctionCallChecker extends \Psalm\Checker\Statements\Expression\CallCheck
                 $stmt->inferredType = Type::getMixed();
             }
         } else {
-            $method_id = implode('\\', $stmt->name->parts);
+            $function_id = implode('\\', $stmt->name->parts);
 
-            $in_call_map = CallMap::inCallMap($method_id);
-            $is_stubbed = $codebase_functions->hasStubbedFunction($method_id);
+            $in_call_map = CallMap::inCallMap($function_id);
+            $is_stubbed = $codebase_functions->hasStubbedFunction($function_id);
 
             $is_predefined = true;
 
+            $is_maybe_root_function = !$stmt->name instanceof PhpParser\Node\Name\FullyQualified
+                && count($stmt->name->parts) === 1;
+
             if (!$in_call_map) {
                 $predefined_functions = $config->getPredefinedFunctions();
-                $is_predefined = isset($predefined_functions[$method_id]);
+                $is_predefined = isset($predefined_functions[$function_id]);
             }
 
             if (!$in_call_map && !$stmt->name instanceof PhpParser\Node\Name\FullyQualified) {
-                $method_id = $codebase_functions->getFullyQualifiedFunctionNameFromString(
-                    $method_id,
+                $function_id = $codebase_functions->getFullyQualifiedFunctionNameFromString(
+                    $function_id,
                     $statements_checker
                 );
             }
@@ -233,17 +200,24 @@ class FunctionCallChecker extends \Psalm\Checker\Statements\Expression\CallCheck
                 if ($context->check_functions) {
                     if (self::checkFunctionExists(
                         $statements_checker,
-                        $method_id,
-                        $code_location
+                        $function_id,
+                        $code_location,
+                        $is_maybe_root_function
                     ) === false
                     ) {
                         return false;
                     }
+                } else {
+                    $function_id = self::getExistingFunctionId(
+                        $statements_checker,
+                        $function_id,
+                        $is_maybe_root_function
+                    );
                 }
 
                 $function_exists = $is_stubbed || $codebase_functions->functionExists(
                     $statements_checker,
-                    strtolower($method_id)
+                    strtolower($function_id)
                 );
             } else {
                 $function_exists = true;
@@ -253,7 +227,7 @@ class FunctionCallChecker extends \Psalm\Checker\Statements\Expression\CallCheck
                 if (!$in_call_map || $is_stubbed) {
                     $function_storage = $codebase_functions->getStorage(
                         $statements_checker,
-                        strtolower($method_id)
+                        strtolower($function_id)
                     );
 
                     $function_params = $function_storage->params;
@@ -266,7 +240,7 @@ class FunctionCallChecker extends \Psalm\Checker\Statements\Expression\CallCheck
                 if ($in_call_map && !$is_stubbed) {
                     $function_params = FunctionLikeChecker::getFunctionParamsFromCallMapById(
                         $statements_checker->getFileChecker()->project_checker,
-                        $method_id,
+                        $function_id,
                         $stmt->args
                     );
                 }
@@ -277,7 +251,7 @@ class FunctionCallChecker extends \Psalm\Checker\Statements\Expression\CallCheck
             $statements_checker,
             $stmt->args,
             $function_params,
-            $method_id,
+            $function_id,
             $context
         ) === false) {
             // fall through
@@ -286,32 +260,33 @@ class FunctionCallChecker extends \Psalm\Checker\Statements\Expression\CallCheck
         if ($function_exists) {
             $generic_params = null;
 
-            if ($stmt->name instanceof PhpParser\Node\Name && $method_id) {
+            if ($stmt->name instanceof PhpParser\Node\Name && $function_id) {
                 if (!$is_stubbed && $in_call_map) {
                     $function_params = FunctionLikeChecker::getFunctionParamsFromCallMapById(
                         $statements_checker->getFileChecker()->project_checker,
-                        $method_id,
+                        $function_id,
                         $stmt->args
                     );
                 }
             }
 
             // do this here to allow closure param checks
-            if (self::checkFunctionLikeArgumentsMatch(
-                $statements_checker,
-                $stmt->args,
-                $method_id,
-                $function_params ?: [],
-                $function_storage,
-                null,
-                $generic_params,
-                $code_location,
-                $context
-            ) === false) {
+            if ($function_params !== null
+                && self::checkFunctionLikeArgumentsMatch(
+                    $statements_checker,
+                    $stmt->args,
+                    $function_id,
+                    $function_params,
+                    $function_storage,
+                    null,
+                    $generic_params,
+                    $code_location,
+                    $context
+                ) === false) {
                 // fall through
             }
 
-            if ($stmt->name instanceof PhpParser\Node\Name && $method_id) {
+            if ($stmt->name instanceof PhpParser\Node\Name && $function_id) {
                 if (!$in_call_map || $is_stubbed) {
                     if ($function_storage && $function_storage->template_types) {
                         foreach ($function_storage->template_types as $template_name => $_) {
@@ -356,7 +331,7 @@ class FunctionCallChecker extends \Psalm\Checker\Statements\Expression\CallCheck
                 } else {
                     $stmt->inferredType = FunctionChecker::getReturnTypeFromCallMapWithArgs(
                         $statements_checker,
-                        $method_id,
+                        $function_id,
                         $stmt->args,
                         $code_location,
                         $statements_checker->getSuppressedIssues()
@@ -370,8 +345,8 @@ class FunctionCallChecker extends \Psalm\Checker\Statements\Expression\CallCheck
             }
 
             if ($config->use_assert_for_type &&
-                $method instanceof PhpParser\Node\Name &&
-                $method->parts === ['assert'] &&
+                $function instanceof PhpParser\Node\Name &&
+                $function->parts === ['assert'] &&
                 isset($stmt->args[0])
             ) {
                 $assert_clauses = AlgebraChecker::getFormula(
@@ -408,7 +383,10 @@ class FunctionCallChecker extends \Psalm\Checker\Statements\Expression\CallCheck
             }
         }
 
-        if (!$config->remember_property_assignments_after_call && !$context->collect_initializations) {
+        if (!$config->remember_property_assignments_after_call
+            && !$in_call_map
+            && !$context->collect_initializations
+        ) {
             $context->removeAllObjectVars();
         }
 
@@ -424,6 +402,67 @@ class FunctionCallChecker extends \Psalm\Checker\Statements\Expression\CallCheck
                     : new Type\Atomic\GetTypeT('$' . $var->name);
 
                 $stmt->inferredType = new Type\Union([$atomic_type]);
+            }
+        }
+
+        if ($function_storage
+            && strpos($function_storage->cased_name, 'assert') === 0
+            && $function_storage->assertions
+        ) {
+            self::applyAssertionsToContext(
+                $function_storage->assertions,
+                $stmt->args,
+                $context,
+                $statements_checker
+            );
+        }
+
+        if ($function instanceof PhpParser\Node\Name) {
+            $first_arg = isset($stmt->args[0]) ? $stmt->args[0] : null;
+
+            if ($function->parts === ['method_exists']) {
+                $context->check_methods = false;
+            } elseif ($function->parts === ['class_exists']) {
+                if ($first_arg && $first_arg->value instanceof PhpParser\Node\Scalar\String_) {
+                    $context->addPhantomClass($first_arg->value->value);
+                } else {
+                    $context->check_classes = false;
+                }
+            } elseif ($function->parts === ['extension_loaded']) {
+                $context->check_classes = false;
+            } elseif ($function->parts === ['function_exists']) {
+                $context->check_functions = false;
+            } elseif ($function->parts === ['is_callable']) {
+                $context->check_methods = false;
+                $context->check_functions = false;
+            } elseif ($function->parts === ['defined']) {
+                $context->check_consts = false;
+            } elseif ($function->parts === ['extract']) {
+                $context->check_variables = false;
+            } elseif ($function->parts === ['var_dump'] || $function->parts === ['shell_exec']) {
+                if (IssueBuffer::accepts(
+                    new ForbiddenCode(
+                        'Unsafe ' . implode('', $function->parts),
+                        new CodeLocation($statements_checker->getSource(), $stmt)
+                    ),
+                    $statements_checker->getSuppressedIssues()
+                )) {
+                    return false;
+                }
+            } elseif ($function->parts === ['define']) {
+                if ($first_arg && $first_arg->value instanceof PhpParser\Node\Scalar\String_) {
+                    $second_arg = $stmt->args[1];
+                    ExpressionChecker::analyze($statements_checker, $second_arg->value, $context);
+                    $const_name = $first_arg->value->value;
+
+                    $statements_checker->setConstType(
+                        $const_name,
+                        isset($second_arg->value->inferredType) ? $second_arg->value->inferredType : Type::getMixed(),
+                        $context
+                    );
+                } else {
+                    $context->check_consts = false;
+                }
             }
         }
 

@@ -10,6 +10,7 @@ use Psalm\FileManipulation\FileManipulationBuffer;
 use Psalm\Issue\DuplicateClass;
 use Psalm\Issue\InaccessibleProperty;
 use Psalm\Issue\InvalidClass;
+use Psalm\Issue\MissingDependency;
 use Psalm\Issue\ReservedWord;
 use Psalm\Issue\UndefinedClass;
 use Psalm\IssueBuffer;
@@ -29,7 +30,7 @@ abstract class ClassLikeChecker extends SourceChecker implements StatementsSourc
      */
     public static $SPECIAL_TYPES = [
         'int' => 'int',
-        'string' => 'stirng',
+        'string' => 'string',
         'float' => 'float',
         'bool' => 'bool',
         'false' => 'false',
@@ -112,20 +113,6 @@ abstract class ClassLikeChecker extends SourceChecker implements StatementsSourc
                 $storage_file_path = strtolower($storage_file_path);
                 $source_file_path = strtolower($source_file_path);
             }
-
-            if ($storage_file_path !== $source_file_path ||
-                $this->storage->location->getLineNumber() !== $class->getLine()
-            ) {
-                if (IssueBuffer::accepts(
-                    new DuplicateClass(
-                        'Class ' . $fq_class_name . ' has already been defined at ' .
-                            $storage_file_path . ':' . $this->storage->location->getLineNumber(),
-                        new CodeLocation($this, $class, null, true)
-                    )
-                )) {
-                    // fall through
-                }
-            }
         }
     }
 
@@ -144,20 +131,9 @@ abstract class ClassLikeChecker extends SourceChecker implements StatementsSourc
 
         foreach ($this->class->stmts as $stmt) {
             if ($stmt instanceof PhpParser\Node\Stmt\ClassMethod &&
-                strtolower($stmt->name) === strtolower($method_name)
+                strtolower($stmt->name->name) === strtolower($method_name)
             ) {
-                $method_id = $this->fq_class_name . '::' . $stmt->name;
-
-                if ($project_checker->canCacheCheckers()) {
-                    $method_checker = $codebase->methods->getCachedChecker($method_id);
-
-                    if (!$method_checker) {
-                        $method_checker = new MethodChecker($stmt, $this);
-                        $codebase->methods->cacheChecker($method_id, $method_checker);
-                    }
-                } else {
-                    $method_checker = new MethodChecker($stmt, $this);
-                }
+                $method_checker = new MethodChecker($stmt, $this);
 
                 $method_checker->analyze($context, null, true);
             } elseif ($stmt instanceof PhpParser\Node\Stmt\TraitUse) {
@@ -179,7 +155,7 @@ abstract class ClassLikeChecker extends SourceChecker implements StatementsSourc
 
                     foreach ($trait_node->stmts as $trait_stmt) {
                         if ($trait_stmt instanceof PhpParser\Node\Stmt\ClassMethod &&
-                            strtolower($trait_stmt->name) === strtolower($method_name)
+                            strtolower($trait_stmt->name->name) === strtolower($method_name)
                         ) {
                             $method_checker = new MethodChecker($trait_stmt, $trait_checker);
 
@@ -217,7 +193,18 @@ abstract class ClassLikeChecker extends SourceChecker implements StatementsSourc
         $inferred = true
     ) {
         if (empty($fq_class_name)) {
-            throw new \InvalidArgumentException('$class cannot be empty');
+            if (IssueBuffer::accepts(
+                new UndefinedClass(
+                    'Class or interface <empty string> does not exist',
+                    $code_location,
+                    'empty string'
+                ),
+                $suppressed_issues
+            )) {
+                return false;
+            }
+
+            return;
         }
 
         $project_checker = $statements_source->getFileChecker()->project_checker;
@@ -240,7 +227,8 @@ abstract class ClassLikeChecker extends SourceChecker implements StatementsSourc
             if (IssueBuffer::accepts(
                 new ReservedWord(
                     $class_name . ' is a reserved word',
-                    $code_location
+                    $code_location,
+                    $class_name
                 ),
                 $suppressed_issues
             )) {
@@ -257,7 +245,8 @@ abstract class ClassLikeChecker extends SourceChecker implements StatementsSourc
             if (IssueBuffer::accepts(
                 new UndefinedClass(
                     'Class or interface ' . $fq_class_name . ' does not exist',
-                    $code_location
+                    $code_location,
+                    $fq_class_name
                 ),
                 $suppressed_issues
             )) {
@@ -271,10 +260,11 @@ abstract class ClassLikeChecker extends SourceChecker implements StatementsSourc
 
         foreach ($class_storage->invalid_dependencies as $dependency_class_name) {
             if (IssueBuffer::accepts(
-                new UndefinedClass(
+                new MissingDependency(
                     $fq_class_name . ' depends on class or interface '
                         . $dependency_class_name . ' that does not exist',
-                    $code_location
+                    $code_location,
+                    $fq_class_name
                 ),
                 $suppressed_issues
             )) {
@@ -296,7 +286,8 @@ abstract class ClassLikeChecker extends SourceChecker implements StatementsSourc
                 if (IssueBuffer::accepts(
                     new InvalidClass(
                         'Class or interface ' . $fq_class_name . ' has wrong casing',
-                        $code_location
+                        $code_location,
+                        $fq_class_name
                     ),
                     $suppressed_issues
                 )) {
@@ -392,7 +383,7 @@ abstract class ClassLikeChecker extends SourceChecker implements StatementsSourc
      */
     public function getClassName()
     {
-        return $this->class->name;
+        return $this->class->name ? $this->class->name->name : null;
     }
 
     /**
@@ -563,7 +554,7 @@ abstract class ClassLikeChecker extends SourceChecker implements StatementsSourc
     public static function getClassesForFile(ProjectChecker $project_checker, $file_path)
     {
         try {
-            return $project_checker->file_storage_provider->get($file_path)->classes_in_file;
+            return $project_checker->file_storage_provider->get($file_path)->classlikes_in_file;
         } catch (\InvalidArgumentException $e) {
             return [];
         }

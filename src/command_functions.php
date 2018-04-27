@@ -5,7 +5,9 @@
  * @param  bool   $has_explicit_root
  * @param  string $vendor_dir
  *
- * @return void
+ * @psalm-suppress MixedInferred
+ *
+ * @return \Composer\Autoload\ClassLoader
  */
 function requireAutoloaders($current_dir, $has_explicit_root, $vendor_dir)
 {
@@ -24,16 +26,22 @@ function requireAutoloaders($current_dir, $has_explicit_root, $vendor_dir)
 
         $nested_autoload_file = dirname(dirname($autoload_root)) . DIRECTORY_SEPARATOR . 'autoload.php';
 
+        // note: don't realpath $nested_autoload_file, or phar version will fail
         if (file_exists($nested_autoload_file)) {
-            $autoload_files[] = realpath($nested_autoload_file);
+            if (!in_array($nested_autoload_file, $autoload_files, false)) {
+                $autoload_files[] = $nested_autoload_file;
+            }
             $has_autoloader = true;
         }
 
         $vendor_autoload_file =
             $autoload_root . DIRECTORY_SEPARATOR . $vendor_dir . DIRECTORY_SEPARATOR . 'autoload.php';
 
+        // note: don't realpath $vendor_autoload_file, or phar version will fail
         if (file_exists($vendor_autoload_file)) {
-            $autoload_files[] = realpath($vendor_autoload_file);
+            if (!in_array($vendor_autoload_file, $autoload_files, false)) {
+                $autoload_files[] = $vendor_autoload_file;
+            }
             $has_autoloader = true;
         }
 
@@ -45,14 +53,33 @@ function requireAutoloaders($current_dir, $has_explicit_root, $vendor_dir)
                     . 'to specify a particular project to run Psalm on.';
             }
 
-            die($error_message . PHP_EOL);
+            echo $error_message . PHP_EOL;
+            exit(1);
         }
     }
 
+    $first_autoloader = null;
+
     foreach ($autoload_files as $file) {
-        /** @psalm-suppress UnresolvableInclude */
-        require_once $file;
+        /**
+         * @psalm-suppress UnresolvableInclude
+         * @var \Composer\Autoload\ClassLoader
+         */
+        $autoloader = require_once $file;
+
+        if (!$first_autoloader) {
+            $first_autoloader = $autoloader;
+        }
     }
+
+    if ($first_autoloader === null) {
+        throw new \LogicException('Cannot be null here');
+    }
+
+    define('PSALM_VERSION', (string) \Muglug\PackageVersions\Versions::getVersion('vimeo/psalm'));
+    define('PHP_PARSER_VERSION', (string) \Muglug\PackageVersions\Versions::getVersion('nikic/php-parser'));
+
+    return $first_autoloader;
 }
 
 /**
@@ -109,6 +136,7 @@ function getPathsToCheck($f_paths)
 
             if (realpath($input_path) === realpath(dirname(__DIR__) . DIRECTORY_SEPARATOR . 'psalm')
                 || realpath($input_path) === realpath(dirname(__DIR__) . DIRECTORY_SEPARATOR . 'psalter')
+                || realpath($input_path) === \Phar::running(false)
             ) {
                 continue;
             }
@@ -144,17 +172,20 @@ function getPathsToCheck($f_paths)
 
         foreach ($filtered_input_paths as $i => $path_to_check) {
             if ($path_to_check[0] === '-') {
-                die('Invalid usage, expecting psalm [options] [file...]' . PHP_EOL);
+                echo 'Invalid usage, expecting psalm [options] [file...]' . PHP_EOL;
+                exit(1);
             }
 
             if (!file_exists($path_to_check)) {
-                die('Cannot locate ' . $path_to_check . PHP_EOL);
+                echo 'Cannot locate ' . $path_to_check . PHP_EOL;
+                exit(1);
             }
 
             $path_to_check = realpath($path_to_check);
 
             if (!$path_to_check) {
-                die('Error getting realpath for file' . PHP_EOL);
+                echo 'Error getting realpath for file' . PHP_EOL;
+                exit(1);
             }
 
             $paths_to_check[] = $path_to_check;

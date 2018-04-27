@@ -104,7 +104,7 @@ class RedundantConditionTest extends TestCase
                         }
                     }',
                 'assertions' => [],
-                'error_levels' => ['RedundantConditionGivenDocblockType'],
+                'error_levels' => ['DocblockTypeContradiction'],
             ],
             'noRedundantConditionTypeReplacementWithDocblock' => [
                 '<?php
@@ -301,7 +301,7 @@ class RedundantConditionTest extends TestCase
                         }
                     }',
                 'assertions' => [],
-                'error_levels' => ['RedundantConditionGivenDocblockType'],
+                'error_levels' => ['RedundantConditionGivenDocblockType', 'DocblockTypeContradiction'],
             ],
             'nullToMixedWithNullCheckNoContinue' => [
                 '<?php
@@ -314,6 +314,94 @@ class RedundantConditionTest extends TestCase
                     if (is_string($a[0]) && strlen($a[0]) > 3) {}',
                 'assignments' => [],
                 'error_levels' => [],
+            ],
+            'replaceFalseTypeWithTrueConditionalOnMixedEquality' => [
+                '<?php
+                    function getData() {
+                        return rand(0, 1) ? [1, 2, 3] : false;
+                    }
+
+                    $a = false;
+
+                    while ($i = getData()) {
+                        if (!$a && $i[0] === 2) {
+                            $a = true;
+                        }
+
+                        if ($a === false) {}
+                    }',
+                'assignments' => [],
+                'error_levels' => ['MixedAssignment', 'MissingReturnType', 'MixedArrayAccess'],
+            ],
+            'nullCoalescePossiblyUndefined' => [
+                '<?php
+                    if (rand(0,1)) {
+                        $options = ["option" => true];
+                    }
+
+                    $option = $options["option"] ?? false;
+
+                    if ($option) {}',
+                'assignments' => [],
+                'error_levels' => ['MixedAssignment'],
+            ],
+            'allowIntValueCheckAfterComparisonDueToOverflow' => [
+                '<?php
+                    function foo(int $x) : void {
+                        $x = $x + 1;
+
+                        if (!is_int($x)) {
+                            echo "Is a float.";
+                        } else {
+                            echo "Is an int.";
+                        }
+                    }
+
+                    function bar(int $x) : void {
+                        $x = $x + 1;
+
+                        if (is_float($x)) {
+                            echo "Is a float.";
+                        } else {
+                            echo "Is an int.";
+                        }
+                    }',
+            ],
+            'allowIntValueCheckAfterComparisonDueToOverflowInc' => [
+                '<?php
+                    function foo(int $x) : void {
+                        $x++;
+
+                        if (!is_int($x)) {
+                            echo "Is a float.";
+                        } else {
+                            echo "Is an int.";
+                        }
+                    }
+
+                    function bar(int $x) : void {
+                        $x++;
+
+                        if (is_float($x)) {
+                            echo "Is a float.";
+                        } else {
+                            echo "Is an int.";
+                        }
+                    }',
+            ],
+            'allowIntValueCheckAfterComparisonDueToConditionalOverflow' => [
+                '<?php
+                    function foo(int $x) : void {
+                        if (rand(0, 1)) {
+                            $x = $x + 1;
+                        }
+
+                        if (is_float($x)) {
+                            echo "Is a float.";
+                        } else {
+                            echo "Is an int.";
+                        }
+                    }',
             ],
         ];
     }
@@ -328,13 +416,13 @@ class RedundantConditionTest extends TestCase
                 '<?php
                     $y = false:
                     if ($y) {}',
-                'error_message' => 'RedundantCondition',
+                'error_message' => 'TypeDoesNotContainType',
             ],
             'ifNotTrue' => [
                 '<?php
                     $y = true:
                     if (!$y) {}',
-                'error_message' => 'RedundantCondition',
+                'error_message' => 'TypeDoesNotContainType',
             ],
             'ifTrue' => [
                 '<?php
@@ -441,7 +529,7 @@ class RedundantConditionTest extends TestCase
                             $one->fooFoo();
                         }
                     }',
-                'error_message' => 'RedundantCondition',
+                'error_message' => 'TypeDoesNotContainType',
             ],
             'SKIPPED-twoVarLogicNotNestedWithElseifNegatedInIf' => [
                 '<?php
@@ -475,7 +563,54 @@ class RedundantConditionTest extends TestCase
                     /** @psalm-suppress PossiblyNullArgument */
                     takesA($a);
                     if ($a instanceof A) {}',
-                'error_message' => 'RedundantCondition - src/somefile.php:15',
+                'error_message' => 'RedundantCondition - src' . DIRECTORY_SEPARATOR . 'somefile.php:15',
+            ],
+            'replaceFalseType' => [
+                '<?php
+                    function foo(bool $b) : void {
+                      if (!$b) {
+                        $b = true;
+                      }
+
+                      if ($b) {}
+                    }',
+                'error_message' => 'RedundantCondition',
+            ],
+            'replaceTrueType' => [
+                '<?php
+                    function foo(bool $b) : void {
+                      if ($b) {
+                        $b = false;
+                      }
+
+                      if ($b) {}
+                    }',
+                'error_message' => 'TypeDoesNotContainType - src' . DIRECTORY_SEPARATOR . 'somefile.php:7',
+            ],
+            'allowIntValueCheckAfterComparisonDueToConditionalOverflow' => [
+                '<?php
+                    function foo(int $x) : void {
+                        if (rand(0, 1)) {
+                            $x = 125;
+                        }
+
+                        if (is_float($x)) {
+                            echo "Is a float.";
+                        } else {
+                            echo "Is an int.";
+                        }
+                    }',
+                'error_message' => 'TypeDoesNotContainType - src' . DIRECTORY_SEPARATOR . 'somefile.php:7',
+            ],
+            'disallowTwoIntValueChecksDueToConditionalOverflow' => [
+                '<?php
+                    function foo(int $x) : void {
+                        $x = $x + 1;
+
+                        if (is_int($x)) {
+                        } elseif (is_int($x)) {}
+                    }',
+                'error_message' => 'TypeDoesNotContainType - src' . DIRECTORY_SEPARATOR . 'somefile.php:6',
             ],
         ];
     }

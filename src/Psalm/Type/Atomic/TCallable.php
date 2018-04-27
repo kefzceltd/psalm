@@ -3,10 +3,12 @@ namespace Psalm\Type\Atomic;
 
 class TCallable extends \Psalm\Type\Atomic
 {
-    public function __toString()
-    {
-        return 'callable';
-    }
+    use CallableTrait;
+
+    /**
+     * @var string
+     */
+    public $value;
 
     /**
      * @return string
@@ -23,7 +25,7 @@ class TCallable extends \Psalm\Type\Atomic
      * @param  int           $php_major_version
      * @param  int           $php_minor_version
      *
-     * @return null|string
+     * @return string
      */
     public function toPhpString(
         $namespace,
@@ -32,7 +34,7 @@ class TCallable extends \Psalm\Type\Atomic
         $php_major_version,
         $php_minor_version
     ) {
-        return null;
+        return 'callable';
     }
 
     public function canBeFullyExpressedInPhp()

@@ -45,11 +45,20 @@ class Context
     public $inside_isset = false;
 
     /**
-     * Whether or not we're inside an unset call, where we don't care about possibly undefined variables
+     * Whether or not we're inside an unset call, where
+     * we don't care about possibly undefined variables
      *
      * @var bool
      */
     public $inside_unset = false;
+
+    /**
+     * Whether or not we're inside an class_exists call, where
+     * we don't care about possibly undefined classes
+     *
+     * @var bool
+     */
+    public $inside_class_exists = false;
 
     /**
      * @var null|CodeLocation
@@ -248,57 +257,70 @@ class Context
         array $vars_to_update,
         array &$updated_vars
     ) {
-        foreach ($this->vars_in_scope as $var => &$context_type) {
-            if (isset($start_context->vars_in_scope[$var])) {
-                $old_type = $start_context->vars_in_scope[$var];
+        foreach ($start_context->vars_in_scope as $var_id => $old_type) {
+            // this is only true if there was some sort of type negation
+            if (in_array($var_id, $vars_to_update, true)) {
+                // if we're leaving, we're effectively deleting the possibility of the if types
+                $new_type = !$has_leaving_statements && $end_context->hasVariable($var_id)
+                    ? $end_context->vars_in_scope[$var_id]
+                    : null;
 
-                // this is only true if there was some sort of type negation
-                if (in_array($var, $vars_to_update, true)) {
-                    // if we're leaving, we're effectively deleting the possibility of the if types
-                    $new_type = !$has_leaving_statements && $end_context->hasVariable($var)
-                        ? $end_context->vars_in_scope[$var]
-                        : null;
+                $existing_type = isset($this->vars_in_scope[$var_id]) ? $this->vars_in_scope[$var_id] : null;
 
-                    // if the type changed within the block of statements, process the replacement
-                    // also never allow ourselves to remove all types from a union
-                    if ((!$new_type || $old_type->getId() !== $new_type->getId())
-                        && ($new_type || count($context_type->getTypes()) > 1)
-                    ) {
-                        $context_type->substitute($old_type, $new_type);
-
-                        if ($new_type && $new_type->from_docblock) {
-                            $context_type->setFromDocblock();
-                        }
-
-                        $updated_vars[$var] = true;
+                if (!$existing_type) {
+                    if ($new_type) {
+                        $this->vars_in_scope[$var_id] = clone $new_type;
+                        $updated_vars[$var_id] = true;
                     }
+
+                    continue;
+                }
+
+                // if the type changed within the block of statements, process the replacement
+                // also never allow ourselves to remove all types from a union
+                if ((!$new_type || $old_type->getId() !== $new_type->getId())
+                    && ($new_type || count($existing_type->getTypes()) > 1)
+                ) {
+                    $existing_type->substitute($old_type, $new_type);
+
+                    if ($new_type && $new_type->from_docblock) {
+                        $existing_type->setFromDocblock();
+                    }
+
+                    $updated_vars[$var_id] = true;
                 }
             }
         }
     }
 
     /**
-     * @param  array<string, Type\Union> $vars_in_scope
+     * @param  array<string, Type\Union> $new_vars_in_scope
+     * @param  bool $include_new_vars
      *
      * @return array<string,Type\Union>
      */
-    public function getRedefinedVars(array $vars_in_scope)
+    public function getRedefinedVars(array $new_vars_in_scope, $include_new_vars = false)
     {
         $redefined_vars = [];
 
-        foreach ($vars_in_scope as $var => $context_type) {
-            if (!isset($this->vars_in_scope[$var])) {
+        foreach ($this->vars_in_scope as $var_id => $this_type) {
+            if (!isset($new_vars_in_scope[$var_id])) {
+                if ($include_new_vars) {
+                    $redefined_vars[$var_id] = $this_type;
+                }
                 continue;
             }
 
-            $this_var = $this->vars_in_scope[$var];
+            $new_type = $new_vars_in_scope[$var_id];
 
-            if (!$this_var->failed_reconciliation
-                && !$this_var->isEmpty()
-                && !$context_type->isEmpty()
-                && $this_var->getId() !== $context_type->getId()
+            if (!$this_type->failed_reconciliation
+                && !$this_type->isEmpty()
+                && !$new_type->isEmpty()
+                && ($this_type->getId() !== $new_type->getId()
+                    || $this_type->initialized !== $new_type->initialized
+                    || $this_type->from_calculation !== $new_type->from_calculation)
             ) {
-                $redefined_vars[$var] = $this_var;
+                $redefined_vars[$var_id] = $this_type;
             }
         }
 
@@ -349,8 +371,9 @@ class Context
         $redefined_var_ids = [];
 
         foreach ($new_context->vars_in_scope as $var_id => $context_type) {
-            if (!isset($original_context->vars_in_scope[$var_id]) ||
-                $original_context->vars_in_scope[$var_id]->getId() !== $context_type->getId()
+            if (!isset($original_context->vars_in_scope[$var_id])
+                || $original_context->vars_in_scope[$var_id]->getId() !== $context_type->getId()
+                || $original_context->vars_in_scope[$var_id]->possibly_undefined !== $context_type->possibly_undefined
             ) {
                 $redefined_var_ids[] = $var_id;
             }
@@ -420,7 +443,7 @@ class Context
             $quoted_remove_var_id = preg_quote($remove_var_id);
 
             foreach ($clause->possibilities as $var_id => $_) {
-                if (preg_match('/^' . $quoted_remove_var_id . '[\[\-]/', $var_id)) {
+                if (preg_match('/' . $quoted_remove_var_id . '[\]\[\-]/', $var_id)) {
                     break 2;
                 }
             }
@@ -523,18 +546,16 @@ class Context
             );
         }
 
-        if ($existing_type->hasArray() || $existing_type->isMixed() || $existing_type->hasObjectType()) {
-            $vars_to_remove = [];
+        $vars_to_remove = [];
 
-            foreach ($this->vars_in_scope as $var_id => $_) {
-                if (preg_match('/^' . preg_quote($remove_var_id, DIRECTORY_SEPARATOR) . '[\[\-]/', $var_id)) {
-                    $vars_to_remove[] = $var_id;
-                }
+        foreach ($this->vars_in_scope as $var_id => $_) {
+            if (preg_match('/' . preg_quote($remove_var_id, DIRECTORY_SEPARATOR) . '[\]\[\-]/', $var_id)) {
+                $vars_to_remove[] = $var_id;
             }
+        }
 
-            foreach ($vars_to_remove as $var_id) {
-                unset($this->vars_in_scope[$var_id]);
-            }
+        foreach ($vars_to_remove as $var_id) {
+            unset($this->vars_in_scope[$var_id]);
         }
     }
 
@@ -556,7 +577,7 @@ class Context
         }
 
         foreach ($vars_to_remove as $var_id) {
-            unset($this->vars_in_scope[$var_id]);
+            unset($this->vars_in_scope[$var_id], $this->vars_possibly_in_scope[$var_id]);
         }
 
         $clauses_to_keep = [];
@@ -577,10 +598,6 @@ class Context
         }
 
         $this->clauses = $clauses_to_keep;
-
-        if ($this->parent_context) {
-            $this->parent_context->removeAllObjectVars();
-        }
     }
 
     /**

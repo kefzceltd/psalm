@@ -27,10 +27,44 @@ class PropertyTypeTest extends TestCase
                     private $x;
 
                     public function getX(): int {
-                        if ($this->x === null) {
-                            $this->x = 0;
-                        }
+                        $this->x = 5;
+
                         $this->modifyX();
+
+                        return $this->x;
+                    }
+
+                    private function modifyX(): void {
+                        $this->x = null;
+                    }
+                }'
+        );
+
+        $this->analyzeFile('somefile.php', new Context());
+    }
+
+    /**
+     * @return                   void
+     */
+    public function testForgetPropertyAssignmentsInBranchWithThrow()
+    {
+        Config::getInstance()->remember_property_assignments_after_call = false;
+
+        $this->addFile(
+            'somefile.php',
+            '<?php
+                class X {
+                    /** @var ?int **/
+                    private $x;
+
+                    public function getX(): int {
+                        $this->x = 5;
+
+                        if (rand(0, 1)) {
+                            $this->modifyX();
+                            throw new \Exception("bad");
+                        }
+
                         return $this->x;
                     }
 
@@ -668,8 +702,12 @@ class PropertyTypeTest extends TestCase
                             $this->stmts = $stmts;
                         }
 
-                        public function getSubNodeNames() {
+                        public function getSubNodeNames() : array {
                             return array("stmts");
+                        }
+
+                        public function getType() : string {
+                            return "Stmt_Finally";
                         }
                     }',
                 'assertions' => [],
@@ -754,6 +792,97 @@ class PropertyTypeTest extends TestCase
                         }
                     }',
             ],
+            'noIssueWhenSuppressingMixedAssignmentForProperty' => [
+                '<?php
+                    class A {
+                        /** @var string|null */
+                        public $foo;
+
+                        /** @param mixed $a */
+                        public function barBar($a): void
+                        {
+                            $this->foo = $a;
+                        }
+                    }',
+                'assertions' => [],
+                'error_levels' => [
+                    'MixedAssignment',
+                ],
+            ],
+            'propertyAssignmentToMixed' => [
+                '<?php
+                    class C {
+                        /** @var string|null */
+                        public $foo;
+                    }
+
+                    /** @param mixed $a */
+                    function barBar(C $c, $a): void
+                    {
+                        $c->foo = $a;
+                    }',
+                'assertions' => [],
+                'error_levels' => [
+                    'MixedAssignment',
+                ],
+            ],
+            'propertySetInBothIfBranches' => [
+                '<?php
+                    class Foo
+                    {
+                        /** @var int */
+                        private $status;
+
+                        public function __construct(int $in)
+                        {
+                            if (rand(0, 1)) {
+                                $this->status = 1;
+                            } else {
+                                $this->status = $in;
+                            }
+                        }
+                    }',
+            ],
+            'propertySetInPrivateMethodWithIfAndElse' => [
+                '<?php
+                    class A {
+                        /** @var int */
+                        public $a;
+
+                        public function __construct() {
+                            if (rand(0, 1)) {
+                                $this->foo();
+                            } else {
+                                $this->bar();
+                            }
+                        }
+
+                        private function foo(): void {
+                            $this->a = 5;
+                        }
+
+                        private function bar(): void {
+                            $this->a = 5;
+                        }
+                    }',
+            ],
+            'allowMixedAssignmetWhenDesired' => [
+                '<?php
+                    class A {
+                        /**
+                         * @var mixed
+                         */
+                        private $mixed;
+
+                        /**
+                         * @param mixed $value
+                         */
+                        public function setMixed($value): void
+                        {
+                            $this->mixed = $value;
+                        }
+                    }',
+            ],
         ];
     }
 
@@ -806,7 +935,7 @@ class PropertyTypeTest extends TestCase
                             $this->foo = 5;
                         }
                     }',
-                'error_message' => 'MissingPropertyType - src/somefile.php:3 - Property A::$foo does not have a ' .
+                'error_message' => 'MissingPropertyType - src' . DIRECTORY_SEPARATOR . 'somefile.php:3 - Property A::$foo does not have a ' .
                     'declared type - consider null|int',
             ],
             'missingPropertyTypeWithConstructorInit' => [
@@ -814,11 +943,11 @@ class PropertyTypeTest extends TestCase
                     class A {
                         public $foo;
 
-                        public function __construct(): void {
+                        public function __construct() {
                             $this->foo = 5;
                         }
                     }',
-                'error_message' => 'MissingPropertyType - src/somefile.php:3 - Property A::$foo does not have a ' .
+                'error_message' => 'MissingPropertyType - src' . DIRECTORY_SEPARATOR . 'somefile.php:3 - Property A::$foo does not have a ' .
                     'declared type - consider int',
             ],
             'missingPropertyTypeWithConstructorInitAndNull' => [
@@ -826,7 +955,7 @@ class PropertyTypeTest extends TestCase
                     class A {
                         public $foo;
 
-                        public function __construct(): void {
+                        public function __construct() {
                             $this->foo = 5;
                         }
 
@@ -834,7 +963,7 @@ class PropertyTypeTest extends TestCase
                             $this->foo = null;
                         }
                     }',
-                'error_message' => 'MissingPropertyType - src/somefile.php:3 - Property A::$foo does not have a ' .
+                'error_message' => 'MissingPropertyType - src' . DIRECTORY_SEPARATOR . 'somefile.php:3 - Property A::$foo does not have a ' .
                     'declared type - consider null|int',
             ],
             'missingPropertyTypeWithConstructorInitAndNullDefault' => [
@@ -842,11 +971,11 @@ class PropertyTypeTest extends TestCase
                     class A {
                         public $foo = null;
 
-                        public function __construct(): void {
+                        public function __construct() {
                             $this->foo = 5;
                         }
                     }',
-                'error_message' => 'MissingPropertyType - src/somefile.php:3 - Property A::$foo does not have a ' .
+                'error_message' => 'MissingPropertyType - src' . DIRECTORY_SEPARATOR . 'somefile.php:3 - Property A::$foo does not have a ' .
                     'declared type - consider int|null',
             ],
             'badAssignment' => [
@@ -861,6 +990,19 @@ class PropertyTypeTest extends TestCase
                         }
                     }',
                 'error_message' => 'InvalidPropertyAssignmentValue',
+            ],
+            'possiblyBadAssignment' => [
+                '<?php
+                    class A {
+                        /** @var string */
+                        public $foo;
+
+                        public function barBar(): void
+                        {
+                            $this->foo = rand(0, 1) ? 5 : "hello";
+                        }
+                    }',
+                'error_message' => 'PossiblyInvalidPropertyAssignmentValue',
             ],
             'badAssignmentAsWell' => [
                 '<?php
@@ -1103,30 +1245,6 @@ class PropertyTypeTest extends TestCase
                     }',
                 'error_message' => 'PropertyNotSetInConstructor',
             ],
-            'propertySetInPrivateMethodWithIfAndElse' => [
-                '<?php
-                    class A {
-                        /** @var int */
-                        public $a;
-
-                        public function __construct() {
-                            if (rand(0, 1)) {
-                                $this->foo();
-                            } else {
-                                $this->bar();
-                            }
-                        }
-
-                        private function foo(): void {
-                            $this->a = 5;
-                        }
-
-                        private function bar(): void {
-                            $this->a = 5;
-                        }
-                    }',
-                'error_message' => 'PropertyNotSetInConstructor',
-            ],
             'undefinedPropertyClass' => [
                 '<?php
                     class A {
@@ -1206,6 +1324,35 @@ class PropertyTypeTest extends TestCase
                         public $a = "hello";
                     }',
                 'error_message' => 'InvalidPropertyAssignmentValue',
+            ],
+            'prohibitMixedAssignmentNormally' => [
+                '<?php
+                    class A {
+                        /**
+                         * @var string
+                         */
+                        private $mixed;
+
+                        /**
+                         * @param mixed $value
+                         */
+                        public function setMixed($value): void
+                        {
+                            $this->mixed = $value;
+                        }
+                    }',
+                'error_message' => 'MixedAssignment',
+            ],
+            'assertPropertyTypeHasImpossibleType' => [
+                '<?php
+                    class A {
+                        /** @var ?B */
+                        public $foo;
+                    }
+                    class B {}
+                    $a = new A();
+                    if (is_string($a->foo)) {}',
+                'error_message' => 'DocblockTypeContradiction',
             ],
         ];
     }

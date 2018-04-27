@@ -143,6 +143,24 @@ class IfChecker
             $more_cond_assigned_var_ids
         );
 
+        $newish_var_ids = array_map(
+            /**
+             * @param Type\Union $_
+             *
+             * @return true
+             */
+            function (Type\Union $_) {
+                return true;
+            },
+            array_diff_key(
+                $if_context->vars_in_scope,
+                $pre_condition_vars_in_scope,
+                $cond_referenced_var_ids,
+                $cond_assigned_var_ids
+            )
+        );
+
+
         // get all the var ids that were referened in the conditional, but not assigned in it
         $cond_referenced_var_ids = array_diff_key($cond_referenced_var_ids, $cond_assigned_var_ids);
 
@@ -159,6 +177,8 @@ class IfChecker
             },
             ARRAY_FILTER_USE_KEY
         );
+
+        $cond_referenced_var_ids = array_merge($newish_var_ids, $cond_referenced_var_ids);
 
         $if_context->inside_conditional = false;
 
@@ -177,28 +197,26 @@ class IfChecker
         );
 
         $if_clauses = array_values(
-            array_filter(
-                $if_clauses,
-                /** @return bool */
+            array_map(
+                /**
+                 * @return Clause
+                 */
                 function (Clause $c) use ($mixed_var_ids) {
                     $keys = array_keys($c->possibilities);
 
                     foreach ($keys as $key) {
                         foreach ($mixed_var_ids as $mixed_var_id) {
                             if (preg_match('/^' . preg_quote($mixed_var_id, '/') . '(\[|-)/', $key)) {
-                                return false;
+                                return new Clause([], true);
                             }
                         }
                     }
 
-                    return true;
-                }
+                    return $c;
+                },
+                $if_clauses
             )
         );
-
-        if (!$if_clauses) {
-            $if_clauses = [new Clause([], true)];
-        }
 
         // this will see whether any of the clauses in set A conflict with the clauses in set B
         AlgebraChecker::checkForParadox(
@@ -236,7 +254,12 @@ class IfChecker
                     $changed_var_ids,
                     $cond_referenced_var_ids,
                     $statements_checker,
-                    new CodeLocation($statements_checker->getSource(), $stmt->cond, $context->include_location),
+                    $context->check_variables
+                        ? new CodeLocation(
+                            $statements_checker->getSource(),
+                            $stmt->cond,
+                            $context->include_location
+                        ) : null,
                     $statements_checker->getSuppressedIssues()
                 );
 
@@ -275,7 +298,12 @@ class IfChecker
                 $changed_var_ids,
                 $stmt->else || $stmt->elseifs ? $cond_referenced_var_ids : [],
                 $statements_checker,
-                new CodeLocation($statements_checker->getSource(), $stmt->cond, $context->include_location),
+                $context->check_variables
+                    ? new CodeLocation(
+                        $statements_checker->getSource(),
+                        $stmt->cond,
+                        $context->include_location
+                    ) : null,
                 $statements_checker->getSuppressedIssues()
             );
 
@@ -284,7 +312,7 @@ class IfChecker
 
         // we calculate the vars redefined in a hypothetical else statement to determine
         // which vars of the if we can safely change
-        $pre_assignment_else_redefined_vars = $temp_else_context->getRedefinedVars($context->vars_in_scope);
+        $pre_assignment_else_redefined_vars = $temp_else_context->getRedefinedVars($context->vars_in_scope, true);
 
         $old_unreferenced_vars = $context->unreferenced_vars;
         $newly_unreferenced_locations = [];
@@ -426,22 +454,23 @@ class IfChecker
                 }
             }
         } else {
-            if ($if_scope->forced_new_vars) {
-                $context->vars_in_scope = array_merge($context->vars_in_scope, $if_scope->forced_new_vars);
-            }
-
             if ($loop_scope && !in_array(ScopeChecker::ACTION_NONE, $if_scope->final_actions, true)) {
                 $loop_scope->redefined_loop_vars = null;
             }
         }
 
         if ($if_scope->possibly_redefined_vars) {
-            foreach ($if_scope->possibly_redefined_vars as $var => $type) {
-                if ($context->hasVariable($var) &&
-                    !$type->failed_reconciliation &&
-                    !isset($if_scope->updated_vars[$var])
+            foreach ($if_scope->possibly_redefined_vars as $var_id => $type) {
+                if ($context->hasVariable($var_id)
+                    && !$type->failed_reconciliation
+                    && !isset($if_scope->updated_vars[$var_id])
                 ) {
-                    $context->vars_in_scope[$var] = Type::combineUnionTypes($context->vars_in_scope[$var], $type);
+                    $combined_type = Type::combineUnionTypes(
+                        $context->vars_in_scope[$var_id],
+                        $type
+                    );
+                    $context->removeDescendents($var_id, $combined_type);
+                    $context->vars_in_scope[$var_id] = $combined_type;
                 }
             }
         }
@@ -531,7 +560,7 @@ class IfChecker
                 ) {
                     if (IssueBuffer::accepts(
                         new ConflictingReferenceConstraint(
-                            'There is more than one pass-by--reference constraint on ' . $var_id,
+                            'There is more than one pass-by-reference constraint on ' . $var_id,
                             new CodeLocation($statements_checker, $stmt, $outer_context->include_location, true)
                         ),
                         $statements_checker->getSuppressedIssues()
@@ -555,19 +584,6 @@ class IfChecker
 
         if (!$has_leaving_statements) {
             $if_scope->new_vars = array_diff_key($if_context->vars_in_scope, $outer_context->vars_in_scope);
-
-            // if we have a check like if (!isset($a)) { $a = true; } we want to make sure $a is always set
-            foreach ($if_scope->new_vars as $var_id => $_) {
-                if (isset($if_scope->negated_types[$var_id])
-                    && (
-                        $if_scope->negated_types[$var_id] === 'isset'
-                        || $if_scope->negated_types[$var_id] === '^isset'
-                        || $if_scope->negated_types[$var_id] === '!empty'
-                    )
-                ) {
-                    $if_scope->forced_new_vars[$var_id] = Type::getMixed();
-                }
-            }
 
             $if_scope->redefined_vars = $if_context->getRedefinedVars($outer_context->vars_in_scope);
             $if_scope->possibly_redefined_vars = $if_scope->redefined_vars;
@@ -788,7 +804,11 @@ class IfChecker
             $elseif_context->referenced_var_ids
         );
 
-        $new_assigned_var_ids = array_diff_key($elseif_context->assigned_var_ids, $pre_assigned_var_ids);
+        $conditional_assigned_var_ids = $elseif_context->assigned_var_ids;
+
+        $elseif_context->assigned_var_ids = array_merge($pre_assigned_var_ids, $conditional_assigned_var_ids);
+
+        $new_assigned_var_ids = array_diff_key($conditional_assigned_var_ids, $pre_assigned_var_ids);
 
         $new_referenced_var_ids = array_diff_key($new_referenced_var_ids, $new_assigned_var_ids);
 
@@ -808,29 +828,45 @@ class IfChecker
             $statements_checker
         );
 
-        $elseif_clauses = array_values(
-            array_filter(
-                $elseif_clauses,
-                /** @return bool */
-                function (Clause $c) use ($mixed_var_ids) {
-                    $keys = array_keys($c->possibilities);
+        $elseif_clauses = array_map(
+            /**
+             * @return Clause
+             */
+            function (Clause $c) use ($mixed_var_ids) {
+                $keys = array_keys($c->possibilities);
 
-                    foreach ($keys as $key) {
-                        foreach ($mixed_var_ids as $mixed_var_id) {
-                            if (preg_match('/^' . preg_quote($mixed_var_id) . '(\[|-)/', $key)) {
-                                return false;
-                            }
+                foreach ($keys as $key) {
+                    foreach ($mixed_var_ids as $mixed_var_id) {
+                        if (preg_match('/^' . preg_quote($mixed_var_id, '/') . '(\[|-)/', $key)) {
+                            return new Clause([], true);
                         }
                     }
-
-                    return true;
                 }
-            )
+
+                return $c;
+            },
+            $elseif_clauses
         );
 
-        if (!$elseif_clauses) {
-            $elseif_clauses = [new Clause([], true)];
-        }
+        $entry_clauses = array_map(
+            /**
+             * @return Clause
+             */
+            function (Clause $c) use ($conditional_assigned_var_ids) {
+                $keys = array_keys($c->possibilities);
+
+                foreach ($keys as $key) {
+                    foreach ($conditional_assigned_var_ids as $conditional_assigned_var_id => $_) {
+                        if (preg_match('/^' . preg_quote($conditional_assigned_var_id, '/') . '(\[|-|$)/', $key)) {
+                            return new Clause([], true);
+                        }
+                    }
+                }
+
+                return $c;
+            },
+            $entry_clauses
+        );
 
         // this will see whether any of the clauses in set A conflict with the clauses in set B
         AlgebraChecker::checkForParadox(
@@ -922,7 +958,7 @@ class IfChecker
                 ) {
                     if (IssueBuffer::accepts(
                         new ConflictingReferenceConstraint(
-                            'There is more than one pass-by--reference constraint on ' . $var_id,
+                            'There is more than one pass-by-reference constraint on ' . $var_id,
                             new CodeLocation($statements_checker, $elseif, $outer_context->include_location, true)
                         ),
                         $statements_checker->getSuppressedIssues()
@@ -1197,7 +1233,7 @@ class IfChecker
                 ) {
                     if (IssueBuffer::accepts(
                         new ConflictingReferenceConstraint(
-                            'There is more than one pass-by--reference constraint on ' . $var_id,
+                            'There is more than one pass-by-reference constraint on ' . $var_id,
                             new CodeLocation($statements_checker, $else, $outer_context->include_location, true)
                         ),
                         $statements_checker->getSuppressedIssues()

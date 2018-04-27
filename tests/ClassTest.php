@@ -103,6 +103,81 @@ class ClassTest extends TestCase
                         }
                     }',
             ],
+            'classStringInstantiation' => [
+                '<?php
+                    class Foo {}
+                    class Bar {}
+                    $class = mt_rand(0, 1) === 1 ? Foo::class : Bar::class;
+                    $object = new $class();',
+                'assertions' => [
+                    '$object' => 'Foo|Bar',
+                ],
+            ],
+            'instantiateClassAndIsA' => [
+                '<?php
+                    class Foo {
+                        public function bar() : void{}
+                    }
+
+                    /**
+                     * @return string|null
+                     */
+                    function getFooClass() {
+                        return mt_rand(0, 1) === 1 ? Foo::class : null;
+                    }
+
+                    $foo_class = getFooClass();
+
+                    if (is_string($foo_class) && is_a($foo_class, Foo::class, true)) {
+                        $foo = new $foo_class();
+                        $foo->bar();
+                    }',
+            ],
+            'returnStringAfterIsACheckWithClassConst' => [
+                '<?php
+                    class Foo{}
+                    function bar(string $maybeBaz) : string {
+                      if (!is_a($maybeBaz, Foo::class, true)) {
+                        throw new Exception("not Foo");
+                      }
+                      return $maybeBaz;
+                    }',
+            ],
+            'returnStringAfterIsACheckWithString' => [
+                '<?php
+                    class Foo{}
+                    function bar(string $maybeBaz) : string {
+                      if (!is_a($maybeBaz, "Foo", true)) {
+                        throw new Exception("not Foo");
+                      }
+                      return $maybeBaz;
+                    }',
+            ],
+            'extendsMysqli' => [
+                '<?php
+                    class db extends mysqli
+                    {
+                        public function close()
+                        {
+                            return true;
+                        }
+
+                        public function prepare(string $sql)
+                        {
+                            return false;
+                        }
+
+                        public function commit(?int $flags = null, ?string $name = null)
+                        {
+                            return true;
+                        }
+
+                        public function real_escape_string(string $string)
+                        {
+                            return "escaped";
+                        }
+                    }',
+            ],
         ];
     }
 
@@ -151,7 +226,7 @@ class ClassTest extends TestCase
                     echo A::HELLO;',
                 'error_message' => 'UndefinedConstant',
             ],
-            'overridePublicAccessLevelToPublic' => [
+            'overridePublicAccessLevelToPrivate' => [
                 '<?php
                     class A {
                         public function fooFoo(): void {}
@@ -183,6 +258,45 @@ class ClassTest extends TestCase
                         private function fooFoo(): void {}
                     }',
                 'error_message' => 'OverriddenMethodAccess',
+            ],
+            'overridePublicPropertyAccessLevelToPrivate' => [
+                '<?php
+                    class A {
+                        /** @var string|null */
+                        public $foo;
+                    }
+
+                    class B extends A {
+                        /** @var string|null */
+                        private $foo;
+                    }',
+                'error_message' => 'OverriddenPropertyAccess',
+            ],
+            'overridePublicPropertyAccessLevelToProtected' => [
+                '<?php
+                    class A {
+                        /** @var string|null */
+                        public $foo;
+                    }
+
+                    class B extends A {
+                        /** @var string|null */
+                        protected $foo;
+                    }',
+                'error_message' => 'OverriddenPropertyAccess',
+            ],
+            'overrideProtectedPropertyAccessLevelToPrivate' => [
+                '<?php
+                    class A {
+                        /** @var string|null */
+                        protected $foo;
+                    }
+
+                    class B extends A {
+                        /** @var string|null */
+                        private $foo;
+                    }',
+                'error_message' => 'OverriddenPropertyAccess',
             ],
             'classRedefinition' => [
                 '<?php

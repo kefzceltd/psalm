@@ -53,6 +53,11 @@ class ClassLikeStorage
     public $sealed_properties = false;
 
     /**
+     * @var bool
+     */
+    public $sealed_methods = false;
+
+    /**
      * @var array<int, string>
      */
     public $suppressed_issues = [];
@@ -84,7 +89,7 @@ class ClassLikeStorage
     public $parent_interfaces = [];
 
     /**
-     * Parent interfaces
+     * Parent classes
      *
      * @var array<string, string>
      */
@@ -121,9 +126,19 @@ class ClassLikeStorage
     public $is_trait = false;
 
     /**
+     * @var bool
+     */
+    public $is_interface = false;
+
+    /**
      * @var array<string, MethodStorage>
      */
     public $methods = [];
+
+    /**
+     * @var array<string, FunctionLikeStorage>
+     */
+    public $pseudo_methods = [];
 
     /**
      * @var array<string, string>
@@ -181,6 +196,11 @@ class ClassLikeStorage
     public $inheritable_property_ids = [];
 
     /**
+     * @var array<string, array<string>>
+     */
+    public $overridden_property_ids = [];
+
+    /**
      * @var array<string, string>|null
      */
     public $template_types;
@@ -199,4 +219,11 @@ class ClassLikeStorage
      * @var array<string>
      */
     public $invalid_dependencies = [];
+
+    /**
+     * A hash of the source file's name, contents, and this file's modified on date
+     *
+     * @var string
+     */
+    public $hash = '';
 }

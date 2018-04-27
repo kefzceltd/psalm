@@ -1,7 +1,6 @@
 <?php
 namespace Psalm\Config;
 
-use Psalm\Config;
 use SimpleXMLElement;
 
 class FileFilter
@@ -19,6 +18,16 @@ class FileFilter
     /**
      * @var array<string>
      */
+    protected $fq_classlike_names = [];
+
+    /**
+     * @var array<string>
+     */
+    protected $method_ids = [];
+
+    /**
+     * @var array<string>
+     */
     protected $files_lowercase = [];
 
     /**
@@ -29,7 +38,7 @@ class FileFilter
     /**
      * @param  bool             $inclusive
      *
-     * @psalm-suppress RedundantConditionGivenDocblockType
+     * @psalm-suppress DocblockTypeContradiction
      */
     public function __construct($inclusive)
     {
@@ -68,8 +77,9 @@ class FileFilter
                     );
                     foreach ($globs as $glob_index => $directory_path) {
                         if (!$directory_path) {
-                            die('Could not resolve config path to ' . $base_dir . DIRECTORY_SEPARATOR .
-                                (string)$directory['name'] . ':' . $glob_index);
+                            echo 'Could not resolve config path to ' . $base_dir . DIRECTORY_SEPARATOR .
+                                (string)$directory['name'] . ':' . $glob_index . PHP_EOL;
+                            exit(1);
                         }
                         $filter->addDirectory($directory_path);
                     }
@@ -78,8 +88,9 @@ class FileFilter
                 $directory_path = realpath($prospective_directory_path);
 
                 if (!$directory_path) {
-                    die('Could not resolve config path to ' . $base_dir . DIRECTORY_SEPARATOR .
-                        (string)$directory['name'] . PHP_EOL);
+                    echo 'Could not resolve config path to ' . $base_dir . DIRECTORY_SEPARATOR .
+                        (string)$directory['name'] . PHP_EOL;
+                    exit(1);
                 }
 
                 $filter->addDirectory($directory_path);
@@ -92,11 +103,26 @@ class FileFilter
                 $file_path = realpath($base_dir . DIRECTORY_SEPARATOR . (string)$file['name']);
 
                 if (!$file_path) {
-                    die('Could not resolve config path to ' . $base_dir . DIRECTORY_SEPARATOR .
-                        (string)$file['name'] . PHP_EOL);
+                    echo 'Could not resolve config path to ' . $base_dir . DIRECTORY_SEPARATOR .
+                        (string)$file['name'] . PHP_EOL;
+                    exit(1);
                 }
 
                 $filter->addFile($file_path);
+            }
+        }
+
+        if ($e->referencedClass) {
+            /** @var \SimpleXMLElement $referenced_class */
+            foreach ($e->referencedClass as $referenced_class) {
+                $filter->fq_classlike_names[] = strtolower((string)$referenced_class['name']);
+            }
+        }
+
+        if ($e->referencedMethod) {
+            /** @var \SimpleXMLElement $referenced_method */
+            foreach ($e->referencedMethod as $referenced_method) {
+                $filter->method_ids[] = strtolower((string)$referenced_method['name']);
             }
         }
 
@@ -171,6 +197,26 @@ class FileFilter
         }
 
         return true;
+    }
+
+    /**
+     * @param  string  $fq_classlike_name
+     *
+     * @return bool
+     */
+    public function allowsClass($fq_classlike_name)
+    {
+        return in_array(strtolower($fq_classlike_name), $this->fq_classlike_names);
+    }
+
+    /**
+     * @param  string  $method_id
+     *
+     * @return bool
+     */
+    public function allowsMethod($method_id)
+    {
+        return in_array(strtolower($method_id), $this->method_ids);
     }
 
     /**

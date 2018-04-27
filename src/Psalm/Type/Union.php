@@ -4,6 +4,7 @@ namespace Psalm\Type;
 use Psalm\Codebase;
 use Psalm\CodeLocation;
 use Psalm\StatementsSource;
+use Psalm\Storage\FileStorage;
 use Psalm\Type;
 
 class Union
@@ -19,6 +20,13 @@ class Union
      * @var bool
      */
     public $from_docblock = false;
+
+    /**
+     * Whether the type originated from integer calculation
+     *
+     * @var bool
+     */
+    public $from_calculation = false;
 
     /**
      * Whether the property that this type has been derived from has been initialized in a constructor
@@ -52,6 +60,13 @@ class Union
      * @var bool
      */
     public $ignore_falsable_issues = false;
+
+    /**
+     * Whether or not this variable is possibly undefined
+     *
+     * @var bool
+     */
+    public $possibly_undefined = false;
 
     /**
      * Whether or not the type was passed by reference
@@ -259,11 +274,25 @@ class Union
     /**
      * @param  string $type_string
      *
-     * @return void
+     * @return bool
      */
     public function removeType($type_string)
     {
-        unset($this->types[$type_string]);
+        if (isset($this->types[$type_string])) {
+            unset($this->types[$type_string]);
+            $this->id = null;
+
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * @return void
+     */
+    public function bustCache()
+    {
         $this->id = null;
     }
 
@@ -356,7 +385,7 @@ class Union
      */
     public function hasString()
     {
-        return isset($this->types['string']);
+        return isset($this->types['string']) || isset($this->types['class-string']);
     }
 
     /**
@@ -389,6 +418,14 @@ class Union
     /**
      * @return bool
      */
+    public function hasScalar()
+    {
+        return isset($this->types['scalar']);
+    }
+
+    /**
+     * @return bool
+     */
     public function hasScalarType()
     {
         return isset($this->types['int']) ||
@@ -412,9 +449,28 @@ class Union
     /**
      * @return bool
      */
+    public function isMixedNotFromIsset()
+    {
+        /**
+         * @psalm-suppress UndefinedPropertyFetch
+         */
+        return isset($this->types['mixed']) && !$this->types['mixed']->from_isset;
+    }
+
+    /**
+     * @return bool
+     */
     public function isNull()
     {
         return count($this->types) === 1 && isset($this->types['null']);
+    }
+
+    /**
+     * @return bool
+     */
+    public function isFalse()
+    {
+        return count($this->types) === 1 && isset($this->types['false']);
     }
 
     /**
@@ -459,7 +515,36 @@ class Union
         }
 
         foreach ($old_type->types as $old_type_part) {
-            $this->removeType($old_type_part->getKey());
+            if (!$this->removeType($old_type_part->getKey())) {
+                if ($old_type_part instanceof Type\Atomic\TFalse
+                    && isset($this->types['bool'])
+                    && !isset($this->types['true'])
+                ) {
+                    $this->removeType('bool');
+                    $this->types['true'] = new Type\Atomic\TTrue;
+                } elseif ($old_type_part instanceof Type\Atomic\TTrue
+                    && isset($this->types['bool'])
+                    && !isset($this->types['false'])
+                ) {
+                    $this->removeType('bool');
+                    $this->types['false'] = new Type\Atomic\TFalse;
+                } elseif (isset($this->types['iterable'])) {
+                    if ($old_type_part instanceof Type\Atomic\TNamedObject
+                        && $old_type_part->value === 'Traversable'
+                        && !isset($this->types['array'])
+                    ) {
+                        $this->removeType('iterable');
+                        $this->types['array'] = new Type\Atomic\TArray([Type::getMixed(), Type::getMixed()]);
+                    }
+
+                    if ($old_type_part instanceof Type\Atomic\TArray
+                        && !isset($this->types['traversable'])
+                    ) {
+                        $this->removeType('iterable');
+                        $this->types['traversable'] = new Type\Atomic\TNamedObject('Traversable');
+                    }
+                }
+            }
         }
 
         if ($new_type) {
@@ -521,7 +606,7 @@ class Union
     }
 
     /**
-     * @param  array<string, string|Type\Union>     $template_types
+     * @param  array<string, Type\Union>     $template_types
      *
      * @return void
      */
@@ -538,16 +623,12 @@ class Union
                 $keys_to_unset[] = $key;
                 $template_type = $template_types[$key];
 
-                if (is_string($template_type)) {
-                    $new_types[$template_type] = Atomic::create($template_type);
-                } else {
-                    foreach ($template_type->types as $template_type_part) {
-                        if ($template_type_part instanceof Type\Atomic\TMixed) {
-                            $is_mixed = true;
-                        }
-
-                        $new_types[$template_type_part->getKey()] = $template_type_part;
+                foreach ($template_type->types as $template_type_part) {
+                    if ($template_type_part instanceof Type\Atomic\TMixed) {
+                        $is_mixed = true;
                     }
+
+                    $new_types[$template_type_part->getKey()] = $template_type_part;
                 }
             } else {
                 $atomic_type->replaceTemplateTypesWithArgTypes($template_types);
@@ -615,20 +696,19 @@ class Union
     }
 
     /**
-     * @param  string $referencing_file_path
      * @param  array<string, mixed> $phantom_classes
      *
      * @return void
      */
     public function queueClassLikesForScanning(
         Codebase $codebase,
-        $referencing_file_path = null,
+        FileStorage $file_storage = null,
         array $phantom_classes = []
     ) {
         foreach ($this->types as $atomic_type) {
             $atomic_type->queueClassLikesForScanning(
                 $codebase,
-                $referencing_file_path,
+                $file_storage,
                 $phantom_classes
             );
         }

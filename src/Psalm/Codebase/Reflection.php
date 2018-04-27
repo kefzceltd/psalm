@@ -155,7 +155,7 @@ class Reflection
         }
 
         $reflection_methods = $reflected_class->getMethods(
-            \ReflectionMethod::IS_PUBLIC | \ReflectionMethod::IS_PROTECTED
+            (int) (\ReflectionMethod::IS_PUBLIC | \ReflectionMethod::IS_PROTECTED)
         );
 
         if ($class_name_lower === 'generator') {
@@ -232,7 +232,6 @@ class Reflection
             );
         }
 
-        /** @var \ReflectionClass */
         $declaring_class = $method->getDeclaringClass();
 
         $storage->is_static = $method->isStatic();
@@ -299,7 +298,6 @@ class Reflection
             $param_type_string = 'array';
         } else {
             try {
-                /** @var \ReflectionClass */
                 $param_class = $param->getClass();
             } catch (\ReflectionException $e) {
                 $param_class = null;
@@ -359,6 +357,14 @@ class Reflection
                 $storage->params[] = $param_obj;
             }
 
+            $storage->required_param_count = 0;
+
+            foreach ($storage->params as $i => $param) {
+                if (!$param->is_optional) {
+                    $storage->required_param_count = $i + 1;
+                }
+            }
+
             $storage->cased_name = $reflection_function->getName();
 
             $config = \Psalm\Config::getInstance();
@@ -367,62 +373,6 @@ class Reflection
                 && $reflection_return_type = $reflection_function->getReturnType()
             ) {
                 $storage->return_type = Type::parseString((string)$reflection_return_type);
-            }
-
-            if ($reflection_function->isUserDefined()) {
-                $doc_comment = $reflection_function->getDocComment();
-
-                if (!$doc_comment) {
-                    return;
-                }
-
-                try {
-                    $docblock_info = CommentChecker::extractFunctionDocblockInfo(
-                        (string)$doc_comment,
-                        0
-                    );
-                } catch (\Psalm\Exception\DocblockParseException $e) {
-                    $docblock_info = null;
-                }
-
-                if (!$docblock_info) {
-                    return;
-                }
-
-                if ($docblock_info->deprecated) {
-                    $storage->deprecated = true;
-                }
-
-                if ($docblock_info->variadic) {
-                    $storage->variadic = true;
-                }
-
-                if ($docblock_info->ignore_nullable_return && $storage->return_type) {
-                    $storage->return_type->ignore_nullable_issues = true;
-                }
-
-                $storage->suppressed_issues = $docblock_info->suppress;
-
-                if (!$config->use_docblock_types) {
-                    return;
-                }
-
-                if ($docblock_info->return_type) {
-                    if (!$storage->return_type) {
-                        $namespace = $reflection_function->getNamespaceName();
-                        $aliases = new \Psalm\Aliases($namespace);
-                        $fq_return_type = Type::fixUpLocalType(
-                            $docblock_info->return_type,
-                            $aliases
-                        );
-                        $storage->return_type = Type::parseString($fq_return_type);
-                        $storage->return_type->setFromDocblock();
-
-                        if ($docblock_info->ignore_nullable_return) {
-                            $storage->return_type->ignore_nullable_issues = true;
-                        }
-                    }
-                }
             }
         } catch (\ReflectionException $e) {
             return false;
@@ -449,15 +399,10 @@ class Reflection
 
         // register where they're declared
         foreach ($parent_storage->inheritable_method_ids as $method_name => $declaring_method_id) {
-            $implemented_method_id = $fq_class_name . '::' . $method_name;
-
             $storage->declaring_method_ids[$method_name] = $declaring_method_id;
             $storage->inheritable_method_ids[$method_name] = $declaring_method_id;
 
-            $this->codebase->methods->setOverriddenMethodId(
-                $implemented_method_id,
-                $declaring_method_id
-            );
+            $storage->overridden_method_ids[$method_name][] = $declaring_method_id;
         }
     }
 

@@ -91,6 +91,29 @@ class MethodCallTest extends TestCase
                     $a = new A;
                     $a->bar();',
             ],
+            'canBeCalledOnMagic' => [
+                '<?php
+                    class A {
+                      public function __call(string $method) {}
+                    }
+
+                    class B {}
+
+                    $a = rand(0, 1) ? new A : new B;
+
+                    $a->maybeUndefinedMethod();',
+                'assertions' => [],
+                'error_levels' => ['PossiblyUndefinedMethod'],
+            ],
+            'invokeCorrectType' => [
+                '<?php
+                    class A {
+                        public function __invoke(string $p): void {}
+                    }
+
+                    $q = new A;
+                    $q("asda");',
+            ],
         ];
     }
 
@@ -244,7 +267,44 @@ class MethodCallTest extends TestCase
                     class B extends A {}
 
                     $b = new B();',
-                'error_message' => 'UndefinedClass - src/somefile.php:7',
+                'error_message' => 'MissingDependency - src' . DIRECTORY_SEPARATOR . 'somefile.php:7',
+            ],
+            'variableMethodCallOnArray' => [
+                '<?php
+                    $arr = [];
+                    $b = "foo";
+                    $arr->$b();',
+                'error_message' => 'InvalidMethodCall',
+            ],
+            'intVarStaticCall' => [
+                '<?php
+                    $a = 5;
+                    $a::bar();',
+                'error_message' => 'UndefinedClass',
+            ],
+            'intVarNewCall' => [
+                '<?php
+                    $a = 5;
+                    new $a();',
+                'error_message' => 'UndefinedClass',
+            ],
+            'invokeTypeMismatch' => [
+                '<?php
+                    class A {
+                        public function __invoke(string $p): void {}
+                    }
+
+                    $q = new A;
+                    $q(1);',
+                'error_message' => 'InvalidScalarArgument',
+            ],
+            'explicitInvokeTypeMismatch' => [
+                '<?php
+                    class A {
+                        public function __invoke(string $p): void {}
+                    }
+                    (new A)->__invoke(1);',
+                'error_message' => 'InvalidScalarArgument',
             ],
         ];
     }

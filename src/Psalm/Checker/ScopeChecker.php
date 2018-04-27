@@ -9,9 +9,10 @@ class ScopeChecker
     const ACTION_BREAK = 'BREAK';
     const ACTION_CONTINUE = 'CONTINUE';
     const ACTION_NONE = 'NONE';
+    const ACTION_RETURN = 'RETURN';
 
     /**
-     * @param   array<PhpParser\Node>   $stmts
+     * @param   array<PhpParser\Node\Stmt>   $stmts
      *
      * @return  bool
      */
@@ -51,11 +52,15 @@ class ScopeChecker
     /**
      * @param   array<PhpParser\Node> $stmts
      * @param   bool $continue_is_break when checking inside a switch statement, continue is an alias of break
+     * @param   bool $return_is_exit Exit and Throw statements are treated differently from return if this is false
      *
      * @return  string[] one or more of 'LEAVE', 'CONTINUE', 'BREAK' (or empty if no single action is found)
      */
-    public static function getFinalControlActions(array $stmts, $continue_is_break = false)
-    {
+    public static function getFinalControlActions(
+        array $stmts,
+        $continue_is_break = false,
+        $return_is_exit = true
+    ) {
         if (empty($stmts)) {
             return [self::ACTION_NONE];
         }
@@ -67,8 +72,12 @@ class ScopeChecker
 
             if ($stmt instanceof PhpParser\Node\Stmt\Return_ ||
                 $stmt instanceof PhpParser\Node\Stmt\Throw_ ||
-                $stmt instanceof PhpParser\Node\Expr\Exit_
+                ($stmt instanceof PhpParser\Node\Stmt\Expression && $stmt->expr instanceof PhpParser\Node\Expr\Exit_)
             ) {
+                if (!$return_is_exit && $stmt instanceof PhpParser\Node\Stmt\Return_) {
+                    return [self::ACTION_RETURN];
+                }
+
                 return [self::ACTION_END];
             }
 
@@ -123,7 +132,7 @@ class ScopeChecker
             }
 
             if ($stmt instanceof PhpParser\Node\Stmt\Switch_) {
-                $has_returned = false;
+                $has_ended = false;
                 $has_non_breaking_default = false;
                 $has_default_terminator = false;
 
@@ -144,17 +153,17 @@ class ScopeChecker
                         $has_non_breaking_default = true;
                     }
 
-                    $case_does_return = $case_actions == [self::ACTION_END];
+                    $case_does_end = $case_actions == [self::ACTION_END];
 
-                    if ($case_does_return) {
-                        $has_returned = true;
+                    if ($case_does_end) {
+                        $has_ended = true;
                     }
 
-                    if (!$case_does_return && !$has_returned) {
+                    if (!$case_does_end && !$has_ended) {
                         continue 2;
                     }
 
-                    if ($has_non_breaking_default && $case_does_return) {
+                    if ($has_non_breaking_default && $case_does_end) {
                         $has_default_terminator = true;
                     }
                 }

@@ -975,6 +975,38 @@ class LoopScopeTest extends TestCase
                         }
                     }',
             ],
+            'doWhileDefinedVar' => [
+                '<?php
+                    $value = null;
+                    do {
+                        $count = rand(0, 1);
+                        $value = 6;
+                    } while ($count);',
+            ],
+            'arrayKeyJustSetInLoop' => [
+                '<?php
+                    $a = null;
+                    $arr = [];
+
+                    foreach ([1, 2, 3] as $_) {
+                        if (rand(0, 1)) {
+                            $arr["a"]["c"] = "foo";
+                            $a = $arr["a"]["c"];
+                        } else {
+                            $arr["b"]["c"] = "bar";
+                            $a = $arr["b"]["c"];
+                        }
+                    }',
+            ],
+            'noRedundantConditionAfterArrayAssignment' => [
+                '<?php
+                    $data = ["a" => false];
+                    while (!$data["a"]) {
+                        if (rand() % 2 > 0) {
+                            $data = ["a" => true];
+                        }
+                    }',
+            ],
         ];
     }
 
@@ -1009,7 +1041,7 @@ class LoopScopeTest extends TestCase
                     }
 
                     echo $array;',
-                'error_message' => 'PossiblyUndefinedGlobalVariable - src/somefile.php:3 - Possibly undefined ' .
+                'error_message' => 'PossiblyUndefinedGlobalVariable - src' . DIRECTORY_SEPARATOR . 'somefile.php:3 - Possibly undefined ' .
                     'global variable $array, first seen on line 3',
             ],
             'possiblyUndefinedArrayInWhileAndForeach' => [
@@ -1021,7 +1053,7 @@ class LoopScopeTest extends TestCase
                     }
 
                     echo $array;',
-                'error_message' => 'PossiblyUndefinedGlobalVariable - src/somefile.php:4 - Possibly undefined ' .
+                'error_message' => 'PossiblyUndefinedGlobalVariable - src' . DIRECTORY_SEPARATOR . 'somefile.php:4 - Possibly undefined ' .
                     'global variable $array, first seen on line 4',
             ],
             'possiblyUndefinedVariableInForeach' => [
@@ -1031,7 +1063,7 @@ class LoopScopeTest extends TestCase
                     }
 
                     echo $car;',
-                'error_message' => 'PossiblyUndefinedGlobalVariable - src/somefile.php:6 - Possibly undefined ' .
+                'error_message' => 'PossiblyUndefinedGlobalVariable - src' . DIRECTORY_SEPARATOR . 'somefile.php:6 - Possibly undefined ' .
                     'global variable $car, first seen on line 3',
             ],
             'possibleUndefinedVariableInForeachAndIfWithBreak' => [
@@ -1044,7 +1076,7 @@ class LoopScopeTest extends TestCase
                     }
 
                     echo $a;',
-                'error_message' => 'PossiblyUndefinedGlobalVariable - src/somefile.php:9 - Possibly undefined ' .
+                'error_message' => 'PossiblyUndefinedGlobalVariable - src' . DIRECTORY_SEPARATOR . 'somefile.php:9 - Possibly undefined ' .
                     'global variable $a, first seen on line 4',
             ],
             'possibleUndefinedVariableInForeachAndIf' => [
@@ -1056,7 +1088,7 @@ class LoopScopeTest extends TestCase
 
                         echo $a;
                     }',
-                'error_message' => 'PossiblyUndefinedGlobalVariable - src/somefile.php:7 - Possibly undefined ' .
+                'error_message' => 'PossiblyUndefinedGlobalVariable - src' . DIRECTORY_SEPARATOR . 'somefile.php:7 - Possibly undefined ' .
                     'global variable $a, first seen on line 4',
             ],
             'implicitFourthLoopWithBadReturnType' => [

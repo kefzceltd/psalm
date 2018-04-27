@@ -2,6 +2,7 @@
 namespace Psalm\Checker;
 
 use PhpParser;
+use Psalm\Checker\FunctionLike\ReturnTypeChecker;
 use Psalm\Checker\Statements\ExpressionChecker;
 use Psalm\CodeLocation;
 use Psalm\Config;
@@ -9,9 +10,9 @@ use Psalm\Context;
 use Psalm\Issue\DeprecatedClass;
 use Psalm\Issue\DeprecatedInterface;
 use Psalm\Issue\InaccessibleMethod;
-use Psalm\Issue\InvalidReturnType;
 use Psalm\Issue\MissingConstructor;
 use Psalm\Issue\MissingPropertyType;
+use Psalm\Issue\OverriddenPropertyAccess;
 use Psalm\Issue\PropertyNotSetInConstructor;
 use Psalm\Issue\ReservedWord;
 use Psalm\Issue\UndefinedTrait;
@@ -70,7 +71,9 @@ class ClassChecker extends ClassLikeChecker
         Context $class_context = null,
         Context $global_context = null
     ) {
-        if (!$this->class instanceof PhpParser\Node\Stmt\Class_) {
+        $class = $this->class;
+
+        if (!$class instanceof PhpParser\Node\Stmt\Class_) {
             throw new \LogicException('Something went badly wrong');
         }
 
@@ -78,11 +81,10 @@ class ClassChecker extends ClassLikeChecker
 
         $storage = $this->storage;
 
-        if (preg_match(
+        if ($class->name && preg_match(
             '/(^|\\\)(int|float|bool|string|void|null|false|true|resource|object|numeric|mixed)$/i',
             $fq_class_name
-        )
-        ) {
+        )) {
             $class_name_parts = explode('\\', $fq_class_name);
             $class_name = array_pop($class_name_parts);
 
@@ -91,10 +93,11 @@ class ClassChecker extends ClassLikeChecker
                     $class_name . ' is a reserved word',
                     new CodeLocation(
                         $this,
-                        $this->class,
+                        $class->name,
                         null,
                         true
-                    )
+                    ),
+                    $class_name
                 ),
                 array_merge($storage->suppressed_issues, $this->source->getSuppressedIssues())
             )) {
@@ -109,16 +112,18 @@ class ClassChecker extends ClassLikeChecker
 
         $classlike_storage_provider = $project_checker->classlike_storage_provider;
 
-        if ($this->class->extends) {
-            if (!$this->parent_fq_class_name) {
+        $parent_fq_class_name = $this->parent_fq_class_name;
+
+        if ($class->extends) {
+            if (!$parent_fq_class_name) {
                 throw new \UnexpectedValueException('Parent class should be filled in for ' . $fq_class_name);
             }
 
-            $parent_reference_location = new CodeLocation($this, $this->class->extends);
+            $parent_reference_location = new CodeLocation($this, $class->extends);
 
             if (self::checkFullyQualifiedClassLikeName(
                 $this,
-                $this->parent_fq_class_name,
+                $parent_fq_class_name,
                 $parent_reference_location,
                 array_merge($storage->suppressed_issues, $this->getSuppressedIssues()),
                 false
@@ -127,19 +132,19 @@ class ClassChecker extends ClassLikeChecker
             }
 
             try {
-                $parent_class_storage = $classlike_storage_provider->get($this->parent_fq_class_name);
+                $parent_class_storage = $classlike_storage_provider->get($parent_fq_class_name);
 
                 if ($parent_class_storage->deprecated) {
                     $code_location = new CodeLocation(
                         $this,
-                        $this->class,
+                        $class->extends,
                         $class_context ? $class_context->include_location : null,
                         true
                     );
 
                     if (IssueBuffer::accepts(
                         new DeprecatedClass(
-                            $this->parent_fq_class_name . ' is marked deprecated',
+                            $parent_fq_class_name . ' is marked deprecated',
                             $code_location
                         ),
                         array_merge($storage->suppressed_issues, $this->getSuppressedIssues())
@@ -152,7 +157,7 @@ class ClassChecker extends ClassLikeChecker
             }
         }
 
-        foreach ($this->class->implements as $interface_name) {
+        foreach ($class->implements as $interface_name) {
             $fq_interface_name = self::getFQCLNFromNameObject(
                 $interface_name,
                 $this->source->getAliases()
@@ -173,7 +178,7 @@ class ClassChecker extends ClassLikeChecker
 
         $class_interfaces = $storage->class_implements;
 
-        if (!$this->class->isAbstract()) {
+        if (!$class->isAbstract()) {
             foreach ($class_interfaces as $interface_name) {
                 try {
                     $interface_storage = $classlike_storage_provider->get($interface_name);
@@ -185,7 +190,7 @@ class ClassChecker extends ClassLikeChecker
 
                 $code_location = new CodeLocation(
                     $this,
-                    $this->class,
+                    $class->name ? $class->name : $class,
                     $class_context ? $class_context->include_location : null,
                     true
                 );
@@ -252,14 +257,15 @@ class ClassChecker extends ClassLikeChecker
                             return null;
                         }
 
-                        FunctionLikeChecker::compareMethods(
+                        MethodChecker::compareMethods(
                             $project_checker,
                             $implementer_classlike_storage ?: $storage,
                             $interface_storage,
                             $implementer_method_storage,
                             $interface_method_storage,
                             $code_location,
-                            $implementer_method_storage->suppressed_issues
+                            $implementer_method_storage->suppressed_issues,
+                            false
                         );
                     }
                 }
@@ -269,7 +275,7 @@ class ClassChecker extends ClassLikeChecker
         if (!$class_context) {
             $class_context = new Context($this->fq_class_name);
             $class_context->collect_references = $codebase->collect_references;
-            $class_context->parent = $this->parent_fq_class_name;
+            $class_context->parent = $parent_fq_class_name;
         }
 
         if ($this->leftover_stmts) {
@@ -289,7 +295,7 @@ class ClassChecker extends ClassLikeChecker
                             $this->fq_class_name . ', defined abstract in ' . $declaring_class_name,
                             new CodeLocation(
                                 $this,
-                                $this->class,
+                                $class->name ? $class->name : $class,
                                 $class_context->include_location,
                                 true
                             )
@@ -306,37 +312,65 @@ class ClassChecker extends ClassLikeChecker
             $property_class_name = $codebase->properties->getDeclaringClassForProperty($appearing_property_id);
             $property_class_storage = $classlike_storage_provider->get((string)$property_class_name);
 
-            $property = $property_class_storage->properties[$property_name];
+            $property_storage = $property_class_storage->properties[$property_name];
 
-            if ($property->type) {
-                $property_type = clone $property->type;
+            if (isset($storage->overridden_property_ids[$property_name])) {
+                foreach ($storage->overridden_property_ids[$property_name] as $overridden_property_id) {
+                    list($guide_class_name) = explode('::$', $overridden_property_id);
+                    $guide_class_storage = $classlike_storage_provider->get($guide_class_name);
+                    $guide_property_storage = $guide_class_storage->properties[$property_name];
+
+                    if ($property_storage->visibility > $guide_property_storage->visibility
+                        && $property_storage->location
+                    ) {
+                        if (IssueBuffer::accepts(
+                            new OverriddenPropertyAccess(
+                                'Property ' . $guide_class_storage->name . '::$' . $property_name
+                                    . ' has different access level than '
+                                    . $storage->name . '::$' . $property_name,
+                                $property_storage->location
+                            )
+                        )) {
+                            return false;
+                        }
+
+                        return null;
+                    }
+                }
+            }
+
+            if ($property_storage->type) {
+                $property_type = clone $property_storage->type;
 
                 if (!$property_type->isMixed() &&
-                    !$property->has_default &&
-                    !$property->type->isNullable()
+                    !$property_storage->has_default &&
+                    !$property_type->isNullable()
                 ) {
                     $property_type->initialized = false;
-                }
-
-                if ($storage->template_types) {
-                    $generic_types = [];
-                    $property_type->replaceTemplateTypesWithStandins($storage->template_types, $generic_types);
                 }
             } else {
                 $property_type = Type::getMixed();
             }
 
-            if ($property->type_location && !$property_type->isMixed()) {
+            $property_type_location = $property_storage->type_location;
+
+            if ($property_type_location && !$property_type->isMixed()) {
                 $fleshed_out_type = ExpressionChecker::fleshOutType(
                     $project_checker,
                     $property_type,
                     $this->fq_class_name,
                     $this->fq_class_name
                 );
-                $fleshed_out_type->check($this, $property->type_location, $this->getSuppressedIssues(), [], false);
+                $fleshed_out_type->check(
+                    $this,
+                    $property_type_location,
+                    $this->getSuppressedIssues(),
+                    [],
+                    false
+                );
             }
 
-            if ($property->is_static) {
+            if ($property_storage->is_static) {
                 $property_id = $this->fq_class_name . '::$' . $property_name;
 
                 $class_context->vars_in_scope[$property_id] = $property_type;
@@ -348,7 +382,7 @@ class ClassChecker extends ClassLikeChecker
         $constructor_checker = null;
         $property_stmts = [];
 
-        foreach ($this->class->stmts as $stmt) {
+        foreach ($class->stmts as $stmt) {
             if ($stmt instanceof PhpParser\Node\Stmt\ClassMethod) {
                 $method_checker = $this->analyzeClassMethod(
                     $stmt,
@@ -358,7 +392,7 @@ class ClassChecker extends ClassLikeChecker
                     $global_context
                 );
 
-                if ($stmt->name === '__construct') {
+                if ($stmt->name->name === '__construct') {
                     $constructor_checker = $method_checker;
                 }
             } elseif ($stmt instanceof PhpParser\Node\Stmt\TraitUse) {
@@ -416,7 +450,7 @@ class ClassChecker extends ClassLikeChecker
                                     $global_context
                                 );
 
-                                if ($trait_stmt->name === '__construct') {
+                                if ($trait_stmt->name->name === '__construct') {
                                     $constructor_checker = $trait_method_checker;
                                 }
                             }
@@ -489,7 +523,7 @@ class ClassChecker extends ClassLikeChecker
                 if (!$storage->abstract
                     && !$constructor_checker
                     && isset($storage->declaring_method_ids['__construct'])
-                    && $this->class->extends
+                    && $class->extends
                 ) {
                     list($construct_fqcln) = explode('::', $storage->declaring_method_ids['__construct']);
 
@@ -521,20 +555,22 @@ class ClassChecker extends ClassLikeChecker
                         );
 
                         $fake_constructor_stmts = [
-                            new PhpParser\Node\Expr\StaticCall(
-                                new PhpParser\Node\Name(['parent']),
-                                '__construct',
-                                $fake_constructor_stmt_args,
-                                [
-                                    'line' => $this->class->extends->getLine(),
-                                    'startFilePos' => $this->class->extends->getAttribute('startFilePos'),
-                                    'endFilePos' => $this->class->extends->getAttribute('endFilePos'),
-                                ]
+                            new PhpParser\Node\Stmt\Expression(
+                                new PhpParser\Node\Expr\StaticCall(
+                                    new PhpParser\Node\Name(['parent']),
+                                    new PhpParser\Node\Identifier('__construct'),
+                                    $fake_constructor_stmt_args,
+                                    [
+                                        'line' => $class->extends->getLine(),
+                                        'startFilePos' => $class->extends->getAttribute('startFilePos'),
+                                        'endFilePos' => $class->extends->getAttribute('endFilePos'),
+                                    ]
+                                )
                             ),
                         ];
 
                         $fake_stmt = new PhpParser\Node\Stmt\ClassMethod(
-                            '__construct',
+                            new PhpParser\Node\Identifier('__construct'),
                             [
                                 'type' => PhpParser\Node\Stmt\Class_::MODIFIER_PUBLIC,
                                 'params' => $fake_constructor_params,
@@ -583,9 +619,9 @@ class ClassChecker extends ClassLikeChecker
                             if (!$config->reportIssueInFile(
                                 'PropertyNotSetInConstructor',
                                 $property->location->file_path
-                            ) && $this->class->extends
+                            ) && $class->extends
                             ) {
-                                $error_location = new CodeLocation($this, $this->class->extends);
+                                $error_location = new CodeLocation($this, $class->extends);
                             } else {
                                 $error_location = $property->location;
                             }
@@ -623,7 +659,7 @@ class ClassChecker extends ClassLikeChecker
             }
         }
 
-        foreach ($this->class->stmts as $stmt) {
+        foreach ($class->stmts as $stmt) {
             if ($stmt instanceof PhpParser\Node\Stmt\Property) {
                 $this->checkForMissingPropertyType($project_checker, $this, $stmt);
             } elseif ($stmt instanceof PhpParser\Node\Stmt\TraitUse) {
@@ -667,7 +703,7 @@ class ClassChecker extends ClassLikeChecker
 
         if (!$comment || !$comment->getText()) {
             $fq_class_name = $source->getFQCLN();
-            $property_name = $stmt->props[0]->name;
+            $property_name = $stmt->props[0]->name->name;
 
             $codebase = $project_checker->codebase;
 
@@ -741,6 +777,32 @@ class ClassChecker extends ClassLikeChecker
             $declaring_method_id = $codebase->methods->getDeclaringMethodId($analyzed_method_id);
 
             if ($actual_method_id !== $declaring_method_id) {
+                // the method is an abstract trait method
+
+                $implementer_method_storage = $method_checker->getFunctionLikeStorage();
+
+                if (!$implementer_method_storage instanceof \Psalm\Storage\MethodStorage) {
+                    throw new \LogicException('This should never happen');
+                }
+
+                if ($declaring_method_id && $implementer_method_storage->abstract) {
+                    $classlike_storage_provider = $project_checker->classlike_storage_provider;
+                    $appearing_storage = $classlike_storage_provider->get($class_context->self);
+                    $declaring_method_storage = $codebase->methods->getStorage($declaring_method_id);
+
+                    MethodChecker::compareMethods(
+                        $project_checker,
+                        $class_storage,
+                        $appearing_storage,
+                        $implementer_method_storage,
+                        $declaring_method_storage,
+                        new CodeLocation($source, $stmt),
+                        $implementer_method_storage->suppressed_issues,
+                        false
+                    );
+                }
+
+
                 return;
             }
         }
@@ -750,7 +812,9 @@ class ClassChecker extends ClassLikeChecker
             $global_context ? clone $global_context : null
         );
 
-        if ($stmt->name !== '__construct' && $config->reportIssueInFile('InvalidReturnType', $source->getFilePath())) {
+        if ($stmt->name->name !== '__construct'
+            && $config->reportIssueInFile('InvalidReturnType', $source->getFilePath())
+        ) {
             $return_type_location = null;
             $secondary_return_type_location = null;
 
@@ -768,8 +832,18 @@ class ClassChecker extends ClassLikeChecker
 
                 $return_type = $codebase->methods->getMethodReturnType($analyzed_method_id, $self_class);
 
-                if (!$return_type && isset($class_storage->interface_method_ids[strtolower($stmt->name)])) {
-                    foreach ($class_storage->interface_method_ids[strtolower($stmt->name)] as $interface_method_id) {
+                $overridden_method_ids = isset($class_storage->overridden_method_ids[strtolower($stmt->name->name)])
+                    ? $class_storage->overridden_method_ids[strtolower($stmt->name->name)]
+                    : [];
+
+                if ($actual_method_storage->overridden_downstream) {
+                    $overridden_method_ids[] = 'overridden::downstream';
+                }
+
+                if (!$return_type && isset($class_storage->interface_method_ids[strtolower($stmt->name->name)])) {
+                    $interface_method_ids = $class_storage->interface_method_ids[strtolower($stmt->name->name)];
+
+                    foreach ($interface_method_ids as $interface_method_id) {
                         list($interface_class) = explode('::', $interface_method_id);
 
                         $interface_return_type = $codebase->methods->getMethodReturnType(
@@ -781,20 +855,26 @@ class ClassChecker extends ClassLikeChecker
                             $interface_method_id
                         );
 
-                        $method_checker->verifyReturnType(
-                            $project_checker,
+                        ReturnTypeChecker::verifyReturnType(
+                            $stmt,
+                            $source,
+                            $method_checker,
                             $interface_return_type,
                             $interface_class,
-                            $interface_return_type_location
+                            $interface_return_type_location,
+                            [$analyzed_method_id]
                         );
                     }
                 }
 
-                $method_checker->verifyReturnType(
-                    $project_checker,
+                ReturnTypeChecker::verifyReturnType(
+                    $stmt,
+                    $source,
+                    $method_checker,
                     $return_type,
                     $self_class,
-                    $return_type_location
+                    $return_type_location,
+                    $overridden_method_ids
                 );
             }
         }

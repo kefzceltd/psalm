@@ -51,7 +51,7 @@ class TryChecker
             }
         }
 
-        $assigned_var_ids = $context->assigned_var_ids;
+        $assigned_var_ids = $try_context->assigned_var_ids;
         $context->assigned_var_ids = [];
 
         $old_unreferenced_vars = $try_context->unreferenced_vars;
@@ -62,7 +62,13 @@ class TryChecker
             return false;
         }
 
-        $context->assigned_var_ids = $assigned_var_ids;
+        /** @var array<string, bool> */
+        $newly_assigned_var_ids = $context->assigned_var_ids;
+
+        $context->assigned_var_ids = array_merge(
+            $assigned_var_ids,
+            $newly_assigned_var_ids
+        );
 
         if ($try_context !== $context) {
             foreach ($context->vars_in_scope as $var_id => $type) {
@@ -108,11 +114,11 @@ class TryChecker
             && !in_array(ScopeChecker::ACTION_NONE, $loop_scope->final_actions, true);
 
         if (!$all_catches_leave) {
-            foreach ($assigned_var_ids as $assigned_var_id => $_) {
+            foreach ($newly_assigned_var_ids as $assigned_var_id => $_) {
                 $context->removeVarFromConflictingClauses($assigned_var_id);
             }
         } else {
-            foreach ($assigned_var_ids as $assigned_var_id => $_) {
+            foreach ($newly_assigned_var_ids as $assigned_var_id => $_) {
                 $try_context->removeVarFromConflictingClauses($assigned_var_id);
             }
         }
@@ -127,6 +133,12 @@ class TryChecker
             $catch_context = clone $original_context;
 
             $fq_catch_classes = [];
+
+            $catch_var_name = $catch->var->name;
+
+            if (!is_string($catch_var_name)) {
+                throw new \UnexpectedValueException('Catch var name must be a string');
+            }
 
             foreach ($catch->types as $catch_type) {
                 $fq_catch_class = ClassLikeChecker::getFQCLNFromNameObject(
@@ -168,9 +180,9 @@ class TryChecker
                 $fq_catch_classes[] = $fq_catch_class;
             }
 
-            $catch_var_id = '$' . $catch->var;
+            $catch_var_id = '$' . $catch_var_name;
 
-            $catch_context->vars_in_scope[$catch_var_id] = new Type\Union(
+            $catch_context->vars_in_scope[$catch_var_id] = new Union(
                 array_map(
                     /**
                      * @param string $fq_catch_class
@@ -201,10 +213,8 @@ class TryChecker
             if (!$statements_checker->hasVariable($catch_var_id)) {
                 $location = new CodeLocation(
                     $statements_checker,
-                    $catch,
-                    $context->include_location,
-                    true,
-                    CodeLocation::CATCH_VAR
+                    $catch->var,
+                    $context->include_location
                 );
                 $statements_checker->registerVariable(
                     $catch_var_id,
@@ -251,7 +261,8 @@ class TryChecker
 
                 foreach ($catch_context->unreferenced_vars as $var_id => $location) {
                     if (!isset($old_unreferenced_vars[$var_id])
-                        && isset($context->unreferenced_vars[$var_id])
+                        && (isset($context->unreferenced_vars[$var_id])
+                            || isset($newly_assigned_var_ids[$var_id]))
                     ) {
                         $statements_checker->registerVariableUse($location);
                     } elseif (isset($old_unreferenced_vars[$var_id])
@@ -264,9 +275,8 @@ class TryChecker
 
             if ($catch_actions[$i] !== [ScopeChecker::ACTION_END]) {
                 foreach ($catch_context->vars_in_scope as $var_id => $type) {
-                    if ($catch->var !== $var_id &&
-                        $context->hasVariable($var_id) &&
-                        $context->vars_in_scope[$var_id]->getId() !== $type->getId()
+                    if ($context->hasVariable($var_id)
+                        && $context->vars_in_scope[$var_id]->getId() !== $type->getId()
                     ) {
                         $context->vars_in_scope[$var_id] = Type::combineUnionTypes(
                             $context->vars_in_scope[$var_id],

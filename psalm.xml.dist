@@ -6,6 +6,9 @@
     strictBinaryOperands="false"
     rememberPropertyAssignmentsAfterCall="true"
     throwExceptionOnError="0"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xmlns="https://getpsalm.org/schema/config"
+    xsi:schemaLocation="https://getpsalm.org/schema/config config.xsd"
 >
     <projectFiles>
         <directory name="src" />
@@ -23,6 +26,12 @@
         <PossiblyNullOperand errorLevel="suppress" />
         <MissingConstructor errorLevel="suppress" />
         <DeprecatedProperty errorLevel="suppress" />
+
+        <LessSpecificReturnType>
+            <errorLevel type="suppress">
+                <file name="src/Psalm/Plugin.php" />
+            </errorLevel>
+        </LessSpecificReturnType>
 
         <UnusedParam>
             <errorLevel type="suppress">
@@ -60,11 +69,19 @@
         <PossiblyUnusedMethod>
             <errorLevel type="suppress">
                 <directory name="tests" />
+                <file name="src/Psalm/Type/Atomic/CallableTrait.php" />
                 <file name="src/Psalm/Type/Atomic/GenericTrait.php" />
                 <file name="src/Psalm/Plugin.php" />
-            </errorLevel>
-            <errorLevel type="info">
-                <file name="src/Psalm/Codebase.php" />
+                <referencedMethod name="Psalm\Codebase::getParentInterfaces" />
+                <referencedMethod name="Psalm\Codebase::getMethodParams" />
+                <referencedMethod name="Psalm\Codebase::getMethodReturnType" />
+                <referencedMethod name="Psalm\Codebase::getMethodReturnTypeLocation" />
+                <referencedMethod name="Psalm\Codebase::getDeclaringMethodId" />
+                <referencedMethod name="Psalm\Codebase::getAppearingMethodId" />
+                <referencedMethod name="Psalm\Codebase::getOverriddenMethodIds" />
+                <referencedMethod name="Psalm\Codebase::getCasedMethodId" />
+                <referencedMethod name="Psalm\Codebase::isVariadic" />
+                <referencedMethod name="Psalm\Codebase::getMethodReturnsByRef" />
             </errorLevel>
         </PossiblyUnusedMethod>
 

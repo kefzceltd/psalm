@@ -58,11 +58,6 @@ class FileChecker extends SourceChecker implements StatementsSource
     protected $class_checkers_to_analyze = [];
 
     /**
-     * @var array<string, FunctionChecker>
-     */
-    protected $function_checkers = [];
-
-    /**
      * @var null|Context
      */
     public $context;
@@ -73,9 +68,9 @@ class FileChecker extends SourceChecker implements StatementsSource
     public $project_checker;
 
     /**
+     * @param ProjectChecker  $project_checker
      * @param string  $file_path
      * @param string  $file_name
-     * @param ProjectChecker  $project_checker
      */
     public function __construct(ProjectChecker $project_checker, $file_path, $file_name)
     {
@@ -91,51 +86,30 @@ class FileChecker extends SourceChecker implements StatementsSource
      */
     public function analyze(Context $file_context = null, $preserve_checkers = false)
     {
+        $codebase = $this->project_checker->codebase;
+
+        $file_storage = $codebase->file_storage_provider->get($this->file_path);
+
+        if (!$file_storage->deep_scan) {
+            throw new \UnexpectedValueException('File ' . $this->file_path . ' has not been properly scanned');
+        }
+
         if ($file_context) {
             $this->context = $file_context;
         }
 
-        $codebase = $this->project_checker->codebase;
-
         if (!$this->context) {
             $this->context = new Context();
             $this->context->collect_references = $codebase->collect_references;
-            $this->context->vars_in_scope['$argc'] = Type::getInt();
-            $this->context->vars_in_scope['$argv'] = new Type\Union([
-                new Type\Atomic\TArray([
-                    Type::getInt(),
-                    Type::getString(),
-                ]),
-            ]);
         }
 
         $this->context->is_global = true;
-
-        $codebase = $this->project_checker->codebase;
-
-        $config = $codebase->config;
 
         $stmts = $codebase->getStatementsForFile($this->file_path);
 
         $statements_checker = new StatementsChecker($this);
 
         $leftover_stmts = $this->populateCheckers($stmts);
-
-        $function_stmts = [];
-        $function_checkers = [];
-
-        foreach ($stmts as $stmt) {
-            if ($stmt instanceof PhpParser\Node\Stmt\Function_) {
-                $function_stmts[] = $stmt;
-            }
-        }
-
-        // hoist functions to the top
-        foreach ($function_stmts as $stmt) {
-            $function_checkers[$stmt->name] = new FunctionChecker($stmt, $this);
-            $function_id = (string)$function_checkers[$stmt->name]->getMethodId();
-            $this->function_checkers[$function_id] = $function_checkers[$stmt->name];
-        }
 
         // if there are any leftover statements, evaluate them,
         // in turn causing the classes/interfaces be evaluated
@@ -153,49 +127,18 @@ class FileChecker extends SourceChecker implements StatementsSource
             $class_checker->analyze(null, $this->context);
         }
 
-        foreach ($this->function_checkers as $function_checker) {
-            $function_context = new Context($this->context->self);
-            $function_context->collect_references = $codebase->collect_references;
-            $function_checker->analyze($function_context, $this->context);
-
-            if ($config->reportIssueInFile('InvalidReturnType', $this->file_path)) {
-                /** @var string */
-                $method_id = $function_checker->getMethodId();
-
-                $function_storage = $codebase->functions->getStorage(
-                    $statements_checker,
-                    $method_id
-                );
-
-                if (!$function_storage->has_template_return_type) {
-                    $return_type = $function_storage->return_type;
-
-                    $return_type_location = $function_storage->return_type_location;
-
-                    $function_checker->verifyReturnType(
-                        $this->project_checker,
-                        $return_type,
-                        null,
-                        $return_type_location
-                    );
-                }
-            }
-        }
-
         if (!$preserve_checkers) {
             $this->class_checkers_to_analyze = [];
-            $this->function_checkers = [];
         }
     }
 
     /**
-     * @param  array<int, PhpParser\Node\Expr|PhpParser\Node\Stmt>  $stmts
+     * @param  array<int, PhpParser\Node\Stmt>  $stmts
      *
-     * @return array<int, PhpParser\Node\Expr|PhpParser\Node\Stmt>
+     * @return array<int, PhpParser\Node\Stmt>
      */
     public function populateCheckers(array $stmts)
     {
-        /** @var array<int, PhpParser\Node\Expr|PhpParser\Node\Stmt> */
         $leftover_stmts = [];
 
         foreach ($stmts as $stmt) {
@@ -214,7 +157,7 @@ class FileChecker extends SourceChecker implements StatementsSource
                 $this->visitUse($stmt);
             } elseif ($stmt instanceof PhpParser\Node\Stmt\GroupUse) {
                 $this->visitGroupUse($stmt);
-            } elseif (!($stmt instanceof PhpParser\Node\Stmt\Function_)) {
+            } else {
                 if ($stmt instanceof PhpParser\Node\Stmt\If_) {
                     foreach ($stmt->stmts as $if_stmt) {
                         if ($if_stmt instanceof PhpParser\Node\Stmt\ClassLike) {
@@ -240,13 +183,13 @@ class FileChecker extends SourceChecker implements StatementsSource
         }
 
         if ($stmt instanceof PhpParser\Node\Stmt\Class_) {
-            $class_checker = new ClassChecker($stmt, $this, $stmt->name);
+            $class_checker = new ClassChecker($stmt, $this, $stmt->name->name);
 
             $fq_class_name = $class_checker->getFQCLN();
 
             $this->class_checkers_to_analyze[strtolower($fq_class_name)] = $class_checker;
         } elseif ($stmt instanceof PhpParser\Node\Stmt\Interface_) {
-            $class_checker = new InterfaceChecker($stmt, $this, $stmt->name);
+            $class_checker = new InterfaceChecker($stmt, $this, $stmt->name->name);
 
             $fq_class_name = $class_checker->getFQCLN();
 
@@ -274,17 +217,6 @@ class FileChecker extends SourceChecker implements StatementsSource
     public function addNamespacedInterfaceChecker($fq_class_name, InterfaceChecker $interface_checker)
     {
         $this->interface_checkers_to_analyze[strtolower($fq_class_name)] = $interface_checker;
-    }
-
-    /**
-     * @param string            $function_id
-     * @param FunctionChecker   $function_checker
-     *
-     * @return  void
-     */
-    public function addNamespacedFunctionChecker($function_id, FunctionChecker $function_checker)
-    {
-        $this->function_checkers[strtolower($function_id)] = $function_checker;
     }
 
     /**

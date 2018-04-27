@@ -100,7 +100,10 @@ if (isset($options['r']) && is_string($options['r'])) {
 
 $vendor_dir = getVendorDir($current_dir);
 
-requireAutoloaders($current_dir, isset($options['r']), $vendor_dir);
+$first_autoloader = requireAutoloaders($current_dir, isset($options['r']), $vendor_dir);
+
+// If XDebug is enabled, restart without it
+(new \Composer\XdebugHandler\XdebugHandler('PSALTER'))->check();
 
 $paths_to_check = getPathsToCheck(isset($options['f']) ? $options['f'] : null);
 
@@ -122,16 +125,22 @@ if ($path_to_config) {
     $config = Config::getConfigForPath($current_dir, $current_dir, ProjectChecker::TYPE_CONSOLE);
 }
 
+$config->setComposerClassLoader($first_autoloader);
+
 $project_checker = new ProjectChecker(
     $config,
     new Psalm\Provider\FileProvider(),
     new Psalm\Provider\ParserCacheProvider(),
+    new Psalm\Provider\FileStorageCacheProvider($config),
+    new Psalm\Provider\ClassLikeStorageCacheProvider($config),
     !array_key_exists('m', $options),
     false,
     ProjectChecker::TYPE_CONSOLE,
     1,
     array_key_exists('debug', $options)
 );
+
+$config->visitComposerAutoloadFiles($project_checker);
 
 if (array_key_exists('issues', $options)) {
     if (!is_string($options['issues']) || !$options['issues']) {

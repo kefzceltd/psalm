@@ -464,6 +464,73 @@ class ReturnTypeTest extends TestCase
                 'assertions' => [],
                 'error_levels' => ['MixedAssignment', 'MixedArgument'],
             ],
+            'objectLikeArrayOptionalKeyReturn' => [
+                '<?php
+                    /** @return array{a: int, b?: int} */
+                    function foo() : array {
+                        return rand(0, 1) ? ["a" => 1, "b" => 2] : ["a" => 2];
+                    }',
+            ],
+            'objectLikeArrayOptionalKeyReturnSeparateStatements' => [
+                '<?php
+                    /** @return array{a: int, b?: int} */
+                    function foo() : array {
+                        if (rand(0, 1)) {
+                            return ["a" => 1, "b" => 2];
+                        }
+
+                        return ["a" => 2];
+                    }',
+            ],
+            'badlyCasedReturnType' => [
+                '<?php
+                    namespace MyNS;
+
+                    class Example {
+                        /** @return array<int,example> */
+                        public static function test() : array {
+                            return [new Example()];
+                        }
+
+                        /** @return example */
+                        public static function instance() {
+                            return new Example();
+                        }
+                    }',
+                'assertions' => [],
+                'error_levels' => ['InvalidClass'],
+            ],
+            'arrayReturnTypeWithExplicitKeyType' => [
+                '<?php
+                    /** @return array<int|string, mixed> */
+                    function returnsArray(array $arr) : array {
+                        return $arr;
+                    }',
+            ],
+            'namespacedScalarParamAndReturn' => [
+                '<?php
+                    namespace Foo;
+
+                    /**
+                    * @param scalar $scalar
+                    *
+                    * @return scalar
+                    */
+                    function ($scalar) {
+                      switch(random_int(0, 3)) {
+                        case 0:
+                          return true;
+                        case 1:
+                          return "string";
+                        case 2:
+                          return 2;
+                        case 3:
+                          return 3.0;
+                      }
+
+                      return 0;
+                    }'
+            ],
         ];
     }
 
@@ -539,14 +606,14 @@ class ReturnTypeTest extends TestCase
                 '<?php
                     /**
                      * @psalm-suppress UndefinedClass
-                     * @psalm-suppress MixedInferredReturnType
                      */
                     function fooFoo(): A {
-                        return array_pop([]);
+                        return $_GET["a"];
                     }
 
                     fooFoo()->bar();',
                 'error_message' => 'UndefinedClass',
+                'error_levels' => ['MixedInferredReturnType', 'MixedReturnStatement'],
             ],
             'returnArrayOfNullableInvalid' => [
                 '<?php
@@ -640,7 +707,7 @@ class ReturnTypeTest extends TestCase
                             return [new A, new A];
                         }
                     }',
-                'error_message' => 'MoreSpecificImplementedReturnType',
+                'error_message' => 'LessSpecificImplementedReturnType',
             ],
             'returnTypehintRequiresExplicitReturn' => [
                 '<?php
@@ -683,6 +750,40 @@ class ReturnTypeTest extends TestCase
                         return (rand() % 2 === 0) ? (new B1()) : false;
                     }',
                 'error_message' => 'InvalidReturnType',
+            ],
+            'moreSpecificDocblockReturnType' => [
+                '<?php
+                    /** @return int[] */
+                    function foo(array $arr) : array {
+                      return $arr;
+                    }',
+                'error_message' => 'LessSpecificReturnStatement',
+            ],
+            'moreSpecificGenericReturnType' => [
+                '<?php
+                    /** @return Iterator<int, string> */
+                    function foo(array $a) {
+                        $obj = new ArrayObject($a);
+                        return $obj->getIterator();
+                    }',
+                'error_message' => 'LessSpecificReturnStatement',
+            ],
+            'invalidGenericReturnType' => [
+                '<?php
+                    /** @return ArrayIterator<int, string> */
+                    function foo(array $a) {
+                        $obj = new ArrayObject([1, 2, 3, 4]);
+                        return $obj->getIterator();
+                    }',
+                'error_message' => 'InvalidReturnStatement',
+            ],
+            'objectLikeArrayOptionalKeyWithNonOptionalReturn' => [
+                '<?php
+                    /** @return array{a: int, b: int} */
+                    function foo() : array {
+                        return rand(0, 1) ? ["a" => 1, "b" => 2] : ["a" => 2];
+                    }',
+                'error_message' => 'LessSpecificReturnStatement',
             ],
         ];
     }

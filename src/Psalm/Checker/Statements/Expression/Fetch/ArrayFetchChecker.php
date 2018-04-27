@@ -23,11 +23,13 @@ use Psalm\Issue\PossiblyInvalidArrayOffset;
 use Psalm\Issue\PossiblyNullArrayAccess;
 use Psalm\Issue\PossiblyNullArrayAssignment;
 use Psalm\Issue\PossiblyNullArrayOffset;
+use Psalm\Issue\PossiblyUndefinedArrayOffset;
 use Psalm\IssueBuffer;
 use Psalm\Type;
 use Psalm\Type\Atomic\ObjectLike;
 use Psalm\Type\Atomic\TArray;
 use Psalm\Type\Atomic\TEmpty;
+use Psalm\Type\Atomic\TGenericParam;
 use Psalm\Type\Atomic\TMixed;
 use Psalm\Type\Atomic\TNamedObject;
 use Psalm\Type\Atomic\TNull;
@@ -65,7 +67,6 @@ class ArrayFetchChecker
 
         if ($stmt->dim) {
             if (isset($stmt->dim->inferredType)) {
-                /** @var Type\Union */
                 $used_key_type = $stmt->dim->inferredType;
             } else {
                 $used_key_type = Type::getMixed();
@@ -82,8 +83,16 @@ class ArrayFetchChecker
             return false;
         }
 
+        if ($keyed_array_var_id
+            && $context->hasVariable($keyed_array_var_id)
+            && !$context->vars_in_scope[$keyed_array_var_id]->possibly_undefined
+        ) {
+            $stmt->inferredType = clone $context->vars_in_scope[$keyed_array_var_id];
+
+            return;
+        }
+
         if (isset($stmt->var->inferredType)) {
-            /** @var Type\Union */
             $var_type = $stmt->var->inferredType;
 
             if ($var_type->isNull()) {
@@ -126,6 +135,26 @@ class ArrayFetchChecker
 
         if (!isset($stmt->inferredType)) {
             $stmt->inferredType = Type::getMixed();
+        } else {
+            if ($stmt->inferredType->possibly_undefined && !$context->inside_isset && !$context->inside_unset) {
+                if (IssueBuffer::accepts(
+                    new PossiblyUndefinedArrayOffset(
+                        'Possibly undefined array key ' . $keyed_array_var_id,
+                        new CodeLocation($statements_checker->getSource(), $stmt)
+                    ),
+                    $statements_checker->getSuppressedIssues()
+                )) {
+                    return false;
+                }
+            }
+        }
+
+        if ($keyed_array_var_id && !$context->inside_isset) {
+            $context->vars_in_scope[$keyed_array_var_id] = $stmt->inferredType;
+            $context->vars_possibly_in_scope[$keyed_array_var_id] = true;
+
+            // reference the variable too
+            $context->hasVariable($keyed_array_var_id, $statements_checker);
         }
 
         return null;
@@ -134,8 +163,8 @@ class ArrayFetchChecker
     /**
      * @param  Type\Union $array_type
      * @param  Type\Union $offset_type
-     * @param  null|string    $array_var_id
      * @param  bool       $in_assignment
+     * @param  null|string    $array_var_id
      * @param  bool       $inside_isset
      *
      * @return Type\Union
@@ -271,7 +300,8 @@ class ArrayFetchChecker
                             $project_checker->codebase,
                             $offset_type,
                             $type->type_params[0],
-                            true
+                            true,
+                            $offset_type->ignore_falsable_issues
                         )) {
                             $expected_offset_types[] = (string)$type->type_params[0];
                         } else {
@@ -303,7 +333,7 @@ class ArrayFetchChecker
                             ),
                             $statements_checker->getSuppressedIssues()
                         )) {
-                            return Type::getMixed();
+                            return Type::getMixed(true);
                         }
 
                         if (!IssueBuffer::isRecording()) {
@@ -364,7 +394,8 @@ class ArrayFetchChecker
                         $codebase,
                         $offset_type,
                         $type->getGenericKeyType(),
-                        true
+                        true,
+                        $offset_type->ignore_falsable_issues
                     ) || $in_assignment
                     ) {
                         if ($replacement_type) {
@@ -454,7 +485,7 @@ class ArrayFetchChecker
                 continue;
             }
 
-            if ($type instanceof TMixed || $type instanceof TEmpty) {
+            if ($type instanceof TMixed || $type instanceof TGenericParam ||  $type instanceof TEmpty) {
                 $codebase->analyzer->incrementMixedCount($statements_checker->getCheckedFilePath());
 
                 if ($in_assignment) {
@@ -484,6 +515,10 @@ class ArrayFetchChecker
             }
 
             $codebase->analyzer->incrementNonMixedCount($statements_checker->getCheckedFilePath());
+
+            if ($type instanceof Type\Atomic\TFalse && $array_type->ignore_falsable_issues) {
+                continue;
+            }
 
             if ($type instanceof TNamedObject) {
                 if (strtolower($type->value) !== 'simplexmlelement'
@@ -608,6 +643,10 @@ class ArrayFetchChecker
 
         if ($array_access_type === null) {
             throw new \InvalidArgumentException('This is a bad place');
+        }
+
+        if ($in_assignment) {
+            $array_type->bustCache();
         }
 
         return $array_access_type;

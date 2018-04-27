@@ -55,8 +55,6 @@ class FunctionChecker extends FunctionLikeChecker
         if ($call_args) {
             if (in_array($call_map_key, ['str_replace', 'preg_replace', 'preg_replace_callback'], true)) {
                 if (isset($call_args[2]->value->inferredType)) {
-
-                    /** @var Type\Union */
                     $subject_type = $call_args[2]->value->inferredType;
 
                     if (!$subject_type->hasString() && $subject_type->hasArray()) {
@@ -71,15 +69,31 @@ class FunctionChecker extends FunctionLikeChecker
                     }
 
                     return $return_type;
+                } else {
+                    return Type::getMixed();
                 }
             }
 
-            if (in_array($call_map_key, ['pathinfo'], true)) {
+            if ($call_map_key === 'pathinfo') {
                 if (isset($call_args[1])) {
                     return Type::getString();
                 }
 
                 return Type::getArray();
+            }
+
+            if ($call_map_key === 'var_export') {
+                if (isset($call_args[1]->value->inferredType)) {
+                    $subject_type = $call_args[1]->value->inferredType;
+
+                    if ((string) $subject_type === 'true') {
+                        return Type::getString();
+                    }
+
+                    return new Type\Union([new Type\Atomic\TString, new Type\Atomic\TNull]);
+                }
+
+                return Type::getVoid();
             }
 
             if (substr($call_map_key, 0, 6) === 'array_') {
@@ -96,8 +110,39 @@ class FunctionChecker extends FunctionLikeChecker
                 }
             }
 
-            if ($call_map_key === 'explode' || $call_map_key === 'preg_split') {
-                return Type::parseString('array<int, string>');
+            if ($call_map_key === 'explode'
+                && $call_args[0]->value instanceof PhpParser\Node\Scalar\String_
+            ) {
+                if ($call_args[0]->value->value === '') {
+                    return Type::getFalse();
+                }
+
+                return new Type\Union([
+                    new Type\Atomic\TArray([
+                        Type::getInt(),
+                        Type::getString()
+                    ])
+                ]);
+            }
+
+            if ($call_map_key === 'abs'
+                && isset($call_args[0]->value)
+            ) {
+                $first_arg = $call_args[0]->value;
+
+                if (isset($first_arg->inferredType)) {
+                    $numeric_types = [];
+
+                    foreach ($first_arg->inferredType->getTypes() as $inner_type) {
+                        if ($inner_type->isNumericType()) {
+                            $numeric_types[] = $inner_type;
+                        }
+                    }
+
+                    if ($numeric_types) {
+                        return new Type\Union($numeric_types);
+                    }
+                }
             }
 
             if ($call_map_key === 'min' || $call_map_key === 'max') {
@@ -200,7 +245,7 @@ class FunctionChecker extends FunctionLikeChecker
                                 return Type::getArray();
                             }
                         } else {
-                            $type_part_value_type = $type_part->type_params[0];
+                            $type_part_value_type = $type_part->type_params[1];
                         }
 
                         $unpacked_type_parts = [];
@@ -224,7 +269,16 @@ class FunctionChecker extends FunctionLikeChecker
 
                                 $unpacked_type_part = $unpacked_type_part->getGenericArrayType();
                             } else {
-                                return Type::getArray();
+                                if ($unpacked_type_part instanceof Type\Atomic\TMixed
+                                    && $unpacked_type_part->from_isset
+                                ) {
+                                    $unpacked_type_part = new Type\Atomic\TArray([
+                                        Type::getMixed(),
+                                        Type::getMixed(true)
+                                    ]);
+                                } else {
+                                    return Type::getArray();
+                                }
                             }
                         } elseif (!$unpacked_type_part->type_params[0]->isEmpty()) {
                             $generic_properties = null;
@@ -327,7 +381,10 @@ class FunctionChecker extends FunctionLikeChecker
         if ($array_arg && isset($array_arg->inferredType)) {
             $arg_types = $array_arg->inferredType->getTypes();
 
-            if (isset($arg_types['array']) && $arg_types['array'] instanceof Type\Atomic\TArray) {
+            if (isset($arg_types['array'])
+                && ($arg_types['array'] instanceof Type\Atomic\TArray
+                    || $arg_types['array'] instanceof Type\Atomic\ObjectLike)
+            ) {
                 $array_arg_type = $arg_types['array'];
             }
         }
@@ -335,12 +392,22 @@ class FunctionChecker extends FunctionLikeChecker
         if (isset($call_args[0])) {
             $function_call_arg = $call_args[0];
 
+            if (count($call_args) === 2) {
+                if ($array_arg_type instanceof Type\Atomic\ObjectLike) {
+                    $generic_key_type = $array_arg_type->getGenericKeyType();
+                } else {
+                    $generic_key_type = $array_arg_type ? clone $array_arg_type->type_params[0] : Type::getMixed();
+                }
+            } else {
+                $generic_key_type = Type::getInt();
+            }
+
             if ($function_call_arg->value instanceof PhpParser\Node\Expr\Closure
                 && isset($function_call_arg->value->inferredType)
                 && ($closure_atomic_type = $function_call_arg->value->inferredType->getTypes()['Closure'])
                 && $closure_atomic_type instanceof Type\Atomic\Fn
             ) {
-                $closure_return_type = $closure_atomic_type->return_type;
+                $closure_return_type = $closure_atomic_type->return_type ?: Type::getMixed();
 
                 if ($closure_return_type->isVoid()) {
                     IssueBuffer::accepts(
@@ -354,13 +421,27 @@ class FunctionChecker extends FunctionLikeChecker
                     return Type::getArray();
                 }
 
-                $key_type = $array_arg_type ? clone $array_arg_type->type_params[0] : Type::getMixed();
-
                 $inner_type = clone $closure_return_type;
+
+                if ($array_arg_type instanceof Type\Atomic\ObjectLike && count($call_args) === 2) {
+                    return new Type\Union([
+                        new Type\Atomic\ObjectLike(
+                            array_map(
+                                /**
+                                 * @return Type\Union
+                                 */
+                                function (Type\Union $_) use ($inner_type) {
+                                    return clone $inner_type;
+                                },
+                                $array_arg_type->properties
+                            )
+                        ),
+                    ]);
+                }
 
                 return new Type\Union([
                     new Type\Atomic\TArray([
-                        $key_type,
+                        $generic_key_type,
                         $inner_type,
                     ]),
                 ]);
@@ -380,77 +461,113 @@ class FunctionChecker extends FunctionLikeChecker
                 $codebase = $project_checker->codebase;
 
                 foreach ($mapping_function_ids as $mapping_function_id) {
-                    if (isset($call_map[$mapping_function_id][0])) {
-                        if ($call_map[$mapping_function_id][0]) {
-                            $mapped_function_return = Type::parseString($call_map[$mapping_function_id][0]);
+                    $mapping_function_id = strtolower($mapping_function_id);
 
-                            if ($mapping_return_type) {
-                                $mapping_return_type = Type::combineUnionTypes(
-                                    $mapping_return_type,
-                                    $mapped_function_return
-                                );
-                            } else {
-                                $mapping_return_type = $mapped_function_return;
-                            }
-                        }
-                    } else {
-                        if (strpos($mapping_function_id, '::') !== false) {
-                            list($callable_fq_class_name) = explode('::', $mapping_function_id);
+                    $mapping_function_id_parts = explode('&', $mapping_function_id);
 
-                            if (in_array($callable_fq_class_name, ['self', 'static', 'parent'], true)) {
-                                $mapping_return_type = Type::getMixed();
-                                continue;
-                            }
+                    $part_match_found = false;
 
-                            if (!$codebase->methodExists($mapping_function_id)) {
-                                $mapping_return_type = Type::getMixed();
-                                continue;
-                            }
+                    foreach ($mapping_function_id_parts as $mapping_function_id_part) {
+                        if (isset($call_map[$mapping_function_id_part][0])) {
+                            if ($call_map[$mapping_function_id_part][0]) {
+                                $mapped_function_return =
+                                    Type::parseString($call_map[$mapping_function_id_part][0]);
 
-                            $self_class = 'self';
+                                if ($mapping_return_type) {
+                                    $mapping_return_type = Type::combineUnionTypes(
+                                        $mapping_return_type,
+                                        $mapped_function_return
+                                    );
+                                } else {
+                                    $mapping_return_type = $mapped_function_return;
+                                }
 
-                            $return_type = $codebase->methods->getMethodReturnType(
-                                $mapping_function_id,
-                                $self_class
-                            ) ?: Type::getMixed();
-
-                            if ($mapping_return_type) {
-                                $mapping_return_type = Type::combineUnionTypes(
-                                    $mapping_return_type,
-                                    $return_type
-                                );
-                            } else {
-                                $mapping_return_type = $return_type;
+                                $part_match_found = true;
                             }
                         } else {
-                            if (!$codebase->functions->functionExists($statements_checker, $mapping_function_id)) {
-                                $mapping_return_type = Type::getMixed();
-                                continue;
-                            }
+                            if (strpos($mapping_function_id_part, '::') !== false) {
+                                list($callable_fq_class_name) = explode('::', $mapping_function_id_part);
 
-                            $function_storage = $codebase->functions->getStorage(
-                                $statements_checker,
-                                $mapping_function_id
-                            );
+                                if (in_array($callable_fq_class_name, ['self', 'static', 'parent'], true)) {
+                                    continue;
+                                }
 
-                            $return_type = $function_storage->return_type ?: Type::getMixed();
+                                if (!$codebase->methodExists($mapping_function_id_part)) {
+                                    continue;
+                                }
 
-                            if ($mapping_return_type) {
-                                $mapping_return_type = Type::combineUnionTypes(
-                                    $mapping_return_type,
-                                    $return_type
-                                );
+                                $part_match_found = true;
+
+                                $self_class = 'self';
+
+                                $return_type = $codebase->methods->getMethodReturnType(
+                                    $mapping_function_id_part,
+                                    $self_class
+                                ) ?: Type::getMixed();
+
+                                if ($mapping_return_type) {
+                                    $mapping_return_type = Type::combineUnionTypes(
+                                        $mapping_return_type,
+                                        $return_type
+                                    );
+                                } else {
+                                    $mapping_return_type = $return_type;
+                                }
                             } else {
-                                $mapping_return_type = $return_type;
+                                if (!$codebase->functions->functionExists(
+                                    $statements_checker,
+                                    $mapping_function_id_part
+                                )) {
+                                    $mapping_return_type = Type::getMixed();
+                                    continue;
+                                }
+
+                                $part_match_found = true;
+
+                                $function_storage = $codebase->functions->getStorage(
+                                    $statements_checker,
+                                    $mapping_function_id_part
+                                );
+
+                                $return_type = $function_storage->return_type ?: Type::getMixed();
+
+                                if ($mapping_return_type) {
+                                    $mapping_return_type = Type::combineUnionTypes(
+                                        $mapping_return_type,
+                                        $return_type
+                                    );
+                                } else {
+                                    $mapping_return_type = $return_type;
+                                }
                             }
                         }
+                    }
+
+                    if ($part_match_found === false) {
+                        $mapping_return_type = Type::getMixed();
                     }
                 }
 
                 if ($mapping_return_type) {
+                    if ($array_arg_type instanceof Type\Atomic\ObjectLike && count($call_args) === 2) {
+                        return new Type\Union([
+                            new Type\Atomic\ObjectLike(
+                                array_map(
+                                    /**
+                                     * @return Type\Union
+                                     */
+                                    function (Type\Union $_) use ($mapping_return_type) {
+                                        return clone $mapping_return_type;
+                                    },
+                                    $array_arg_type->properties
+                                )
+                            ),
+                        ]);
+                    }
+
                     return new Type\Union([
                         new Type\Atomic\TArray([
-                            Type::getInt(),
+                            $generic_key_type,
                             $mapping_return_type,
                         ]),
                     ]);
@@ -508,7 +625,7 @@ class FunctionChecker extends FunctionLikeChecker
                 && ($closure_atomic_type = $function_call_arg->value->inferredType->getTypes()['Closure'])
                 && $closure_atomic_type instanceof Type\Atomic\Fn
             ) {
-                $closure_return_type = $closure_atomic_type->return_type;
+                $closure_return_type = $closure_atomic_type->return_type ?: Type::getMixed();
 
                 if ($closure_return_type->isVoid()) {
                     IssueBuffer::accepts(
@@ -522,23 +639,22 @@ class FunctionChecker extends FunctionLikeChecker
                     return Type::getArray();
                 }
 
-                if (count($function_call_arg->value->stmts) === 1
-                    && count($function_call_arg->value->params)
-                ) {
+                if (count($function_call_arg->value->stmts) === 1 && count($function_call_arg->value->params)) {
                     $first_param = $function_call_arg->value->params[0];
                     $stmt = $function_call_arg->value->stmts[0];
 
                     if ($first_param->variadic === false
+                        && is_string($first_param->var->name)
                         && $stmt instanceof PhpParser\Node\Stmt\Return_
                         && $stmt->expr
                     ) {
                         $assertions = AssertionFinder::getAssertions($stmt->expr, null, $statements_checker);
 
-                        if (isset($assertions['$' . $first_param->name])) {
+                        if (isset($assertions['$' . $first_param->var->name])) {
                             $changed_var_ids = [];
 
                             $reconciled_types = Reconciler::reconcileKeyedTypes(
-                                ['$inner_type' => $assertions['$' . $first_param->name]],
+                                ['$inner_type' => $assertions['$' . $first_param->var->name]],
                                 ['$inner_type' => $inner_type],
                                 $changed_var_ids,
                                 ['$inner_type' => true],
@@ -554,6 +670,13 @@ class FunctionChecker extends FunctionLikeChecker
                     }
                 }
             }
+
+            return new Type\Union([
+                new Type\Atomic\TArray([
+                    $key_type,
+                    $inner_type,
+                ]),
+            ]);
         }
 
         return new Type\Union([

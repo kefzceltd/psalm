@@ -131,6 +131,142 @@ class IssetTest extends TestCase
                         return new A();
                     }',
             ],
+            'issetVariableKeysWithoutChange' => [
+                '<?php
+                    $arr = [[1, 2, 3], null, [1, 2, 3], null];
+                    $b = 2;
+                    $c = 0;
+                    if (isset($arr[$b][$c])) {
+                        echo $arr[$b][$c];
+                    }',
+            ],
+            'issetNonNullArrayKey' => [
+                '<?php
+                    /**
+                     * @param  array<int, int> $arr
+                     */
+                    function foo(array $arr) : int {
+                        $b = rand(0, 3);
+                        if (!isset($arr[$b])) {
+                            throw new \Exception("bad");
+                        }
+                        return $arr[$b];
+                    }',
+            ],
+            'issetArrayOffsetConditionalCreationWithInt' => [
+                '<?php
+                    /** @param array<int, string> $arr */
+                    function foo(array $arr) : string {
+                        if (!isset($arr[0])) {
+                            $arr[0] = "hello";
+                        }
+
+                        return $arr[0];
+                    }',
+            ],
+            'issetArrayOffsetConditionalCreationWithVariable' => [
+                '<?php
+                    /** @param array<int, string> $arr */
+                    function foo(array $arr) : string {
+                        $b = 5;
+
+                        if (!isset($arr[$b])) {
+                            $arr[$b] = "hello";
+                        }
+
+                        return $arr[$b];
+                    }',
+            ],
+            'noExceptionOnBracketString' => [
+                '<?php
+                    if (isset($foo["bar[]"])) {}',
+            ],
+            'issetArrayOffsetAndProperty' => [
+                '<?php
+                    class A {
+                        /** @var ?B */
+                        public $b;
+                    }
+                    class B {}
+
+                    /**
+                     * @param A[] $arr
+                     */
+                    function takesAList(array $arr) : B {
+                        if (isset($arr[1]->b)) {
+                            return $arr[1]->b;
+                        }
+                        throw new \Exception("bad");
+                    }',
+            ],
+            'allowUnknownAdditionToInt' => [
+                '<?php
+                    $arr = [1, 1, 1, 1, 2, 5, 3, 2];
+                    $cumulative = [];
+
+                    foreach ($arr as $val) {
+                        if (isset($cumulative[$val])) {
+                            $cumulative[$val] = $cumulative[$val] + 1;
+                        } else {
+                            $cumulative[$val] = 1;
+                        }
+                    }',
+            ],
+            'allowUnknownArrayMergeToInt' => [
+                '<?php
+                    $arr = [1, 1, 1, 1, 2, 5, 3, 2];
+                    $cumulative = [];
+
+                    foreach ($arr as $val) {
+                        if (isset($cumulative[$val])) {
+                            $cumulative[$val] = array_merge($cumulative[$val], [$val]);
+                        } else {
+                            $cumulative[$val] = [$val];
+                        }
+                    }
+
+                    foreach ($cumulative as $arr) {
+                        foreach ($arr as $val) {
+                            takesInt($val);
+                        }
+                    }
+
+                    function takesInt(int $i) : void {}',
+            ],
+            'returnArrayWithDefinedKeys' => [
+                '<?php
+                    /**
+                     * @param array{bar?: int, foo: int|string} $arr
+                     * @return array{bar: int, foo: string}|null
+                     */
+                    function foo(array $arr) : ?array {
+                        if (!isset($arr["bar"])) {
+                            return null;
+                        }
+
+                        if (is_int($arr["foo"])) {
+                            return null;
+                        }
+
+                        return $arr;
+                    }',
+            ],
+            'arrayAccessAfterTwoIssets' => [
+                '<?php
+                    $arr = [];
+
+                    foreach ([1, 2, 3] as $foo) {
+                        if (!isset($arr["foo"])) {
+                            $arr["foo"] = 0;
+                        }
+
+                        if (!isset($arr["bar"])) {
+                            $arr["bar"] = 0;
+                        }
+
+                        echo $arr["bar"];
+                    }',
+            ],
         ];
     }
 
@@ -145,6 +281,17 @@ class IssetTest extends TestCase
                     class A {}
                     $a = isset(A::foo()[0]);',
                 'error_message' => 'UndefinedMethod',
+            ],
+            'issetVariableKeysWithChange' => [
+                '<?php
+                    $arr = [[1, 2, 3], null, [1, 2, 3], null];
+                    $b = 2;
+                    $c = 0;
+                    if (isset($arr[$b][$c])) {
+                        $b = 1;
+                        echo $arr[$b][$c];
+                    }',
+                'error_message' => 'PossiblyNullArrayAccess',
             ],
         ];
     }

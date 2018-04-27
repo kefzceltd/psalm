@@ -202,11 +202,13 @@ class TypeReconciliationTest extends TestCase
             'nullWithMyObjectPipeNull' => ['null', 'null', 'MyObject|null'],
             'nullWithMixed' => ['null', 'null', 'mixed'],
 
-            'emptyWithMyObject' => ['mixed', 'falsy', 'MyObject'],
-            'emptyWithMyObjectPipeFalse' => ['false', 'falsy', 'MyObject|false'],
-            'emptyWithMyObjectPipeBool' => ['false', 'falsy', 'MyObject|bool'],
-            'emptyWithMixed' => ['mixed', 'falsy', 'mixed'],
-            'emptyWithBool' => ['false', 'falsy', 'bool'],
+            'falsyWithMyObject' => ['mixed', 'falsy', 'MyObject'],
+            'falsyWithMyObjectPipeFalse' => ['false', 'falsy', 'MyObject|false'],
+            'falsyWithMyObjectPipeBool' => ['false', 'falsy', 'MyObject|bool'],
+            'falsyWithMixed' => ['mixed', 'falsy', 'mixed'],
+            'falsyWithBool' => ['false', 'falsy', 'bool'],
+            'falsyWithStringOrNull' => ['string|null', 'falsy', 'string|null'],
+            'falsyWithScalarOrNull' => ['scalar', 'falsy', 'scalar'],
 
             'notMyObjectWithMyObjectPipeBool' => ['bool', '!MyObject', 'MyObject|bool'],
             'notMyObjectWithMyObjectPipeNull' => ['null', '!MyObject', 'MyObject|null'],
@@ -234,6 +236,14 @@ class TypeReconciliationTest extends TestCase
 
             'unionContainsWithstring' => ['string', 'string|false'],
             'unionContainsWithFalse' => ['false', 'string|false'],
+            'objectLikeTypeWithPossiblyUndefinedToGeneric' => [
+                'array{0:array{a:string}, 1:array{c:string, e:string}}',
+                'array<int, array<string, string>>'
+            ],
+            'objectLikeTypeWithPossiblyUndefinedToEmpty' => [
+                'array<empty, empty>',
+                'array{a?:string, b?:string}',
+            ],
         ];
     }
 
@@ -510,7 +520,7 @@ class TypeReconciliationTest extends TestCase
                 'assertions' => [
                     '$b' => 'null',
                 ],
-                'error_levels' => ['RedundantCondition'],
+                'error_levels' => ['TypeDoesNotContainType', 'RedundantCondition'],
             ],
             'ignoreNullCheckAndMaintainNullableValue' => [
                 '<?php
@@ -564,15 +574,24 @@ class TypeReconciliationTest extends TestCase
 
                     function takesI(I $i): void {}
                     function takesA(A $a): void {}
+                    /** @param A&I $a */
+                    function takesAandI($a): void {}
+                    /** @param I&A $a */
+                    function takesIandA($a): void {}
 
                     class A {
-                        public function foo(): void {
+                        /**
+                         * @return A&I|null
+                         */
+                        public function foo() {
                             if ($this instanceof I) {
                                 $this->bar();
                                 $this->bat();
 
                                 takesA($this);
                                 takesI($this);
+                                takesAandI($this);
+                                takesIandA($this);
                             }
                         }
 
@@ -592,24 +611,6 @@ class TypeReconciliationTest extends TestCase
 
                       return "backup";
                     }',
-            ],
-            'isCallableArray' => [
-                '<?php
-                    class A
-                    {
-                        public function callMeMaybe(string $method): void
-                        {
-                            $handleMethod = [$this, $method];
-
-                            if (is_callable($handleMethod)) {
-                                $handleMethod();
-                            }
-                        }
-
-                        public function foo(): void {}
-                    }
-                    $a = new A();
-                    $a->callMeMaybe("foo");',
             ],
             'stringOrCallableArg' => [
                 '<?php
@@ -748,6 +749,32 @@ class TypeReconciliationTest extends TestCase
                         print_field($array);
                     }',
             ],
+            'numericOrStringPropertySet' => [
+                '<?php
+                    /**
+                     * @param string|null $b
+                     * @psalm-suppress DocblockTypeContradiction
+                     */
+                    function foo($b = null) : void {
+                        if (is_numeric($b) || is_string($b)) {
+                            takesNullableString($b);
+                        }
+                    }
+
+                    function takesNullableString(?string $s) : void {}',
+            ],
+            'falsyScalar' => [
+                '<?php
+                    /**
+                     * @param scalar|null $value
+                     */
+                    function Foo($value = null) : bool {
+                      if (!$value) {
+                        return true;
+                      }
+                      return false;
+                    }',
+            ],
         ];
     }
 
@@ -849,6 +876,38 @@ class TypeReconciliationTest extends TestCase
                         print_field($array);
                     }',
                 'error_message' => 'PossiblyInvalidArgument',
+            ],
+            'intersectionIncorrect' => [
+                '<?php
+                    interface I {
+                        public function bat(): void;
+                    }
+
+                    interface C {}
+
+                    /** @param I&C $a */
+                    function takesIandC($a): void {}
+
+                    class A {
+                        public function foo(): void {
+                            if ($this instanceof I) {
+                                takesIandC($this);
+                            }
+                        }
+                    }',
+                'error_message' => 'InvalidArgument',
+            ],
+            'catchTypeMismatchInBinaryOp' => [
+                '<?php
+                    /** @return array<int, string|int> */
+                    function getStrings(): array {
+                        return ["hello", "world", 50];
+                    }
+
+                    $a = getStrings();
+
+                    if (is_bool($a[0]) && $a[0]) {}',
+                'error_message' => 'DocblockTypeContradiction',
             ],
         ];
     }

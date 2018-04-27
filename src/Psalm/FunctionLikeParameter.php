@@ -83,4 +83,11 @@ class FunctionLikeParameter
         $this->type_location = $type_location;
         $this->signature_type_location = $type_location;
     }
+
+    public function __toString()
+    {
+        return ($this->type ?: 'mixed')
+            . ($this->is_variadic ? '...' : '')
+            . ($this->is_optional ? '=' : '');
+    }
 }

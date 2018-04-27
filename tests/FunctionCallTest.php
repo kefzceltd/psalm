@@ -67,11 +67,15 @@ class FunctionCallTest extends TestCase
             'abs' => [
                 '<?php
                     $a = abs(-5);
-                    $b = abs(-7.5);',
+                    $b = abs(-7.5);
+                    $c = $_GET["c"];
+                    $c = is_numeric($c) ? abs($c) : null;',
                 'assertions' => [
                     '$a' => 'int',
-                    '$b' => 'int',
+                    '$b' => 'float',
+                    '$c' => 'numeric|null',
                 ],
+                'error_levels' => ['MixedAssignment', 'MixedArgument'],
             ],
             'validDocblockParamDefault' => [
                 '<?php
@@ -250,6 +254,7 @@ class FunctionCallTest extends TestCase
                 'error_levels' => [
                     'MixedAssignment',
                     'MixedArrayAccess',
+                    'MixedArgument',
                 ],
             ],
             'arrayMergeObjectLike' => [
@@ -420,7 +425,7 @@ class FunctionCallTest extends TestCase
                         ARRAY_FILTER_USE_KEY
                     );',
                 'assertions' => [
-                    '$foo' => 'array<string, Closure>',
+                    '$foo' => 'array<string, Closure():string>',
                 ],
             ],
             'ignoreFalsableCurrent' => [
@@ -476,8 +481,143 @@ class FunctionCallTest extends TestCase
                 '<?php
                     $foo = array_sum([]) + 1;',
                 'assertions' => [
-                    '$foo' => 'numeric',
+                    '$foo' => 'float|int',
                 ],
+            ],
+            'arrayMapObjectLikeAndCallable' => [
+                '<?php
+                    /**
+                     * @psalm-return array{key1:int,key2:int}
+                     */
+                    function foo(): array {
+                      $v = ["key1"=> 1, "key2"=> "2"];
+                      $r = array_map("intval", $v);
+                      return $r;
+                    }',
+            ],
+            'arrayMapObjectLikeAndClosure' => [
+                '<?php
+                    /**
+                     * @psalm-return array{key1:int,key2:int}
+                     */
+                    function foo(): array {
+                      $v = ["key1"=> 1, "key2"=> "2"];
+                      $r = array_map(function($i) : int { return intval($i);}, $v);
+                      return $r;
+                    }',
+                'assertions' => [],
+                'error_levels' => [
+                    'MissingClosureParamType',
+                    'MixedTypeCoercion',
+                ],
+            ],
+            'arrayFilterGoodArgs' => [
+                '<?php
+                    function fooFoo(int $i) : bool {
+                      return true;
+                    }
+
+                    class A {
+                        public static function barBar(int $i) : bool {
+                            return true;
+                        }
+                    }
+
+                    array_filter([1, 2, 3], "fooFoo");
+                    array_filter([1, 2, 3], "foofoo");
+                    array_filter([1, 2, 3], "FOOFOO");
+                    array_filter([1, 2, 3], "A::barBar");
+                    array_filter([1, 2, 3], "A::BARBAR");
+                    array_filter([1, 2, 3], "A::barbar");',
+            ],
+            'arrayFilterIgnoreMissingClass' => [
+                '<?php
+                    array_filter([1, 2, 3], "A::bar");',
+                'assertions' => [],
+                'error_levels' => ['UndefinedClass'],
+            ],
+            'arrayFilterIgnoreMissingMethod' => [
+                '<?php
+                    class A {
+                        public static function bar(int $i) : bool {
+                            return true;
+                        }
+                    }
+
+                    array_filter([1, 2, 3], "A::foo");',
+                'assertions' => [],
+                'error_levels' => ['UndefinedMethod'],
+            ],
+            'validCallables' => [
+                '<?php
+                    class A {
+                        public static function b() : void {}
+                    }
+
+                    function c() : void {}
+
+                    ["a", "b"]();
+                    "A::b"();
+                    "c"();'
+            ],
+            'arrayMapParamDefault' => [
+                '<?php
+                    $arr = ["a", "b"];
+                    array_map("mapdef", $arr, array_fill(0, count($arr), 1));
+                    function mapdef(string $_a, int $_b = 0): string {
+                        return "a";
+                    }',
+            ],
+            'noInvalidOperandForCoreFunctions' => [
+                '<?php
+                    function foo(string $a, string $b) : int {
+                        $aTime = strtotime($a);
+                        $bTime = strtotime($b);
+
+                        return $aTime - $bTime;
+                    }',
+            ],
+            'strposIntSecondParam' => [
+                '<?php
+                    function hasZeroByteOffset(string $s) : bool {
+                        return strpos($s, 0) !== false;
+                    }'
+            ],
+            'functionCallInGlobalScope' => [
+                '<?php
+                    $a = function() use ($argv) : void {};',
+            ],
+            'implodeMultiDimensionalArray' => [
+                '<?php
+                    $urls = array_map("implode", [["a", "b"]]);',
+            ],
+            'varExport' => [
+                '<?php
+                    $a = var_export(["a"], true);',
+                'assertions' => [
+                    '$a' => 'string',
+                ],
+            ],
+            'key' => [
+                '<?php
+                    $a = ["one" => 1, "two" => 3];
+                    $b = key($a);
+                    $c = $a[$b];',
+                'assertions' => [
+                    '$b' => 'false|string',
+                    '$c' => 'int',
+                ],
+            ],
+            'explodeWithPossiblyFalse' => [
+                '<?php
+                    /** @return array<int, string> */
+                    function exploder(string $s) : array {
+                        return explode(" ", $s);
+                    }',
+            ],
+            'allowPossiblyUndefinedClassInClassExists' => [
+                '<?php
+                    if (class_exists(Foo::class)) {}'
             ],
         ];
     }
@@ -488,6 +628,17 @@ class FunctionCallTest extends TestCase
     public function providerFileCheckerInvalidCodeParse()
     {
         return [
+            'arrayFilterWithoutTypes' => [
+                '<?php
+                    $e = array_filter(
+                        ["a" => 5, "b" => 12, "c" => null],
+                        function(?int $i) {
+                            return $_GET["a"];
+                        }
+                    );',
+                'error_message' => 'MixedTypeCoercion',
+                'error_levels' => ['MissingClosureParamType', 'MissingClosureReturnType'],
+            ],
             'invalidScalarArgument' => [
                 '<?php
                     function fooFoo(int $a): void {}
@@ -519,7 +670,7 @@ class FunctionCallTest extends TestCase
                 '<?php
                     function fooFoo(int $a): void {}
                     fooFoo(5, "dfd");',
-                'error_message' => 'TooManyArguments - src/somefile.php:3 - Too many arguments for method fooFoo '
+                'error_message' => 'TooManyArguments - src' . DIRECTORY_SEPARATOR . 'somefile.php:3 - Too many arguments for method fooFoo '
                     . '- expecting 1 but saw 2',
             ],
             'tooManyArgumentsForConstructor' => [
@@ -649,6 +800,63 @@ class FunctionCallTest extends TestCase
                     $a = rand(0, 1) ? function(): void {} : 23515;
                     $a();',
                 'error_message' => 'PossiblyInvalidFunctionCall',
+            ],
+            'arrayFilterBadArgs' => [
+                '<?php
+                    function foo(int $i) : bool {
+                      return true;
+                    }
+
+                    array_filter(["hello"], "foo");',
+                'error_message' => 'InvalidScalarArgument',
+            ],
+            'arrayFilterTooFewArgs' => [
+                '<?php
+                    function foo(int $i, string $s) : bool {
+                      return true;
+                    }
+
+                    array_filter([1, 2, 3], "foo");',
+                'error_message' => 'TooFewArguments',
+            ],
+            'arrayMapBadArgs' => [
+                '<?php
+                    function foo(int $i) : bool {
+                      return true;
+                    }
+
+                    array_map("foo", ["hello"]);',
+                'error_message' => 'InvalidScalarArgument',
+            ],
+            'arrayMapTooFewArgs' => [
+                '<?php
+                    function foo(int $i, string $s) : bool {
+                      return true;
+                    }
+
+                    array_map("foo", [1, 2, 3]);',
+                'error_message' => 'TooFewArguments',
+            ],
+            'arrayMapTooManyArgs' => [
+                '<?php
+                    function foo() : bool {
+                      return true;
+                    }
+
+                    array_map("foo", [1, 2, 3]);',
+                'error_message' => 'TooManyArguments',
+            ],
+            'varExportAssignmentToVoid' => [
+                '<?php
+                    $a = var_export(["a"]);',
+                'error_message' => 'AssignmentToVoid',
+            ],
+            'explodeWithEmptyString' => [
+                '<?php
+                    function exploder(string $s) : array {
+                        return explode("", $s);
+                    }',
+                'error_message' => 'FalsableReturnStatement',
             ],
         ];
     }

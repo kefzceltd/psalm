@@ -4,6 +4,7 @@ namespace Psalm\Tests;
 class Php56Test extends TestCase
 {
     use Traits\FileCheckerValidCodeParseTestTrait;
+    use Traits\FileCheckerInvalidCodeParseTestTrait;
 
     /**
      * @return array
@@ -84,6 +85,22 @@ class Php56Test extends TestCase
                     $operators = [2, 3];
                     echo add(1, ...$operators);',
             ],
+            'arrayPushArgumentUnpacking' => [
+                '<?php
+                    /**
+                     * @return string[]
+                     */
+                    function a(): array {
+                      $a = [];
+                      $b = ["foo", "bar"];
+
+                      $a[] = "foo";
+
+                      array_push($a, ...$b);
+
+                      return $a;
+                    }',
+            ],
             'arrayMergeArgumentUnpacking' => [
                 '<?php
                     $a = [[1, 2]];
@@ -91,6 +108,46 @@ class Php56Test extends TestCase
                 'assertions' => [
                     '$b' => 'array{0:int, 1:int}',
                 ],
+            ],
+            'preserveTypesWhenUnpacking' => [
+                '<?php
+                    /**
+                     * @return array<int,array<int,string>>
+                     */
+                    function getData(): array
+                    {
+                        return [
+                            ["a", "b"],
+                            ["c", "d"]
+                        ];
+                    }
+
+                    /**
+                     * @return array<int,string>
+                     */
+                    function f1(): array
+                    {
+                        $data = getData();
+                        return array_merge($data[0], $data[1]);
+                    }
+
+                    /**
+                     * @return array<int,string>
+                     */
+                    function f2(): array
+                    {
+                        $data = getData();
+                        return array_merge(...$data);
+                    }
+
+                    /**
+                     * @return array<int,string>
+                     */
+                    function f3(): array
+                    {
+                        $data = getData();
+                        return array_merge([], ...$data);
+                    }',
             ],
             'exponentiation' => [
                 '<?php
@@ -164,6 +221,25 @@ class Php56Test extends TestCase
                             }
                         }
                     }',
+            ],
+        ];
+    }
+
+    /**
+     * @return array
+     */
+    public function providerFileCheckerInvalidCodeParse()
+    {
+        return [
+            'arrayPushArgumentUnpackingWithBadArg' => [
+                '<?php
+                    $a = [];
+                    $b = "hello";
+
+                    $a[] = "foo";
+
+                    array_push($a, ...$b);',
+                'error_message' => 'InvalidArgument',
             ],
         ];
     }

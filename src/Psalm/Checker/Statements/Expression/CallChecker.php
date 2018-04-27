@@ -32,6 +32,7 @@ use Psalm\Storage\FunctionLikeStorage;
 use Psalm\Type;
 use Psalm\Type\Atomic\ObjectLike;
 use Psalm\Type\Atomic\TArray;
+use Psalm\Type\Atomic\TClassString;
 use Psalm\Type\Atomic\TCallable;
 use Psalm\Type\Atomic\TNamedObject;
 
@@ -284,21 +285,49 @@ class CallChecker
                         return false;
                     }
 
-                    $by_ref_type = Type::combineUnionTypes(
-                        $by_ref_type,
-                        new Type\Union(
-                            [
-                                new TArray(
+                    if (!isset($arg->value->inferredType) || $arg->value->inferredType->isMixed()) {
+                        $by_ref_type = Type::combineUnionTypes(
+                            $by_ref_type,
+                            new Type\Union([new TArray([Type::getInt(), Type::getMixed()])])
+                        );
+                    } elseif ($arg->unpack) {
+                        if ($arg->value->inferredType->hasArray()) {
+                            /** @var Type\Atomic\TArray|Type\Atomic\ObjectLike */
+                            $array_atomic_type = $arg->value->inferredType->getTypes()['array'];
+
+                            if ($array_atomic_type instanceof Type\Atomic\ObjectLike) {
+                                $array_atomic_type = $array_atomic_type->getGenericArrayType();
+                            }
+
+                            $by_ref_type = Type::combineUnionTypes(
+                                $by_ref_type,
+                                new Type\Union(
                                     [
-                                        Type::getInt(),
-                                        isset($arg->value->inferredType)
-                                            ? clone $arg->value->inferredType
-                                            : Type::getMixed(),
+                                        new TArray(
+                                            [
+                                                Type::getInt(),
+                                                clone $array_atomic_type->type_params[1]
+                                            ]
+                                        ),
+                                    ]
+                                )
+                            );
+                        }
+                    } else {
+                        $by_ref_type = Type::combineUnionTypes(
+                            $by_ref_type,
+                            new Type\Union(
+                                [
+                                    new TArray(
+                                        [
+                                            Type::getInt(),
+                                            clone $arg->value->inferredType
                                         ]
-                                ),
-                            ]
-                        )
-                    );
+                                    ),
+                                ]
+                            )
+                        );
+                    }
                 }
 
                 ExpressionChecker::assignByRefParam(
@@ -418,13 +447,29 @@ class CallChecker
                         }
                     }
                 } else {
+                    $toggled_class_exists = false;
+
+                    if ($method_id === 'class_exists'
+                        && $argument_offset === 0
+                        && !$context->inside_class_exists
+                    ) {
+                        $context->inside_class_exists = true;
+                        $toggled_class_exists = true;
+                    }
+
                     if (ExpressionChecker::analyze($statements_checker, $arg->value, $context) === false) {
                         return false;
                     }
+
+                    if ($toggled_class_exists) {
+                        $context->inside_class_exists = false;
+                    }
                 }
             } else {
-                if ($arg->value instanceof PhpParser\Node\Expr\PropertyFetch && is_string($arg->value->name)) {
-                    $var_id = '$' . $arg->value->name;
+                if ($arg->value instanceof PhpParser\Node\Expr\PropertyFetch
+                    && $arg->value->name instanceof PhpParser\Node\Identifier
+                ) {
+                    $var_id = '$' . $arg->value->name->name;
                 } else {
                     $var_id = ExpressionChecker::getVarId(
                         $arg->value,
@@ -578,6 +623,7 @@ class CallChecker
 
             if ($function_param
                 && $function_param->by_ref
+                && $method_id !== 'extract'
             ) {
                 if ($arg->value instanceof PhpParser\Node\Scalar
                     || $arg->value instanceof PhpParser\Node\Expr\Array_
@@ -672,10 +718,10 @@ class CallChecker
 
                             $offset_value_type = null;
 
-                            if ($arg->value instanceof PhpParser\Node\Expr\ClassConstFetch &&
-                                $arg->value->class instanceof PhpParser\Node\Name &&
-                                is_string($arg->value->name) &&
-                                strtolower($arg->value->name) === 'class'
+                            if ($arg->value instanceof PhpParser\Node\Expr\ClassConstFetch
+                                && $arg->value->class instanceof PhpParser\Node\Name
+                                && $arg->value->name instanceof PhpParser\Node\Identifier
+                                && strtolower($arg->value->name->name) === 'class'
                             ) {
                                 $offset_value_type = Type::parseString(
                                     ClassLikeChecker::getFQCLNFromNameObject(
@@ -683,8 +729,19 @@ class CallChecker
                                         $statements_checker->getAliases()
                                     )
                                 );
+
+                                $offset_value_type = ExpressionChecker::fleshOutType(
+                                    $project_checker,
+                                    $offset_value_type,
+                                    $context->self,
+                                    $context->self
+                                );
                             } elseif ($arg->value instanceof PhpParser\Node\Scalar\String_ && $arg->value->value) {
                                 $offset_value_type = Type::parseString($arg->value->value);
+                            } elseif ($arg->value instanceof PhpParser\Node\Scalar\MagicConst\Class_
+                                && $context->self
+                            ) {
+                                $offset_value_type = Type::parseString($context->self);
                             }
 
                             if ($offset_value_type) {
@@ -721,8 +778,7 @@ class CallChecker
                         }
                     }
 
-                    // for now stop when we encounter a packed argument
-                    if ($arg->unpack) {
+                    if (!$context->check_variables) {
                         break;
                     }
 
@@ -733,20 +789,84 @@ class CallChecker
                         $fq_class_name
                     );
 
-                    if ($context->check_variables) {
-                        if (self::checkFunctionArgumentType(
-                            $statements_checker,
-                            $arg->value->inferredType,
-                            $fleshed_out_type,
-                            $cased_method_id,
-                            $argument_offset,
-                            new CodeLocation($statements_checker->getSource(), $arg->value),
-                            $arg->value,
-                            $context,
-                            $function_param->by_ref
-                        ) === false) {
-                            return false;
+                    if ($arg->unpack) {
+                        if ($arg->value->inferredType->hasArray()) {
+                            /** @var Type\Atomic\TArray|Type\Atomic\ObjectLike */
+                            $array_atomic_type = $arg->value->inferredType->getTypes()['array'];
+
+                            if ($array_atomic_type instanceof Type\Atomic\ObjectLike) {
+                                $array_atomic_type = $array_atomic_type->getGenericArrayType();
+                            }
+
+                            if (self::checkFunctionArgumentType(
+                                $statements_checker,
+                                $array_atomic_type->type_params[1],
+                                $fleshed_out_type,
+                                $cased_method_id,
+                                $argument_offset,
+                                new CodeLocation($statements_checker->getSource(), $arg->value),
+                                $arg->value,
+                                $context,
+                                $function_param->by_ref
+                            ) === false) {
+                                return false;
+                            }
+                        } elseif ($arg->value->inferredType->isMixed()) {
+                            $codebase->analyzer->incrementMixedCount($statements_checker->getCheckedFilePath());
+
+                            if (IssueBuffer::accepts(
+                                new MixedArgument(
+                                    'Argument ' . ($argument_offset + 1) . $cased_method_id
+                                        . ' cannot be mixed, expecting array',
+                                    $code_location
+                                ),
+                                $statements_checker->getSuppressedIssues()
+                            )) {
+                                return false;
+                            }
+                        } else {
+                            if (IssueBuffer::accepts(
+                                new InvalidArgument(
+                                    'Argument ' . ($argument_offset + 1) . $cased_method_id
+                                        . ' expects array, ' . $arg->value->inferredType . ' provided',
+                                    $code_location
+                                ),
+                                $statements_checker->getSuppressedIssues()
+                            )) {
+                                return false;
+                            }
                         }
+
+                        break;
+                    }
+
+                    if (self::checkFunctionArgumentType(
+                        $statements_checker,
+                        $arg->value->inferredType,
+                        $fleshed_out_type,
+                        $cased_method_id,
+                        $argument_offset,
+                        new CodeLocation($statements_checker->getSource(), $arg->value),
+                        $arg->value,
+                        $context,
+                        $function_param->by_ref
+                    ) === false) {
+                        return false;
+                    }
+                }
+            } elseif ($function_param) {
+                $codebase->analyzer->incrementMixedCount($statements_checker->getCheckedFilePath());
+
+                if ($function_param->type && !$function_param->type->isMixed()) {
+                    if (IssueBuffer::accepts(
+                        new MixedArgument(
+                            'Argument ' . ($argument_offset + 1) . ' of ' . $cased_method_id
+                                . ' cannot be mixed, expecting ' . $function_param->type,
+                            new CodeLocation($statements_checker->getSource(), $arg->value)
+                        ),
+                        $statements_checker->getSuppressedIssues()
+                    )) {
+                        // fall through
                     }
                 }
             }
@@ -826,9 +946,9 @@ class CallChecker
     }
 
     /**
-     * @param   StatementsChecker                       $statements_checker
-     * @param   array<int, PhpParser\Node\Arg>          $args
-     * @param   string|null                             $method_id
+     * @param   StatementsChecker              $statements_checker
+     * @param   array<int, PhpParser\Node\Arg> $args
+     * @param   string                         $method_id
      *
      * @return  false|null
      */
@@ -874,10 +994,6 @@ class CallChecker
                 ? $closure_arg->value->inferredType
                 : null;
 
-        $file_checker = $statements_checker->getFileChecker();
-
-        $project_checker = $file_checker->project_checker;
-
         if ($closure_arg && $closure_arg_type) {
             $min_closure_param_count = $max_closure_param_count = count($array_arg_types);
 
@@ -886,145 +1002,347 @@ class CallChecker
             }
 
             foreach ($closure_arg_type->getTypes() as $closure_type) {
-                if (!$closure_type instanceof Type\Atomic\Fn) {
-                    continue;
-                }
-
-                if (count($closure_type->params) > $max_closure_param_count) {
-                    if (IssueBuffer::accepts(
-                        new TooManyArguments(
-                            'Too many arguments in closure for ' . $method_id,
-                            new CodeLocation($statements_checker->getSource(), $closure_arg)
-                        ),
-                        $statements_checker->getSuppressedIssues()
-                    )) {
-                        return false;
-                    }
-                } elseif (count($closure_type->params) < $min_closure_param_count) {
-                    if (IssueBuffer::accepts(
-                        new TooFewArguments(
-                            'You must supply a param in the closure for ' . $method_id,
-                            new CodeLocation($statements_checker->getSource(), $closure_arg)
-                        ),
-                        $statements_checker->getSuppressedIssues()
-                    )) {
-                        return false;
-                    }
-                }
-
-                // abandon attempt to validate closure params if we have an extra arg for ARRAY_FILTER
-                if ($method_id === 'array_filter' && count($args) > 2) {
-                    continue;
-                }
-
-                $closure_params = $closure_type->params;
-
-                $i = 0;
-
-                foreach ($closure_params as $closure_param) {
-                    if (!isset($array_arg_types[$i])) {
-                        ++$i;
-                        continue;
-                    }
-
-                    /** @var Type\Atomic\TArray */
-                    $array_arg_type = $array_arg_types[$i];
-
-                    $input_type = $array_arg_type->type_params[1];
-
-                    if ($input_type->isMixed()) {
-                        ++$i;
-                        continue;
-                    }
-
-                    $closure_param_type = $closure_param->type;
-
-                    if (!$closure_param_type) {
-                        ++$i;
-                        continue;
-                    }
-
-                    $type_match_found = TypeChecker::isContainedBy(
-                        $project_checker->codebase,
-                        $input_type,
-                        $closure_param_type,
-                        false,
-                        false,
-                        $scalar_type_match_found,
-                        $type_coerced,
-                        $type_coerced_from_mixed
-                    );
-
-                    if ($type_coerced) {
-                        if ($type_coerced_from_mixed) {
-                            if (IssueBuffer::accepts(
-                                new MixedTypeCoercion(
-                                    'First parameter of closure passed to function ' . $method_id . ' expects ' .
-                                        $closure_param_type . ', parent type ' . $input_type . ' provided',
-                                    new CodeLocation($statements_checker->getSource(), $closure_arg)
-                                ),
-                                $statements_checker->getSuppressedIssues()
-                            )) {
-                                // keep soldiering on
-                            }
-                        } else {
-                            if (IssueBuffer::accepts(
-                                new TypeCoercion(
-                                    'First parameter of closure passed to function ' . $method_id . ' expects ' .
-                                        $closure_param_type . ', parent type ' . $input_type . ' provided',
-                                    new CodeLocation($statements_checker->getSource(), $closure_arg)
-                                ),
-                                $statements_checker->getSuppressedIssues()
-                            )) {
-                                // keep soldiering on
-                            }
-                        }
-                    }
-
-                    if (!$type_coerced && !$type_match_found) {
-                        $types_can_be_identical = TypeChecker::canBeIdenticalTo(
-                            $project_checker->codebase,
-                            $input_type,
-                            $closure_param_type
-                        );
-
-                        if ($scalar_type_match_found) {
-                            if (IssueBuffer::accepts(
-                                new InvalidScalarArgument(
-                                    'First parameter of closure passed to function ' . $method_id . ' expects ' .
-                                        $closure_param_type . ', ' . $input_type . ' provided',
-                                    new CodeLocation($statements_checker->getSource(), $closure_arg)
-                                ),
-                                $statements_checker->getSuppressedIssues()
-                            )) {
-                                return false;
-                            }
-                        } elseif ($types_can_be_identical) {
-                            if (IssueBuffer::accepts(
-                                new PossiblyInvalidArgument(
-                                    'First parameter of closure passed to function ' . $method_id . ' expects ' .
-                                        $closure_param_type . ', possibly different type ' . $input_type . ' provided',
-                                    new CodeLocation($statements_checker->getSource(), $closure_arg)
-                                ),
-                                $statements_checker->getSuppressedIssues()
-                            )) {
-                                return false;
-                            }
-                        } elseif (IssueBuffer::accepts(
-                            new InvalidArgument(
-                                'First parameter of closure passed to function ' . $method_id . ' expects ' .
-                                    $closure_param_type . ', ' . $input_type . ' provided',
-                                new CodeLocation($statements_checker->getSource(), $closure_arg)
-                            ),
-                            $statements_checker->getSuppressedIssues()
-                        )) {
-                            return false;
-                        }
-                    }
-
-                    ++$i;
+                if (self::checkArrayFunctionClosureType(
+                    $statements_checker,
+                    $method_id,
+                    $closure_type,
+                    $closure_arg,
+                    $min_closure_param_count,
+                    $max_closure_param_count,
+                    $array_arg_types
+                ) === false) {
+                    return false;
                 }
             }
+        }
+    }
+
+    /**
+     * @param  string   $method_id
+     * @param  int      $min_closure_param_count
+     * @param  int      $max_closure_param_count [description]
+     * @param  (TArray|null)[] $array_arg_types
+     *
+     * @return false|null
+     */
+    private static function checkArrayFunctionClosureType(
+        StatementsChecker $statements_checker,
+        $method_id,
+        Type\Atomic $closure_type,
+        PhpParser\Node\Arg $closure_arg,
+        $min_closure_param_count,
+        $max_closure_param_count,
+        array $array_arg_types
+    ) {
+        $project_checker = $statements_checker->getFileChecker()->project_checker;
+
+        $codebase = $project_checker->codebase;
+
+        if (!$closure_type instanceof Type\Atomic\Fn) {
+            if (!$closure_arg->value instanceof PhpParser\Node\Scalar\String_
+                && !$closure_arg->value instanceof PhpParser\Node\Expr\Array_
+            ) {
+                return;
+            }
+
+            $function_ids = self::getFunctionIdsFromCallableArg(
+                $statements_checker,
+                $closure_arg->value
+            );
+
+            $closure_types = [];
+
+            foreach ($function_ids as $function_id) {
+                $function_id = strtolower($function_id);
+
+                if (strpos($function_id, '::') !== false) {
+                    $function_id_parts = explode('&', $function_id);
+
+                    foreach ($function_id_parts as $function_id_part) {
+                        list($callable_fq_class_name, $method_name) = explode('::', $function_id_part);
+
+                        switch ($callable_fq_class_name) {
+                            case 'self':
+                            case 'static':
+                            case 'parent':
+                                $container_class = $statements_checker->getFQCLN();
+
+                                if ($callable_fq_class_name === 'parent') {
+                                    $container_class = $statements_checker->getParentFQCLN();
+                                }
+
+                                if (!$container_class) {
+                                    continue 2;
+                                }
+
+                                $callable_fq_class_name = $container_class;
+                        }
+
+                        if (!$codebase->classOrInterfaceExists($callable_fq_class_name)) {
+                            return;
+                        }
+
+                        $function_id_part = $callable_fq_class_name . '::' . $method_name;
+
+                        try {
+                            $method_storage = $codebase->methods->getStorage($function_id_part);
+                        } catch (\UnexpectedValueException $e) {
+                            // the method may not exist, but we're suppressing that issue
+                            continue;
+                        }
+
+                        $closure_types[] = new Type\Atomic\Fn(
+                            'Closure',
+                            $method_storage->params,
+                            $method_storage->return_type ?: Type::getMixed()
+                        );
+                    }
+                } else {
+                    $function_storage = $codebase->functions->getStorage(
+                        $statements_checker,
+                        $function_id
+                    );
+
+                    if (CallMap::inCallMap($function_id)) {
+                        $callmap_params_options = CallMap::getParamsFromCallMap($function_id);
+
+                        if ($callmap_params_options === null) {
+                            throw new \UnexpectedValueException('This should not happen');
+                        }
+
+                        $passing_callmap_params_options = [];
+
+                        foreach ($callmap_params_options as $callmap_params_option) {
+                            $required_param_count = 0;
+
+                            foreach ($callmap_params_option as $i => $param) {
+                                if (!$param->is_optional && !$param->is_variadic) {
+                                    $required_param_count = $i + 1;
+                                }
+                            }
+
+                            if ($required_param_count <= $max_closure_param_count) {
+                                $passing_callmap_params_options[] = $callmap_params_option;
+                            }
+                        }
+
+                        if ($passing_callmap_params_options) {
+                            foreach ($passing_callmap_params_options as $passing_callmap_params_option) {
+                                $closure_types[] = new Type\Atomic\Fn(
+                                    'Closure',
+                                    $passing_callmap_params_option,
+                                    $function_storage->return_type ?: Type::getMixed()
+                                );
+                            }
+                        } else {
+                            $closure_types[] = new Type\Atomic\Fn(
+                                'Closure',
+                                $callmap_params_options[0],
+                                $function_storage->return_type ?: Type::getMixed()
+                            );
+                        }
+                    } else {
+                        $closure_types[] = new Type\Atomic\Fn(
+                            'Closure',
+                            $function_storage->params,
+                            $function_storage->return_type ?: Type::getMixed()
+                        );
+                    }
+                }
+            }
+        } else {
+            $closure_types = [$closure_type];
+        }
+
+        foreach ($closure_types as $closure_type) {
+            if ($closure_type->params === null) {
+                continue;
+            }
+
+            if (self::checkArrayFunctionClosureTypeArgs(
+                $statements_checker,
+                $method_id,
+                $closure_type,
+                $closure_arg,
+                $min_closure_param_count,
+                $max_closure_param_count,
+                $array_arg_types
+            ) === false) {
+                return false;
+            }
+        }
+    }
+
+    /**
+     * @param  string   $method_id
+     * @param  int      $min_closure_param_count
+     * @param  int      $max_closure_param_count [description]
+     * @param  (TArray|null)[] $array_arg_types
+     *
+     * @return false|null
+     */
+    private static function checkArrayFunctionClosureTypeArgs(
+        StatementsChecker $statements_checker,
+        $method_id,
+        Type\Atomic\Fn $closure_type,
+        PhpParser\Node\Arg $closure_arg,
+        $min_closure_param_count,
+        $max_closure_param_count,
+        array $array_arg_types
+    ) {
+        $project_checker = $statements_checker->getFileChecker()->project_checker;
+
+        $closure_params = $closure_type->params;
+
+        if ($closure_params === null) {
+            throw new \UnexpectedValueException('Closure params should not be null here');
+        }
+
+        $required_param_count = 0;
+
+        foreach ($closure_params as $i => $param) {
+            if (!$param->is_optional && !$param->is_variadic) {
+                $required_param_count = $i + 1;
+            }
+        }
+
+        if (count($closure_params) < $min_closure_param_count) {
+            $argument_text = $min_closure_param_count === 1 ? 'one argument' : $min_closure_param_count . ' arguments';
+
+            if (IssueBuffer::accepts(
+                new TooManyArguments(
+                    'The callable passed to ' . $method_id . ' will be called with ' . $argument_text . ', expecting '
+                        . $required_param_count,
+                    new CodeLocation($statements_checker->getSource(), $closure_arg)
+                ),
+                $statements_checker->getSuppressedIssues()
+            )) {
+                return false;
+            }
+        } elseif ($required_param_count > $max_closure_param_count) {
+            $argument_text = $max_closure_param_count === 1 ? 'one argument' : $max_closure_param_count . ' arguments';
+
+            if (IssueBuffer::accepts(
+                new TooFewArguments(
+                    'The callable passed to ' . $method_id . ' will be called with ' . $argument_text . ', expecting '
+                        . $required_param_count,
+                    new CodeLocation($statements_checker->getSource(), $closure_arg)
+                ),
+                $statements_checker->getSuppressedIssues()
+            )) {
+                return false;
+            }
+        }
+
+        // abandon attempt to validate closure params if we have an extra arg for ARRAY_FILTER
+        if ($method_id === 'array_filter' && $max_closure_param_count > 1) {
+            return;
+        }
+
+        $i = 0;
+
+        foreach ($closure_params as $closure_param) {
+            if (!isset($array_arg_types[$i])) {
+                ++$i;
+                continue;
+            }
+
+            /** @var Type\Atomic\TArray */
+            $array_arg_type = $array_arg_types[$i];
+
+            $input_type = $array_arg_type->type_params[1];
+
+            if ($input_type->isMixed()) {
+                ++$i;
+                continue;
+            }
+
+            $closure_param_type = $closure_param->type;
+
+            if (!$closure_param_type) {
+                ++$i;
+                continue;
+            }
+
+            $type_match_found = TypeChecker::isContainedBy(
+                $project_checker->codebase,
+                $input_type,
+                $closure_param_type,
+                false,
+                false,
+                $scalar_type_match_found,
+                $type_coerced,
+                $type_coerced_from_mixed
+            );
+
+            if ($type_coerced) {
+                if ($type_coerced_from_mixed) {
+                    if (IssueBuffer::accepts(
+                        new MixedTypeCoercion(
+                            'First parameter of closure passed to function ' . $method_id . ' expects ' .
+                                $closure_param_type . ', parent type ' . $input_type . ' provided',
+                            new CodeLocation($statements_checker->getSource(), $closure_arg)
+                        ),
+                        $statements_checker->getSuppressedIssues()
+                    )) {
+                        // keep soldiering on
+                    }
+                } else {
+                    if (IssueBuffer::accepts(
+                        new TypeCoercion(
+                            'First parameter of closure passed to function ' . $method_id . ' expects ' .
+                                $closure_param_type . ', parent type ' . $input_type . ' provided',
+                            new CodeLocation($statements_checker->getSource(), $closure_arg)
+                        ),
+                        $statements_checker->getSuppressedIssues()
+                    )) {
+                        // keep soldiering on
+                    }
+                }
+            }
+
+            if (!$type_coerced && !$type_match_found) {
+                $types_can_be_identical = TypeChecker::canBeIdenticalTo(
+                    $project_checker->codebase,
+                    $input_type,
+                    $closure_param_type
+                );
+
+                if ($scalar_type_match_found) {
+                    if (IssueBuffer::accepts(
+                        new InvalidScalarArgument(
+                            'First parameter of closure passed to function ' . $method_id . ' expects ' .
+                                $closure_param_type . ', ' . $input_type . ' provided',
+                            new CodeLocation($statements_checker->getSource(), $closure_arg)
+                        ),
+                        $statements_checker->getSuppressedIssues()
+                    )) {
+                        return false;
+                    }
+                } elseif ($types_can_be_identical) {
+                    if (IssueBuffer::accepts(
+                        new PossiblyInvalidArgument(
+                            'First parameter of closure passed to function ' . $method_id . ' expects ' .
+                                $closure_param_type . ', possibly different type ' . $input_type . ' provided',
+                            new CodeLocation($statements_checker->getSource(), $closure_arg)
+                        ),
+                        $statements_checker->getSuppressedIssues()
+                    )) {
+                        return false;
+                    }
+                } elseif (IssueBuffer::accepts(
+                    new InvalidArgument(
+                        'First parameter of closure passed to function ' . $method_id . ' expects ' .
+                            $closure_param_type . ', ' . $input_type . ' provided',
+                        new CodeLocation($statements_checker->getSource(), $closure_arg)
+                    ),
+                    $statements_checker->getSuppressedIssues()
+                )) {
+                    return false;
+                }
+            }
+
+            ++$i;
         }
     }
 
@@ -1234,7 +1552,36 @@ class CallChecker
             || $input_expr instanceof PhpParser\Node\Expr\Array_
         ) {
             foreach ($param_type->getTypes() as $param_type_part) {
-                if ($param_type_part instanceof TCallable) {
+                if ($param_type_part instanceof TClassString
+                    && $input_expr instanceof PhpParser\Node\Scalar\String_
+                ) {
+                    if (ClassLikeChecker::checkFullyQualifiedClassLikeName(
+                        $statements_checker,
+                        $input_expr->value,
+                        $code_location,
+                        $statements_checker->getSuppressedIssues()
+                    ) === false
+                    ) {
+                        return false;
+                    }
+                } elseif ($param_type_part instanceof TArray
+                    && isset($param_type_part->type_params[1]->getTypes()['class-string'])
+                    && $input_expr instanceof PhpParser\Node\Expr\Array_
+                ) {
+                    foreach ($input_expr->items as $item) {
+                        if ($item && $item->value instanceof PhpParser\Node\Scalar\String_) {
+                            if (ClassLikeChecker::checkFullyQualifiedClassLikeName(
+                                $statements_checker,
+                                $item->value->value,
+                                $code_location,
+                                $statements_checker->getSuppressedIssues()
+                            ) === false
+                            ) {
+                                return false;
+                            }
+                        }
+                    }
+                } elseif ($param_type_part instanceof TCallable) {
                     $function_ids = self::getFunctionIdsFromCallableArg(
                         $statements_checker,
                         $input_expr
@@ -1242,9 +1589,33 @@ class CallChecker
 
                     foreach ($function_ids as $function_id) {
                         if (strpos($function_id, '::') !== false) {
-                            list($callable_fq_class_name) = explode('::', $function_id);
+                            $function_id_parts = explode('&', $function_id);
 
-                            if (!in_array(strtolower($callable_fq_class_name), ['self', 'static', 'parent'], true)) {
+                            $non_existent_method_ids = [];
+                            $has_valid_method = false;
+
+                            foreach ($function_id_parts as $function_id_part) {
+                                list($callable_fq_class_name, $method_name) = explode('::', $function_id_part);
+
+                                switch ($callable_fq_class_name) {
+                                    case 'self':
+                                    case 'static':
+                                    case 'parent':
+                                        $container_class = $statements_checker->getFQCLN();
+
+                                        if ($callable_fq_class_name === 'parent') {
+                                            $container_class = $statements_checker->getParentFQCLN();
+                                        }
+
+                                        if (!$container_class) {
+                                            continue 2;
+                                        }
+
+                                        $callable_fq_class_name = $container_class;
+                                }
+
+                                $function_id_part = $callable_fq_class_name . '::' . $method_name;
+
                                 if (ClassLikeChecker::checkFullyQualifiedClassLikeName(
                                     $statements_checker,
                                     $callable_fq_class_name,
@@ -1255,9 +1626,23 @@ class CallChecker
                                     return false;
                                 }
 
+                                if (!$codebase->classOrInterfaceExists($callable_fq_class_name)) {
+                                    return;
+                                }
+
+                                if (!$codebase->methodExists($function_id_part)
+                                    && !$codebase->methodExists($callable_fq_class_name . '::__call')
+                                ) {
+                                    $non_existent_method_ids[] = $function_id_part;
+                                } else {
+                                    $has_valid_method = true;
+                                }
+                            }
+
+                            if (!$has_valid_method && !$param_type->hasString() && !$param_type->hasArray()) {
                                 if (MethodChecker::checkMethodExists(
                                     $project_checker,
-                                    $function_id,
+                                    $non_existent_method_ids[0],
                                     $code_location,
                                     $statements_checker->getSuppressedIssues()
                                 ) === false
@@ -1266,10 +1651,11 @@ class CallChecker
                                 }
                             }
                         } else {
-                            if (self::checkFunctionExists(
+                            if (!$param_type->hasString() && !$param_type->hasArray() && self::checkFunctionExists(
                                 $statements_checker,
                                 $function_id,
-                                $code_location
+                                $code_location,
+                                false
                             ) === false
                             ) {
                                 return false;
@@ -1319,7 +1705,7 @@ class CallChecker
      * @return string[]
      */
     public static function getFunctionIdsFromCallableArg(
-        StatementsChecker $statements_checker,
+        \Psalm\FileSource $file_source,
         $callable_arg
     ) {
         if ($callable_arg instanceof PhpParser\Node\Scalar\String_) {
@@ -1346,13 +1732,13 @@ class CallChecker
         }
 
         if ($class_arg instanceof PhpParser\Node\Expr\ClassConstFetch
-            && is_string($class_arg->name)
-            && strtolower($class_arg->name) === 'class'
+            && $class_arg->name instanceof PhpParser\Node\Identifier
+            && strtolower($class_arg->name->name) === 'class'
             && $class_arg->class instanceof PhpParser\Node\Name
         ) {
             $fq_class_name = ClassLikeChecker::getFQCLNFromNameObject(
                 $class_arg->class,
-                $statements_checker->getAliases()
+                $file_source->getAliases()
             );
 
             return [$fq_class_name . '::' . $method_name_arg->value];
@@ -1366,7 +1752,15 @@ class CallChecker
 
         foreach ($class_arg->inferredType->getTypes() as $type_part) {
             if ($type_part instanceof TNamedObject) {
-                $method_ids[] = $type_part . '::' . $method_name_arg->value;
+                $method_id = $type_part->value . '::' . $method_name_arg->value;
+
+                if ($type_part->extra_types) {
+                    foreach ($type_part->extra_types as $extra_type) {
+                        $method_id .= '&' . $extra_type->value . '::' . $method_name_arg->value;
+                    }
+                }
+
+                $method_ids[] = $method_id;
             }
         }
 
@@ -1377,13 +1771,15 @@ class CallChecker
      * @param  StatementsChecker    $statements_checker
      * @param  string               $function_id
      * @param  CodeLocation         $code_location
+     * @param  bool                 $can_be_in_root_scope if true, the function can be shortened to the root version
      *
      * @return bool
      */
     protected static function checkFunctionExists(
         StatementsChecker $statements_checker,
         &$function_id,
-        CodeLocation $code_location
+        CodeLocation $code_location,
+        $can_be_in_root_scope
     ) {
         $cased_function_id = $function_id;
         $function_id = strtolower($function_id);
@@ -1393,7 +1789,8 @@ class CallChecker
         if (!$codebase->functions->functionExists($statements_checker, $function_id)) {
             $root_function_id = preg_replace('/.*\\\/', '', $function_id);
 
-            if ($function_id !== $root_function_id
+            if ($can_be_in_root_scope
+                && $function_id !== $root_function_id
                 && $codebase->functions->functionExists($statements_checker, $root_function_id)
             ) {
                 $function_id = $root_function_id;
@@ -1413,5 +1810,96 @@ class CallChecker
         }
 
         return true;
+    }
+
+    /**
+     * @param  StatementsChecker    $statements_checker
+     * @param  string               $function_id
+     * @param  bool                 $can_be_in_root_scope if true, the function can be shortened to the root version
+     *
+     * @return string
+     */
+    protected static function getExistingFunctionId(
+        StatementsChecker $statements_checker,
+        $function_id,
+        $can_be_in_root_scope
+    ) {
+        $function_id = strtolower($function_id);
+
+        $codebase = $statements_checker->getFileChecker()->project_checker->codebase;
+
+        if ($codebase->functions->functionExists($statements_checker, $function_id)) {
+            return $function_id;
+        }
+
+        if (!$can_be_in_root_scope) {
+            return $function_id;
+        }
+
+        $root_function_id = preg_replace('/.*\\\/', '', $function_id);
+
+        if ($function_id !== $root_function_id
+            && $codebase->functions->functionExists($statements_checker, $root_function_id)
+        ) {
+            return $root_function_id;
+        }
+
+        return $function_id;
+    }
+
+    /**
+     * @param  \Psalm\Storage\Assertion[] $assertions
+     * @param  array<int, PhpParser\Node\Arg> $args
+     * @param  Context           $context
+     * @param  StatementsChecker $statements_checker
+     *
+     * @return void
+     */
+    protected static function applyAssertionsToContext(
+        array $assertions,
+        array $args,
+        Context $context,
+        StatementsChecker $statements_checker
+    ) {
+        $type_assertions = [];
+
+        foreach ($assertions as $assertion) {
+            if (is_int($assertion->var_id)) {
+                if (!isset($args[$assertion->var_id])) {
+                    continue;
+                }
+
+                $arg_value = $args[$assertion->var_id]->value;
+
+                $arg_var_id = ExpressionChecker::getArrayVarId($arg_value, null, $statements_checker);
+
+                if ($arg_var_id) {
+                    $type_assertions[$arg_var_id] = $assertion->rule;
+                }
+            } else {
+                $type_assertions[$assertion->var_id] = $assertion->rule;
+            }
+        }
+
+        $changed_vars = [];
+
+        // while in an and, we allow scope to boil over to support
+        // statements of the form if ($x && $x->foo())
+        $op_vars_in_scope = \Psalm\Type\Reconciler::reconcileKeyedTypes(
+            $type_assertions,
+            $context->vars_in_scope,
+            $changed_vars,
+            [],
+            $statements_checker,
+            null
+        );
+
+        foreach ($changed_vars as $changed_var) {
+            if (isset($op_vars_in_scope[$changed_var])) {
+                $op_vars_in_scope[$changed_var]->from_docblock = true;
+            }
+        }
+
+        $context->vars_in_scope = $op_vars_in_scope;
     }
 }

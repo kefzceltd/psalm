@@ -244,6 +244,50 @@ class MethodSignatureTest extends TestCase
                       }
                     }',
             ],
+            'allowNoChildClassPropertyWhenMixed' => [
+                '<?php
+                    class A implements Serializable {
+                        /** @var int */
+                        private $id = 1;
+
+                        public function unserialize($serialized) : void
+                        {
+                            [
+                                $this->id,
+                            ] = (array) \unserialize((string) $serialized);
+                        }
+
+                        public function serialize() : string
+                        {
+                            return serialize([$this->id]);
+                        }
+                    }',
+            ],
+            'clashWithCallMapClass' => [
+                '<?php
+                    class HaruDestination {}
+                    class AClass
+                    {
+                        public function get(): HaruDestination
+                        {
+                            return new HaruDestination;
+                        }
+                    }',
+            ],
+            'classWithTraitExtendsNonAbstractWithMethod' => [
+                '<?php
+                    class A {
+                        public function foo() : void {}
+                    }
+
+                    trait T {
+                        abstract public function foo() : void;
+                    }
+
+                    class B extends A {
+                        use T;
+                    }',
+            ],
         ];
     }
 
@@ -399,6 +443,42 @@ class MethodSignatureTest extends TestCase
                       }
                     }',
                 'error_message' => 'MethodSignatureMismatch',
+            ],
+            'abstractExtendsNonAbstractWithMethod' => [
+                '<?php
+                    class A {
+                        public function foo() : void {}
+                    }
+
+                    abstract class B extends A {
+                        abstract public function foo() : void;
+                    }',
+                'error_message' => 'MethodSignatureMismatch',
+            ],
+            'traitReturnTypeMismatch' => [
+                '<?php
+                    class A {
+                        public function foo() : void {}
+                    }
+
+                    trait T {
+                        abstract public function foo() : string;
+                    }
+
+                    class B extends A {
+                        use T;
+                    }',
+                'error_message' => 'MethodSignatureMismatch',
+            ],
+            'mustOmitReturnType' => [
+                '<?php
+                    class A
+                    {
+                        public function __construct(): void
+                        {
+                        }
+                    }',
+                'error_message' => 'MethodSignatureMustOmitReturnType',
             ],
         ];
     }

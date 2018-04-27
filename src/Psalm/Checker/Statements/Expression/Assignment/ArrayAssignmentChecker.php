@@ -18,7 +18,7 @@ class ArrayAssignmentChecker
      * @param   Context                             $context
      * @param   Type\Union                          $assignment_value_type
      *
-     * @return  false|null
+     * @return  void
      * @psalm-suppress MixedMethodCall - some funky logic here
      */
     public static function analyze(
@@ -45,8 +45,6 @@ class ArrayAssignmentChecker
         if (!isset($stmt->var->inferredType) && $var_id) {
             $context->vars_in_scope[$var_id] = Type::getMixed();
         }
-
-        return null;
     }
 
     /**
@@ -107,14 +105,13 @@ class ArrayAssignmentChecker
 
         $var_id_additions = [];
 
-        $real_var_id = true;
+        $full_var_id = true;
 
         $child_stmt = null;
 
         // First go from the root element up, and go as far as we can to figure out what
         // array types there are
         while ($child_stmts) {
-            /** @var PhpParser\Node\Expr\ArrayDimFetch */
             $child_stmt = array_shift($child_stmts);
 
             if (count($child_stmts)) {
@@ -136,13 +133,19 @@ class ArrayAssignmentChecker
 
                 if ($child_stmt->dim instanceof PhpParser\Node\Scalar\String_) {
                     $var_id_additions[] = '[\'' . $child_stmt->dim->value . '\']';
+                } elseif ($child_stmt->dim instanceof PhpParser\Node\Scalar\LNumber) {
+                    $var_id_additions[] = '[' . $child_stmt->dim->value . ']';
+                } elseif ($child_stmt->dim instanceof PhpParser\Node\Expr\Variable
+                    && is_string($child_stmt->dim->name)
+                ) {
+                    $var_id_additions[] = '[$' . $child_stmt->dim->name . ']';
                 } else {
                     $var_id_additions[] = '[' . $child_stmt->dim->inferredType . ']';
-                    $real_var_id = false;
+                    $full_var_id = false;
                 }
             } else {
                 $var_id_additions[] = '';
-                $real_var_id = false;
+                $full_var_id = false;
             }
 
             if (!isset($child_stmt->var->inferredType)) {
@@ -173,12 +176,13 @@ class ArrayAssignmentChecker
             $current_dim = $child_stmt->dim;
 
             if ($child_stmt->var->inferredType->isMixed()) {
+                $full_var_id = false;
                 break;
             }
         }
 
         if ($root_var_id
-            && $real_var_id
+            && $full_var_id
             && isset($child_stmt->var->inferredType)
             && !$child_stmt->var->inferredType->hasObjectType()
         ) {
@@ -236,6 +240,7 @@ class ArrayAssignmentChecker
             }
 
             $new_child_type->removeType('null');
+            $new_child_type->possibly_undefined = false;
 
             if (!$child_stmt->inferredType->hasObjectType()) {
                 $child_stmt->inferredType = $new_child_type;
@@ -310,11 +315,11 @@ class ArrayAssignmentChecker
         $root_array_expr->inferredType = $root_type;
 
         if ($root_array_expr instanceof PhpParser\Node\Expr\PropertyFetch) {
-            if (is_string($root_array_expr->name)) {
+            if ($root_array_expr->name instanceof PhpParser\Node\Identifier) {
                 PropertyAssignmentChecker::analyzeInstance(
                     $statements_checker,
                     $root_array_expr,
-                    $root_array_expr->name,
+                    $root_array_expr->name->name,
                     null,
                     $root_type,
                     $context,

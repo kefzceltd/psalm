@@ -55,9 +55,9 @@ class ConfigTest extends TestCase
              */
             function ($issue_name) {
                 return !empty($issue_name)
-                    && $issue_name !== 'CodeError'
-                    && $issue_name !== 'CodeIssue'
-                    && $issue_name !== 'FixableCodeIssue';
+                    && $issue_name !== 'MethodIssue'
+                    && $issue_name !== 'ClassIssue'
+                    && $issue_name !== 'CodeIssue';
             }
         );
     }
@@ -72,7 +72,9 @@ class ConfigTest extends TestCase
         return new \Psalm\Checker\ProjectChecker(
             $config,
             $this->file_provider,
-            new Provider\FakeParserCacheProvider()
+            new Provider\FakeParserCacheProvider(),
+            new \Psalm\Provider\NoCache\NoFileStorageCacheProvider(),
+            new \Psalm\Provider\NoCache\NoClassLikeStorageCacheProvider()
         );
     }
 
@@ -178,6 +180,16 @@ class ConfigTest extends TestCase
                                 <directory name="src/Psalm/Checker" />
                             </errorLevel>
                         </MissingReturnType>
+                        <UndefinedClass>
+                            <errorLevel type="suppress">
+                                <referencedClass name="Psalm\Badger" />
+                            </errorLevel>
+                        </UndefinedClass>
+                        <UndefinedMethod>
+                            <errorLevel type="suppress">
+                                <referencedMethod name="Psalm\Bodger::find1" />
+                            </errorLevel>
+                        </UndefinedMethod>
                     </issueHandlers>
                 </psalm>'
             )
@@ -200,6 +212,38 @@ class ConfigTest extends TestCase
                 realpath('src/Psalm/Checker/FileChecker.php')
             )
         );
+
+        $this->assertSame(
+            'suppress',
+            $config->getReportingLevelForClass(
+                'UndefinedClass',
+                'Psalm\Badger'
+            )
+        );
+
+        $this->assertSame(
+            'error',
+            $config->getReportingLevelForClass(
+                'UndefinedClass',
+                'Psalm\Bodger'
+            )
+        );
+
+        $this->assertSame(
+            'suppress',
+            $config->getReportingLevelForMethod(
+                'UndefinedMethod',
+                'Psalm\Bodger::find1'
+            )
+        );
+
+        $this->assertSame(
+            'error',
+            $config->getReportingLevelForMethod(
+                'UndefinedMethod',
+                'Psalm\Bodger::find2'
+            )
+        );
     }
 
     /**
@@ -216,7 +260,7 @@ class ConfigTest extends TestCase
                  * @return string
                  */
                 function ($issue_name) {
-                    return '<' . $issue_name . ' errorLevel="suppress" />' . PHP_EOL;
+                    return '<' . $issue_name . ' errorLevel="suppress" />' . "\n";
                 },
                 self::getAllIssues()
             )
@@ -387,6 +431,73 @@ class ConfigTest extends TestCase
         $this->addFile(
             $file_path,
             '<?php
+                echo barBar("hello");'
+        );
+
+        $this->analyzeFile($file_path, new Context());
+    }
+
+    /**
+     * @return void
+     */
+    public function testStubFunctionWithFunctionExists()
+    {
+        $this->project_checker = $this->getProjectCheckerWithConfig(
+            TestConfig::loadFromXML(
+                dirname(__DIR__),
+                '<?xml version="1.0"?>
+                <psalm>
+                    <projectFiles>
+                        <directory name="src" />
+                    </projectFiles>
+
+                    <stubs>
+                        <file name="tests/stubs/custom_functions.php" />
+                    </stubs>
+                </psalm>'
+            )
+        );
+
+        $file_path = getcwd() . '/src/somefile.php';
+
+        $this->addFile(
+            $file_path,
+            '<?php
+                function_exists("fooBar");
+                echo barBar("hello");'
+        );
+
+        $this->analyzeFile($file_path, new Context());
+    }
+
+    /**
+     * @return void
+     */
+    public function testNamespacedStubFunctionWithFunctionExists()
+    {
+        $this->project_checker = $this->getProjectCheckerWithConfig(
+            TestConfig::loadFromXML(
+                dirname(__DIR__),
+                '<?xml version="1.0"?>
+                <psalm>
+                    <projectFiles>
+                        <directory name="src" />
+                    </projectFiles>
+
+                    <stubs>
+                        <file name="tests/stubs/custom_functions.php" />
+                    </stubs>
+                </psalm>'
+            )
+        );
+
+        $file_path = getcwd() . '/src/somefile.php';
+
+        $this->addFile(
+            $file_path,
+            '<?php
+                namespace A;
+                function_exists("fooBar");
                 echo barBar("hello");'
         );
 
@@ -586,7 +697,7 @@ class ConfigTest extends TestCase
      */
     public function testTemplatedFiles()
     {
-        foreach (['1.xml', '2.xml', '3.xml', '4.xml', '5.xml'] as $file_name) {
+        foreach (['1.xml', '2.xml', '3.xml', '4.xml', '5.xml', '6.xml', '7.xml', '8.xml'] as $file_name) {
             Config::loadFromXMLFile(
                 realpath(dirname(__DIR__) . '/assets/config_levels/' . $file_name),
                 dirname(__DIR__)

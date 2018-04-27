@@ -12,6 +12,7 @@ use Psalm\Checker\Statements\Block\WhileChecker;
 use Psalm\Checker\Statements\Expression\Assignment\PropertyAssignmentChecker;
 use Psalm\Checker\Statements\Expression\BinaryOpChecker;
 use Psalm\Checker\Statements\Expression\CallChecker;
+use Psalm\Checker\Statements\Expression\Fetch\VariableFetchChecker;
 use Psalm\Checker\Statements\ExpressionChecker;
 use Psalm\Checker\Statements\ReturnChecker;
 use Psalm\Checker\Statements\ThrowChecker;
@@ -83,7 +84,7 @@ class StatementsChecker extends SourceChecker implements StatementsSource
     /**
      * Checks an array of statements for validity
      *
-     * @param  array<PhpParser\Node\Stmt|PhpParser\Node\Expr>   $stmts
+     * @param  array<PhpParser\Node\Stmt>   $stmts
      * @param  Context                                          $context
      * @param  Context|null                                     $global_context
      * @param  bool                                             $root_scope
@@ -103,7 +104,7 @@ class StatementsChecker extends SourceChecker implements StatementsSource
         foreach ($stmts as $stmt) {
             if ($stmt instanceof PhpParser\Node\Stmt\Function_) {
                 $function_checker = new FunctionChecker($stmt, $this->source);
-                $this->function_checkers[strtolower($stmt->name)] = $function_checker;
+                $this->function_checkers[strtolower($stmt->name->name)] = $function_checker;
             }
         }
 
@@ -136,9 +137,13 @@ class StatementsChecker extends SourceChecker implements StatementsSource
                 break;
             }
 
+            if ($project_checker->debug_lines) {
+                echo $this->getFilePath() . ':' . $stmt->getLine() . "\n";
+            }
+
             /*
-            if (isset($context->vars_in_scope['$tag']) && !$stmt instanceof PhpParser\Node\Stmt\Nop) {
-                var_dump($stmt->getLine() . ' ' . $context->vars_in_scope['$tag']);
+            if (isset($context->vars_in_scope['$cumulative']) && !$stmt instanceof PhpParser\Node\Stmt\Nop) {
+                var_dump($stmt->getLine() . ' ' . $context->vars_in_scope['$cumulative']);
             }
             */
 
@@ -170,15 +175,25 @@ class StatementsChecker extends SourceChecker implements StatementsSource
             }
 
             if ($stmt instanceof PhpParser\Node\Stmt\If_) {
-                IfChecker::analyze($this, $stmt, $context, $loop_scope);
+                if (IfChecker::analyze($this, $stmt, $context, $loop_scope) === false) {
+                    return false;
+                }
             } elseif ($stmt instanceof PhpParser\Node\Stmt\TryCatch) {
-                TryChecker::analyze($this, $stmt, $context, $loop_scope);
+                if (TryChecker::analyze($this, $stmt, $context, $loop_scope) === false) {
+                    return false;
+                }
             } elseif ($stmt instanceof PhpParser\Node\Stmt\For_) {
-                ForChecker::analyze($this, $stmt, $context);
+                if (ForChecker::analyze($this, $stmt, $context) === false) {
+                    return false;
+                }
             } elseif ($stmt instanceof PhpParser\Node\Stmt\Foreach_) {
-                ForeachChecker::analyze($this, $stmt, $context);
+                if (ForeachChecker::analyze($this, $stmt, $context) === false) {
+                    return false;
+                }
             } elseif ($stmt instanceof PhpParser\Node\Stmt\While_) {
-                WhileChecker::analyze($this, $stmt, $context);
+                if (WhileChecker::analyze($this, $stmt, $context) === false) {
+                    return false;
+                }
             } elseif ($stmt instanceof PhpParser\Node\Stmt\Do_) {
                 DoChecker::analyze($this, $stmt, $context);
             } elseif ($stmt instanceof PhpParser\Node\Stmt\Const_) {
@@ -304,8 +319,25 @@ class StatementsChecker extends SourceChecker implements StatementsSource
                     }
                 }
             } elseif ($stmt instanceof PhpParser\Node\Stmt\Function_) {
+                foreach ($stmt->stmts as $function_stmt) {
+                    if ($function_stmt instanceof PhpParser\Node\Stmt\Global_) {
+                        foreach ($function_stmt->vars as $var) {
+                            if ($var instanceof PhpParser\Node\Expr\Variable) {
+                                if (is_string($var->name)) {
+                                    $var_id = '$' . $var->name;
+
+                                    // registers variable in global context
+                                    $context->hasVariable($var_id, $this);
+                                }
+                            }
+                        }
+                    } elseif (!$function_stmt instanceof PhpParser\Node\Stmt\Nop) {
+                        break;
+                    }
+                }
+
                 if (!$project_checker->codebase->register_global_functions) {
-                    $function_id = strtolower($stmt->name);
+                    $function_id = strtolower($stmt->name->name);
                     $function_context = new Context($context->self);
                     $function_context->collect_references = $project_checker->codebase->collect_references;
                     $this->function_checkers[$function_id]->analyze($function_context, $context);
@@ -313,7 +345,6 @@ class StatementsChecker extends SourceChecker implements StatementsSource
                     $config = Config::getInstance();
 
                     if ($config->reportIssueInFile('InvalidReturnType', $this->getFilePath())) {
-                        /** @var string */
                         $method_id = $this->function_checkers[$function_id]->getMethodId();
 
                         $function_storage = $codebase->functions->getStorage(
@@ -325,15 +356,14 @@ class StatementsChecker extends SourceChecker implements StatementsSource
                         $return_type_location = $function_storage->return_type_location;
 
                         $this->function_checkers[$function_id]->verifyReturnType(
-                            $project_checker,
                             $return_type,
                             $this->getFQCLN(),
                             $return_type_location
                         );
                     }
                 }
-            } elseif ($stmt instanceof PhpParser\Node\Expr) {
-                if (ExpressionChecker::analyze($this, $stmt, $context) === false) {
+            } elseif ($stmt instanceof PhpParser\Node\Stmt\Expression) {
+                if (ExpressionChecker::analyze($this, $stmt->expr, $context) === false) {
                     return false;
                 }
             } elseif ($stmt instanceof PhpParser\Node\Stmt\InlineHTML) {
@@ -353,6 +383,10 @@ class StatementsChecker extends SourceChecker implements StatementsSource
 
                 foreach ($stmt->vars as $var) {
                     if ($var instanceof PhpParser\Node\Expr\Variable) {
+                        if ($global_context && VariableFetchChecker::analyze($this, $var, $global_context) === false) {
+                            return false;
+                        }
+
                         if (is_string($var->name)) {
                             $var_id = '$' . $var->name;
 
@@ -362,8 +396,6 @@ class StatementsChecker extends SourceChecker implements StatementsSource
                                     : Type::getMixed();
 
                             $context->vars_possibly_in_scope[$var_id] = true;
-                        } else {
-                            ExpressionChecker::analyze($this, $var, $context);
                         }
                     }
                 }
@@ -377,7 +409,7 @@ class StatementsChecker extends SourceChecker implements StatementsSource
                                 if (PropertyAssignmentChecker::analyzeInstance(
                                     $this,
                                     $prop,
-                                    $prop->name,
+                                    $prop->name->name,
                                     $prop->default,
                                     $prop->default->inferredType,
                                     $context
@@ -405,7 +437,7 @@ class StatementsChecker extends SourceChecker implements StatementsSource
                     if (isset($const->value->inferredType) && !$const->value->inferredType->isMixed()) {
                         $codebase->classlikes->setConstantType(
                             (string)$this->getFQCLN(),
-                            $const->name,
+                            $const->name->name,
                             $const->value->inferredType,
                             $const_visibility
                         );
@@ -413,7 +445,7 @@ class StatementsChecker extends SourceChecker implements StatementsSource
                 }
             } elseif ($stmt instanceof PhpParser\Node\Stmt\Class_) {
                 try {
-                    $class_checker = (new ClassChecker($stmt, $this->source, $stmt->name));
+                    $class_checker = new ClassChecker($stmt, $this->source, $stmt->name ? $stmt->name->name : null);
                     $class_checker->analyze(null, $global_context);
                 } catch (\InvalidArgumentException $e) {
                     // disregard this exception, we'll likely see it elsewhere in the form
@@ -510,7 +542,8 @@ class StatementsChecker extends SourceChecker implements StatementsSource
 
         if ($root_scope
             && $context->collect_references
-            && !$project_checker->find_references_to
+            && !$context->collect_initializations
+            && $project_checker->codebase->find_unused_code
             && $context->check_variables
         ) {
             $this->checkUnreferencedVars();
@@ -523,7 +556,7 @@ class StatementsChecker extends SourceChecker implements StatementsSource
                 $newline_pos = (int)strrpos($file_contents, "\n", $branch_point - strlen($file_contents)) + 1;
                 $indentation = substr($file_contents, $newline_pos, $branch_point - $newline_pos);
                 FileManipulationBuffer::add($this->getFilePath(), [
-                    new FileManipulation($branch_point, $branch_point, $var_id . ' = null;' . PHP_EOL . $indentation),
+                    new FileManipulation($branch_point, $branch_point, $var_id . ' = null;' . "\n" . $indentation),
                 ]);
             }
         }
@@ -534,7 +567,7 @@ class StatementsChecker extends SourceChecker implements StatementsSource
     /**
      * @return void
      */
-    private function checkUnreferencedVars()
+    public function checkUnreferencedVars()
     {
         $source = $this->getSource();
         $function_storage = $source instanceof FunctionLikeChecker ? $source->getFunctionLikeStorage($this) : null;
@@ -574,9 +607,27 @@ class StatementsChecker extends SourceChecker implements StatementsSource
             }
 
             if ($context->check_variables) {
-                $context->vars_in_scope['$' . $var->name] = Type::getMixed();
-                $context->vars_possibly_in_scope['$' . $var->name] = true;
-                $this->registerVariable('$' . $var->name, new CodeLocation($this, $stmt), null);
+                if (!is_string($var->var->name)) {
+                    continue;
+                }
+
+                $var_id = '$' . $var->var->name;
+
+                $context->vars_in_scope[$var_id] = Type::getMixed();
+                $context->vars_possibly_in_scope[$var_id] = true;
+                $context->assigned_var_ids[$var_id] = true;
+
+                $location = new CodeLocation($this, $stmt);
+
+                if ($context->collect_references) {
+                    $context->unreferenced_vars[$var_id] = $location;
+                }
+
+                $this->registerVariable(
+                    $var_id,
+                    $location,
+                    $context->branch_point
+                );
             }
         }
 
@@ -682,10 +733,14 @@ class StatementsChecker extends SourceChecker implements StatementsSource
         if ($stmt instanceof PhpParser\Node\Expr\ClassConstFetch) {
             if ($stmt->class instanceof PhpParser\Node\Name
                 && $stmt->class->parts !== ['static']
-                && is_string($stmt->name)
-                && isset($existing_class_constants[$stmt->name])
+                && $stmt->name instanceof PhpParser\Node\Identifier
+                && isset($existing_class_constants[$stmt->name->name])
             ) {
-                return $existing_class_constants[$stmt->name];
+                return $existing_class_constants[$stmt->name->name];
+            }
+
+            if ($stmt->name instanceof PhpParser\Node\Identifier && strtolower($stmt->name->name) === 'class') {
+                return Type::getClassString();
             }
 
             return null;
@@ -837,7 +892,7 @@ class StatementsChecker extends SourceChecker implements StatementsSource
             ExpressionChecker::analyze($this, $const->value, $context);
 
             $this->setConstType(
-                $const->name,
+                $const->name->name,
                 isset($const->value->inferredType) ? $const->value->inferredType : Type::getMixed(),
                 $context
             );
@@ -871,7 +926,6 @@ class StatementsChecker extends SourceChecker implements StatementsSource
 
         if ($fq_const_name) {
             $const_name_parts = explode('\\', $fq_const_name);
-            /** @var string */
             $const_name = array_pop($const_name_parts);
             $namespace_name = implode('\\', $const_name_parts);
             $namespace_constants = NamespaceChecker::getConstantsForNamespace(

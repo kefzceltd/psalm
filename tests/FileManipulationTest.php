@@ -9,9 +9,6 @@ class FileManipulationTest extends TestCase
     /** @var \Psalm\Checker\ProjectChecker */
     protected $project_checker;
 
-    /** @var TestConfig|null */
-    private static $config;
-
     /**
      * @return void
      */
@@ -21,17 +18,6 @@ class FileManipulationTest extends TestCase
         \Psalm\FileManipulation\FunctionDocblockManipulator::clearCache();
 
         $this->file_provider = new Provider\FakeFileProvider();
-
-        if (!self::$config) {
-            self::$config = new TestConfig();
-            self::$config->addPluginPath('examples/ClassUnqualifier.php');
-        }
-
-        $this->project_checker = new \Psalm\Checker\ProjectChecker(
-            self::$config,
-            $this->file_provider,
-            new Provider\FakeParserCacheProvider()
-        );
     }
 
     /**
@@ -57,6 +43,20 @@ class FileManipulationTest extends TestCase
         } elseif (strpos($test_name, 'SKIPPED-') !== false) {
             $this->markTestSkipped('Skipped due to a bug.');
         }
+
+        $config = new TestConfig();
+
+        if (empty($issues_to_fix)) {
+            $config->addPluginPath('examples/ClassUnqualifier.php');
+        }
+
+        $this->project_checker = new \Psalm\Checker\ProjectChecker(
+            $config,
+            $this->file_provider,
+            new Provider\FakeParserCacheProvider(),
+            new \Psalm\Provider\NoCache\NoFileStorageCacheProvider(),
+            new \Psalm\Provider\NoCache\NoClassLikeStorageCacheProvider()
+        );
 
         $context = new Context();
 
@@ -277,6 +277,58 @@ class FileManipulationTest extends TestCase
                      */
                     function foo(): array {
                         return ["hello"];
+                    }',
+                '7.0',
+                ['MissingReturnType'],
+                true,
+            ],
+            'addMissingObjectLikeReturnType70' => [
+                '<?php
+                    function foo() {
+                        return rand(0, 1) ? ["a" => "hello"] : ["a" => "goodbye", "b" => "hello again"];
+                    }',
+                '<?php
+                    /**
+                     * @return string[]
+                     *
+                     * @psalm-return array{a:string, b?:string}
+                     */
+                    function foo(): array {
+                        return rand(0, 1) ? ["a" => "hello"] : ["a" => "goodbye", "b" => "hello again"];
+                    }',
+                '7.0',
+                ['MissingReturnType'],
+                true,
+            ],
+            'addMissingObjectLikeReturnTypeSeparateStatements70' => [
+                '<?php
+                    function foo() {
+                        if (rand(0, 1)) {
+                            return ["a" => "hello", "b" => "hello again"];
+                        }
+
+                        if (rand(0, 1)) {
+                            return ["a" => "hello", "b" => "hello again"];
+                        }
+
+                        return ["a" => "goodbye"];
+                    }',
+                '<?php
+                    /**
+                     * @return string[]
+                     *
+                     * @psalm-return array{a:string, b?:string}
+                     */
+                    function foo(): array {
+                        if (rand(0, 1)) {
+                            return ["a" => "hello", "b" => "hello again"];
+                        }
+
+                        if (rand(0, 1)) {
+                            return ["a" => "hello", "b" => "hello again"];
+                        }
+
+                        return ["a" => "goodbye"];
                     }',
                 '7.0',
                 ['MissingReturnType'],
@@ -521,6 +573,128 @@ class FileManipulationTest extends TestCase
                         return foo();
                     }',
                 '5.6',
+                ['MissingReturnType'],
+                true,
+            ],
+            'dontAddMissingVoidReturnTypehintForSubclass71' => [
+                '<?php
+                    class A {
+                        public function foo() {}
+                    }
+
+                    class B extends A {
+                        public function foo() {}
+                    }',
+                '<?php
+                    class A {
+                        /**
+                         * @return void
+                         */
+                        public function foo() {}
+                    }
+
+                    class B extends A {
+                        /**
+                         * @return void
+                         */
+                        public function foo() {}
+                    }',
+                '7.1',
+                ['MissingReturnType'],
+                true,
+            ],
+            'dontAddMissingVoidReturnTypehintForPrivateMethodInSubclass71' => [
+                '<?php
+                    class A {
+                        private function foo() {}
+                    }
+
+                    class B extends A {
+                        private function foo() {}
+                    }',
+                '<?php
+                    class A {
+                        private function foo(): void {}
+                    }
+
+                    class B extends A {
+                        private function foo(): void {}
+                    }',
+                '7.1',
+                ['MissingReturnType'],
+                true,
+            ],
+            'dontAddMissingClassReturnTypehintForSubclass71' => [
+                '<?php
+                    class A {
+                        public function foo() {
+                            return $this;
+                        }
+                    }
+
+                    class B extends A {
+                        public function foo() {
+                            return $this;
+                        }
+                    }',
+                '<?php
+                    class A {
+                        /**
+                         * @return self
+                         */
+                        public function foo() {
+                            return $this;
+                        }
+                    }
+
+                    class B extends A {
+                        /**
+                         * @return self
+                         */
+                        public function foo() {
+                            return $this;
+                        }
+                    }',
+                '7.1',
+                ['MissingReturnType'],
+                true,
+            ],
+            'dontAddMissingClassReturnTypehintForSubSubclass71' => [
+                '<?php
+                    class A {
+                        public function foo() {
+                            return $this;
+                        }
+                    }
+
+                    class B extends A {}
+
+                    class C extends B {
+                        public function foo() {
+                            return $this;
+                        }
+                    }',
+                '<?php
+                    class A {
+                        /**
+                         * @return self
+                         */
+                        public function foo() {
+                            return $this;
+                        }
+                    }
+
+                    class B extends A {}
+
+                    class C extends B {
+                        /**
+                         * @return self
+                         */
+                        public function foo() {
+                            return $this;
+                        }
+                    }',
+                '7.1',
                 ['MissingReturnType'],
                 true,
             ],
@@ -848,7 +1022,73 @@ class FileManipulationTest extends TestCase
                 ['PossiblyUndefinedGlobalVariable'],
                 true,
             ],
+            'addLessSpecificArrayReturnType71' => [
+                '<?php
+                    namespace A\B {
+                        class C {}
+                    }
 
+                    namespace C {
+                        use A\B;
+
+                        class D {
+                            public function getArrayOfC(): array {
+                                return [new \A\B\C];
+                            }
+                        }
+                    }',
+                '<?php
+                    namespace A\B {
+                        class C {}
+                    }
+
+                    namespace C {
+                        use A\B;
+
+                        class D {
+                            /**
+                             * @return \A\B\C[]
+                             *
+                             * @psalm-return array{0:\A\B\C}
+                             */
+                            public function getArrayOfC(): array {
+                                return [new \A\B\C];
+                            }
+                        }
+                    }',
+                '7.1',
+                ['LessSpecificReturnType'],
+                true,
+            ],
+            'fixLessSpecificReturnType' => [
+                '<?php
+                    class A {}
+                    class B extends A {}
+
+                    class C extends B {
+                        public function getB(): ?\A {
+                            return new B;
+                        }
+                        public function getC(): ?\A {
+                            return new C;
+                        }
+                    }',
+                '<?php
+                    class A {}
+                    class B extends A {}
+
+                    class C extends B {
+                        public function getB(): B {
+                            return new B;
+                        }
+                        public function getC(): self {
+                            return new C;
+                        }
+                    }',
+                '7.1',
+                ['LessSpecificReturnType'],
+                true,
+            ],
             'useUnqualifierPlugin' => [
                 '<?php
                     namespace A\B\C {

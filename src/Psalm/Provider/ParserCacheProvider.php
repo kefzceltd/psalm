@@ -26,9 +26,9 @@ class ParserCacheProvider
     public $use_igbinary = false;
 
     /**
+     * @param  int      $file_modified_time
      * @param  string   $file_content_hash
      * @param  string   $file_cache_key
-     * @param mixed $file_modified_time
      *
      * @return array<int, PhpParser\Node\Stmt>|null
      *
@@ -66,7 +66,7 @@ class ParserCacheProvider
     /**
      * @return array<string, string>
      */
-    private function getFileContentHashes()
+    public function getFileContentHashes()
     {
         $config = Config::getInstance();
         $root_cache_directory = $config->getCacheDirectory();
@@ -159,7 +159,6 @@ class ParserCacheProvider
         $cache_directory .= DIRECTORY_SEPARATOR . self::PARSER_CACHE_DIRECTORY;
 
         if (is_dir($cache_directory)) {
-            /** @var array<string> */
             $directory_files = scandir($cache_directory);
 
             foreach ($directory_files as $directory_file) {
@@ -206,7 +205,6 @@ class ParserCacheProvider
         $cache_directory .= DIRECTORY_SEPARATOR . self::PARSER_CACHE_DIRECTORY;
 
         if (is_dir($cache_directory)) {
-            /** @var array<string> */
             $directory_files = scandir($cache_directory);
 
             foreach ($directory_files as $directory_file) {
@@ -244,7 +242,8 @@ class ParserCacheProvider
 
         if (is_dir($cache_directory)) {
             foreach ($file_names as $file_name) {
-                $hash_file_name = $cache_directory . DIRECTORY_SEPARATOR . $this->getParserCacheKey($file_name);
+                $hash_file_name =
+                    $cache_directory . DIRECTORY_SEPARATOR . $this->getParserCacheKey($file_name, $this->use_igbinary);
 
                 if (file_exists($hash_file_name)) {
                     if (filemtime($hash_file_name) < $min_time) {
@@ -256,12 +255,13 @@ class ParserCacheProvider
     }
 
     /**
-     * @param  string   $file_name
+     * @param  string  $file_name
+     * @param  bool $use_igbinary
      *
      * @return string
      */
-    public static function getParserCacheKey($file_name)
+    public static function getParserCacheKey($file_name, $use_igbinary)
     {
-        return md5($file_name);
+        return md5($file_name) . ($use_igbinary ? '-igbinary' : '');
     }
 }

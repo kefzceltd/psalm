@@ -2,6 +2,7 @@
 namespace Psalm\Checker\Statements;
 
 use PhpParser;
+use Psalm\Checker\ClassLikeChecker;
 use Psalm\Checker\CommentChecker;
 use Psalm\Checker\FunctionLikeChecker;
 use Psalm\Checker\ProjectChecker;
@@ -189,6 +190,39 @@ class ReturnChecker
                             )) {
                                 return false;
                             }
+
+                            foreach ($local_return_type->getTypes() as $local_type_part) {
+                                if ($local_type_part instanceof Type\Atomic\TClassString
+                                    && $stmt->expr instanceof PhpParser\Node\Scalar\String_
+                                ) {
+                                    if (ClassLikeChecker::checkFullyQualifiedClassLikeName(
+                                        $statements_checker,
+                                        $stmt->expr->value,
+                                        new CodeLocation($source, $stmt->expr),
+                                        $statements_checker->getSuppressedIssues()
+                                    ) === false
+                                    ) {
+                                        return false;
+                                    }
+                                } elseif ($local_type_part instanceof Type\Atomic\TArray
+                                    && isset($local_type_part->type_params[1]->getTypes()['class-string'])
+                                    && $stmt->expr instanceof PhpParser\Node\Expr\Array_
+                                ) {
+                                    foreach ($stmt->expr->items as $item) {
+                                        if ($item && $item->value instanceof PhpParser\Node\Scalar\String_) {
+                                            if (ClassLikeChecker::checkFullyQualifiedClassLikeName(
+                                                $statements_checker,
+                                                $item->value->value,
+                                                new CodeLocation($source, $item->value),
+                                                $statements_checker->getSuppressedIssues()
+                                            ) === false
+                                            ) {
+                                                return false;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         } else {
                             if (IssueBuffer::accepts(
                                 new InvalidReturnStatement(
@@ -210,8 +244,8 @@ class ReturnChecker
                         if (IssueBuffer::accepts(
                             new NullableReturnStatement(
                                 'The declared return type \'' . $local_return_type . '\' for '
-                                    . $cased_method_id . ' is not nullable, but \'' . $inferred_type
-                                    . '\' contains null',
+                                    . $cased_method_id . ' is not nullable, but the function returns \''
+                                        . $inferred_type . '\'',
                                 new CodeLocation($source, $stmt)
                             ),
                             $statements_checker->getSuppressedIssues()
@@ -228,8 +262,8 @@ class ReturnChecker
                         if (IssueBuffer::accepts(
                             new FalsableReturnStatement(
                                 'The declared return type \'' . $local_return_type . '\' for '
-                                    . $cased_method_id . ' does not allow false, but \'' . $inferred_type
-                                    . '\' contains false',
+                                    . $cased_method_id . ' does not allow false, but the function returns \''
+                                        . $inferred_type . '\'',
                                 new CodeLocation($source, $stmt)
                             ),
                             $statements_checker->getSuppressedIssues()

@@ -9,14 +9,14 @@ use Psalm\IssueBuffer;
 error_reporting(-1);
 ini_set('display_errors', 1);
 ini_set('display_startup_errors', 1);
-ini_set('memory_limit', '2048M');
+ini_set('memory_limit', '4096M');
 
 // get options from command line
 $options = getopt(
     'f:mhvc:ir:',
     [
-        'help', 'debug', 'config:', 'monochrome', 'show-info:', 'diff',
-        'self-check', 'output-format:', 'report:', 'find-dead-code', 'init',
+        'help', 'debug', 'debug-by-line', 'config:', 'monochrome', 'show-info:', 'diff',
+        'output-format:', 'report:', 'find-dead-code', 'init',
         'find-references-to:', 'root:', 'threads:', 'clear-cache', 'no-cache',
         'version', 'plugin:', 'stats',
     ]
@@ -43,11 +43,12 @@ if (isset($options['config'])) {
 }
 
 if (isset($options['c']) && is_array($options['c'])) {
-    die('Too many config files provided' . PHP_EOL);
+    echo 'Too many config files provided' . PHP_EOL;
+    exit(1);
 }
 
 if (array_key_exists('h', $options)) {
-    echo <<< HELP
+    echo <<<HELP
 Usage:
     psalm [options] [file...]
 
@@ -58,12 +59,15 @@ Options:
     -v, --version
         Display the Psalm version
 
-    -i, --init [source_dir=src] [--level=3]
+    -i, --init [source_dir=src] [level=3]
         Create a psalm config file in the current directory that points to [source_dir]
-        at the required level, from 1, most strict, to 5, most permissive
+        at the required level, from 1, most strict, to 8, most permissive.
 
     --debug
         Debug information
+
+    --debug-by-line
+        Debug information on a line-by-line level
 
     -c, --config=psalm.xml
         Path to a psalm.xml configuration file. Run psalm --init to create one.
@@ -80,11 +84,8 @@ Options:
     --diff
         Runs Psalm in diff mode, only checking files that have changed (and their dependents)
 
-    --self-check
-        Psalm checks itself
-
     --output-format=console
-        Changes the output format. Possible values: console, json, xml
+        Changes the output format. Possible values: console, emacs, json, pylint, xml
 
     --find-dead-code
         Look for dead code
@@ -118,7 +119,8 @@ HELP;
 }
 
 if (getcwd() === false) {
-    die('Cannot get current working directory');
+    echo 'Cannot get current working directory' . PHP_EOL;
+    exit(1);
 }
 
 if (isset($options['root'])) {
@@ -131,7 +133,8 @@ if (isset($options['r']) && is_string($options['r'])) {
     $root_path = realpath($options['r']);
 
     if (!$root_path) {
-        die('Could not locate root directory ' . $current_dir . DIRECTORY_SEPARATOR . $options['r'] . PHP_EOL);
+        echo 'Could not locate root directory ' . $current_dir . DIRECTORY_SEPARATOR . $options['r'] . PHP_EOL;
+        exit(1);
     }
 
     $current_dir = $root_path . DIRECTORY_SEPARATOR;
@@ -139,32 +142,37 @@ if (isset($options['r']) && is_string($options['r'])) {
 
 $vendor_dir = getVendorDir($current_dir);
 
-requireAutoloaders($current_dir, isset($options['r']), $vendor_dir);
+$first_autoloader = requireAutoloaders($current_dir, isset($options['r']), $vendor_dir);
 
 if (array_key_exists('v', $options)) {
-    /** @var string */
-    $version = \Muglug\PackageVersions\Versions::getVersion('vimeo/psalm');
-    echo 'Psalm ' . $version . PHP_EOL;
+    echo 'Psalm ' . PSALM_VERSION . PHP_EOL;
     exit;
 }
 
 // If XDebug is enabled, restart without it
-(new \Composer\XdebugHandler(\Composer\Factory::createOutput()))->check();
+(new \Composer\XdebugHandler\XdebugHandler('PSALM'))->check();
+
+setlocale(LC_CTYPE, 'C');
 
 if (isset($options['i'])) {
-    if (file_exists('psalm.xml')) {
+    if (file_exists($current_dir . 'psalm.xml')) {
         die('A config file already exists in the current directory' . PHP_EOL);
     }
 
     $args = array_values(array_filter(
-        array_slice($argv, 2),
+        array_slice($argv, 1),
         /**
          * @param string $arg
          *
          * @return bool
          */
         function ($arg) {
-            return $arg !== '--ansi' && $arg !== '--no-ansi';
+            return $arg !== '--ansi'
+                && $arg !== '--no-ansi'
+                && $arg !== '--i'
+                && $arg !== '--init'
+                && strpos($arg, '--root=') !== 0
+                && strpos($arg, '--r=') !== 0;
         }
     ));
 
@@ -177,8 +185,8 @@ if (isset($options['i'])) {
         }
 
         if (isset($args[1])) {
-            if (!preg_match('/^[1-5]$/', $args[1])) {
-                die('Config strictness must be a number between 1 and 5 inclusive' . PHP_EOL);
+            if (!preg_match('/^[1-8]$/', $args[1])) {
+                die('Config strictness must be a number between 1 and 8 inclusive' . PHP_EOL);
             }
 
             $level = (int)$args[1];
@@ -211,7 +219,15 @@ if (isset($options['i'])) {
         <directory name="' . $source_dir . '" />
     </projectFiles>', $template);
 
-    if (!file_put_contents('psalm.xml', $template)) {
+    if (!\Phar::running(false)) {
+        $template = str_replace(
+            'vendor/vimeo/psalm/config.xsd',
+            'file://' . realpath(__DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'config.xsd'),
+            $template
+        );
+    }
+
+    if (!file_put_contents($current_dir . 'psalm.xml', $template)) {
         die('Could not write to psalm.xml' . PHP_EOL);
     }
 
@@ -238,7 +254,8 @@ $path_to_config = isset($options['c']) && is_string($options['c']) ? realpath($o
 
 if ($path_to_config === false) {
     /** @psalm-suppress InvalidCast */
-    die('Could not resolve path to config ' . (string)$options['c'] . PHP_EOL);
+    echo 'Could not resolve path to config ' . (string)$options['c'] . PHP_EOL;
+    exit(1);
 }
 
 $show_info = isset($options['show-info'])
@@ -256,15 +273,30 @@ $find_references_to = isset($options['find-references-to']) && is_string($option
 $threads = isset($options['threads']) ? (int)$options['threads'] : 1;
 
 $cache_provider = isset($options['no-cache'])
-    ? new Psalm\Provider\Cache\NoParserCacheProvider()
+    ? new Psalm\Provider\NoCache\NoParserCacheProvider()
     : new Psalm\Provider\ParserCacheProvider();
 
 // initialise custom config, if passed
-if ($path_to_config) {
-    $config = Config::loadFromXMLFile($path_to_config, $current_dir);
-} else {
-    $config = Config::getConfigForPath($current_dir, $current_dir, $output_format);
+try {
+    if ($path_to_config) {
+        $config = Config::loadFromXMLFile($path_to_config, $current_dir);
+    } else {
+        $config = Config::getConfigForPath($current_dir, $current_dir, $output_format);
+    }
+} catch (Psalm\Exception\ConfigException $e) {
+    echo $e->getMessage();
+    exit(1);
 }
+
+$config->setComposerClassLoader($first_autoloader);
+
+$file_storage_cache_provider = isset($options['no-cache'])
+    ? new Psalm\Provider\NoCache\NoFileStorageCacheProvider()
+    : new Psalm\Provider\FileStorageCacheProvider($config);
+
+$classlike_storage_cache_provider = isset($options['no-cache'])
+    ? new Psalm\Provider\NoCache\NoClassLikeStorageCacheProvider()
+    : new Psalm\Provider\ClassLikeStorageCacheProvider($config);
 
 if (isset($options['clear-cache'])) {
     $cache_directory = $config->getCacheDirectory();
@@ -278,16 +310,32 @@ $project_checker = new ProjectChecker(
     $config,
     new Psalm\Provider\FileProvider(),
     $cache_provider,
+    $file_storage_cache_provider,
+    $classlike_storage_cache_provider,
     !array_key_exists('m', $options),
     $show_info,
     $output_format,
     $threads,
-    array_key_exists('debug', $options),
+    array_key_exists('debug', $options) || array_key_exists('debug-by-line', $options),
     isset($options['report']) && is_string($options['report']) ? $options['report'] : null
 );
 
+$config->visitComposerAutoloadFiles($project_checker);
+
+if (array_key_exists('debug-by-line', $options)) {
+    $project_checker->debug_lines = true;
+}
+
 if ($find_dead_code || $find_references_to !== null) {
     $project_checker->getCodebase()->collectReferences();
+
+    if ($find_references_to) {
+        $project_checker->show_issues = false;
+    }
+}
+
+if ($find_dead_code) {
+    $project_checker->getCodebase()->reportUnusedCode();
 }
 
 /** @var string $plugin_path */
@@ -297,9 +345,7 @@ foreach ($plugins as $plugin_path) {
 
 $start_time = (float) microtime(true);
 
-if (array_key_exists('self-check', $options)) {
-    $project_checker->checkDir(__DIR__);
-} elseif ($paths_to_check === null) {
+if ($paths_to_check === null) {
     $project_checker->check($current_dir, $is_diff);
 } elseif ($paths_to_check) {
     foreach ($paths_to_check as $path_to_check) {
@@ -323,4 +369,4 @@ if ($find_references_to) {
     }
 }
 
-IssueBuffer::finish($project_checker, !$is_diff, $start_time, isset($options['stats']));
+IssueBuffer::finish($project_checker, !$paths_to_check, $start_time, isset($options['stats']));

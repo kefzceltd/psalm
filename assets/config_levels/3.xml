@@ -1,8 +1,9 @@
 <?xml version="1.0"?>
 <psalm
-    name="Example Psalm config with recommended defaults"
-    useDocblockTypes="true"
     totallyTyped="false"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xmlns="https://getpsalm.org/schema/config"
+    xsi:schemaLocation="https://getpsalm.org/schema/config vendor/vimeo/psalm/config.xsd"
 >
     <projectFiles>
         <directory name="src" />
@@ -13,6 +14,8 @@
 
         <!-- level 3 issues - slightly lazy code writing, but provably low false-negatives -->
         <DeprecatedMethod errorLevel="info" />
+        <DeprecatedProperty errorLevel="info" />
+        <DeprecatedClass errorLevel="info" />
 
         <MissingClosureReturnType errorLevel="info" />
         <MissingReturnType errorLevel="info" />
@@ -27,5 +30,9 @@
 
         <DocblockTypeContradiction errorLevel="info" />
         <RedundantConditionGivenDocblockType errorLevel="info" />
+
+        <UnresolvableInclude errorLevel="info" />
+
+        <RawObjectIteration errorLevel="info" />
     </issueHandlers>
 </psalm>

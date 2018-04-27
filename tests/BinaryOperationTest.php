@@ -23,7 +23,7 @@ class BinaryOperationTest extends TestCase
             'numericAddition' => [
                 '<?php
                     $a = "5";
-            
+
                     if (is_numeric($a)) {
                         $b = $a + 4;
                     }',
@@ -35,6 +35,31 @@ class BinaryOperationTest extends TestCase
             'concatenationWithNumberInWeakMode' => [
                 '<?php
                     $a = "hi" . 5;',
+            ],
+            'possiblyInvalidAdditionOnBothSides' => [
+                '<?php
+                    function foo(string $s) : int {
+                        return strpos($s, "a") + strpos($s, "b");
+                    }',
+                'assertions' => [],
+                'error_levels' => ['PossiblyFalseOperand'],
+            ],
+            'bitwiseoperations' => [
+                '<?php
+                    $a = 4 & 5;
+                    $b = 2 | 3;
+                    $c = 4 ^ 3;
+                    $d = 1 << 2;
+                    $e = 15 >> 2;
+                    $f = "a" & "b";',
+                'assertions' => [
+                    '$a' => 'int',
+                    '$b' => 'int',
+                    '$c' => 'int',
+                    '$d' => 'int',
+                    '$e' => 'int',
+                    '$f' => 'string',
+                ],
             ],
         ];
     }
@@ -70,6 +95,23 @@ class BinaryOperationTest extends TestCase
                 'error_message' => 'InvalidOperand',
                 'error_levels' => [],
                 'strict_mode' => true,
+            ],
+            'additionWithClassInWeakMode' => [
+                '<?php
+                    $a = "hi" + (new stdClass);',
+                'error_message' => 'InvalidOperand',
+            ],
+            'possiblyInvalidOperand' => [
+                '<?php
+                    $b = rand(0, 1) ? [] : 4;
+                    echo $b + 5;',
+                'error_message' => 'PossiblyInvalidOperand',
+            ],
+            'possiblyInvalidConcat' => [
+                '<?php
+                    $b = rand(0, 1) ? [] : "hello";
+                    echo $b . "goodbye";',
+                'error_message' => 'PossiblyInvalidOperand',
             ],
         ];
     }

@@ -6,6 +6,9 @@ use Psalm\Checker\ClassLikeChecker;
 use Psalm\Checker\Statements\ExpressionChecker;
 use Psalm\Checker\TypeChecker;
 use Psalm\CodeLocation;
+use Psalm\FileSource;
+use Psalm\Issue\DocblockTypeContradiction;
+use Psalm\Issue\RedundantCondition;
 use Psalm\Issue\TypeDoesNotContainNull;
 use Psalm\Issue\TypeDoesNotContainType;
 use Psalm\Issue\UnevaluatedCode;
@@ -23,18 +26,20 @@ class AssertionFinder
      *
      * @param  PhpParser\Node\Expr      $conditional
      * @param  string|null              $this_class_name
-     * @param  StatementsSource         $source
+     * @param  FileSource         $source
      *
      * @return array<string, string>
      */
     public static function getAssertions(
         PhpParser\Node\Expr $conditional,
         $this_class_name,
-        StatementsSource $source
+        FileSource $source
     ) {
         $if_types = [];
 
-        $project_checker = $source->getFileChecker()->project_checker;
+        $project_checker = $source instanceof StatementsSource
+            ? $source->getFileChecker()->project_checker
+            : null;
 
         if ($conditional instanceof PhpParser\Node\Expr\Instanceof_) {
             $instanceof_type = self::getInstanceOfTypes($conditional, $this_class_name, $source);
@@ -121,7 +126,11 @@ class AssertionFinder
                     } else {
                         $if_types[$var_name] = 'falsy';
                     }
-                } elseif ($var_type && $conditional instanceof PhpParser\Node\Expr\BinaryOp\Identical) {
+                } elseif ($var_type
+                    && $conditional instanceof PhpParser\Node\Expr\BinaryOp\Identical
+                    && $source instanceof StatementsSource
+                    && $project_checker
+                ) {
                     $null_type = Type::getNull();
 
                     if (!TypeChecker::isContainedBy(
@@ -214,7 +223,10 @@ class AssertionFinder
                         $if_types[$var_name] = 'falsy';
                     }
                 } elseif ($var_type) {
-                    if ($conditional instanceof PhpParser\Node\Expr\BinaryOp\Identical) {
+                    if ($conditional instanceof PhpParser\Node\Expr\BinaryOp\Identical
+                        && $source instanceof StatementsSource
+                        && $project_checker
+                    ) {
                         $false_type = Type::getFalse();
 
                         if (!TypeChecker::isContainedBy(
@@ -269,13 +281,13 @@ class AssertionFinder
                 /** @var PhpParser\Node\Scalar\String_ $string_expr */
                 $var_type = $string_expr->value;
 
-                $file_checker = $source->getFileChecker();
-
-                if (!isset(ClassLikeChecker::$GETTYPE_TYPES[$var_type])) {
+                if (!isset(ClassLikeChecker::$GETTYPE_TYPES[$var_type])
+                    && $source instanceof StatementsSource
+                ) {
                     if (IssueBuffer::accepts(
                         new UnevaluatedCode(
                             'gettype cannot return this value',
-                            new CodeLocation($file_checker, $string_expr)
+                            new CodeLocation($source, $string_expr)
                         )
                     )) {
                         // fall through
@@ -320,20 +332,19 @@ class AssertionFinder
                     throw new \UnexpectedValueException('Shouldn’t get here');
                 }
 
-                $file_checker = $source->getFileChecker();
-
-                if (ClassLikeChecker::checkFullyQualifiedClassLikeName(
-                    $source,
-                    $var_type,
-                    new CodeLocation($file_checker, $whichclass_expr),
-                    $source->getSuppressedIssues(),
-                    false
-                ) === false
+                if ($source instanceof StatementsSource
+                    && ClassLikeChecker::checkFullyQualifiedClassLikeName(
+                        $source,
+                        $var_type,
+                        new CodeLocation($source, $whichclass_expr),
+                        $source->getSuppressedIssues(),
+                        false
+                    ) === false
                 ) {
                     // fall through
                 } else {
                     if ($var_name && $var_type) {
-                        $if_types[$var_name] = $var_type;
+                        $if_types[$var_name] = 'getclass-' . $var_type;
                     }
                 }
 
@@ -368,7 +379,13 @@ class AssertionFinder
                 if ($var_type) {
                     if ($var_name) {
                         $if_types[$var_name] = '^' . $var_type;
-                    } elseif ($other_type && $conditional instanceof PhpParser\Node\Expr\BinaryOp\Identical) {
+                    }
+
+                    if ($other_type
+                        && $conditional instanceof PhpParser\Node\Expr\BinaryOp\Identical
+                        && $source instanceof StatementsSource
+                        && $project_checker
+                    ) {
                         if (!TypeChecker::isContainedBy(
                             $project_checker->codebase,
                             $var_type,
@@ -380,14 +397,26 @@ class AssertionFinder
                             $var_type,
                             true
                         )) {
-                            if (IssueBuffer::accepts(
-                                new TypeDoesNotContainType(
-                                    $var_type . ' does not contain ' . $other_type,
-                                    new CodeLocation($source, $conditional)
-                                ),
-                                $source->getSuppressedIssues()
-                            )) {
-                                // fall through
+                            if ($var_type->from_docblock || $other_type->from_docblock) {
+                                if (IssueBuffer::accepts(
+                                    new DocblockTypeContradiction(
+                                        $var_type . ' does not contain ' . $other_type,
+                                        new CodeLocation($source, $conditional)
+                                    ),
+                                    $source->getSuppressedIssues()
+                                )) {
+                                    // fall through
+                                }
+                            } else {
+                                if (IssueBuffer::accepts(
+                                    new TypeDoesNotContainType(
+                                        $var_type . ' does not contain ' . $other_type,
+                                        new CodeLocation($source, $conditional)
+                                    ),
+                                    $source->getSuppressedIssues()
+                                )) {
+                                    // fall through
+                                }
                             }
                         }
                     }
@@ -399,7 +428,12 @@ class AssertionFinder
             $var_type = isset($conditional->left->inferredType) ? $conditional->left->inferredType : null;
             $other_type = isset($conditional->right->inferredType) ? $conditional->right->inferredType : null;
 
-            if ($var_type && $other_type && $conditional instanceof PhpParser\Node\Expr\BinaryOp\Identical) {
+            if ($var_type
+                && $other_type
+                && $conditional instanceof PhpParser\Node\Expr\BinaryOp\Identical
+                && $source instanceof StatementsSource
+                && $project_checker
+            ) {
                 if (!TypeChecker::canBeIdenticalTo($project_checker->codebase, $var_type, $other_type)) {
                     if (IssueBuffer::accepts(
                         new TypeDoesNotContainType(
@@ -424,6 +458,7 @@ class AssertionFinder
             $true_position = self::hasTrueVariable($conditional);
             $gettype_position = self::hasGetTypeCheck($conditional);
             $getclass_position = self::hasGetClassCheck($conditional);
+            $typed_value_position = self::hasTypedValueComparison($conditional);
 
             if ($null_position !== null) {
                 if ($null_position === self::ASSIGNMENT_TO_RIGHT) {
@@ -534,13 +569,11 @@ class AssertionFinder
                     throw new \UnexpectedValueException('Shouldn’t get here');
                 }
 
-                $file_checker = $source->getFileChecker();
-
                 if (!isset(ClassLikeChecker::$GETTYPE_TYPES[$var_type])) {
                     if (IssueBuffer::accepts(
                         new UnevaluatedCode(
                             'gettype cannot return this value',
-                            new CodeLocation($file_checker, $whichclass_expr)
+                            new CodeLocation($source, $whichclass_expr)
                         )
                     )) {
                         // fall through
@@ -585,20 +618,94 @@ class AssertionFinder
                     throw new \UnexpectedValueException('Shouldn’t get here');
                 }
 
-                $file_checker = $source->getFileChecker();
-
-                if (ClassLikeChecker::checkFullyQualifiedClassLikeName(
-                    $source,
-                    $var_type,
-                    new CodeLocation($file_checker, $whichclass_expr),
-                    $source->getSuppressedIssues(),
-                    false
-                ) === false
+                if ($source instanceof StatementsSource
+                    && $project_checker
+                    && ClassLikeChecker::checkFullyQualifiedClassLikeName(
+                        $source,
+                        $var_type,
+                        new CodeLocation($source, $whichclass_expr),
+                        $source->getSuppressedIssues(),
+                        false
+                    ) === false
                 ) {
                     // fall through
                 } else {
                     if ($var_name && $var_type) {
-                        $if_types[$var_name] = '!' . $var_type;
+                        $if_types[$var_name] = '!getclass-' . $var_type;
+                    }
+                }
+
+                return $if_types;
+            }
+
+            if ($typed_value_position) {
+                if ($typed_value_position === self::ASSIGNMENT_TO_RIGHT) {
+                    /** @var PhpParser\Node\Expr $conditional->right */
+                    $var_name = ExpressionChecker::getArrayVarId(
+                        $conditional->left,
+                        $this_class_name,
+                        $source
+                    );
+
+                    $other_type = isset($conditional->left->inferredType) ? $conditional->left->inferredType : null;
+                    $var_type = isset($conditional->right->inferredType) ? $conditional->right->inferredType : null;
+                } elseif ($typed_value_position === self::ASSIGNMENT_TO_LEFT) {
+                    /** @var PhpParser\Node\Expr $conditional->left */
+                    $var_name = ExpressionChecker::getArrayVarId(
+                        $conditional->right,
+                        $this_class_name,
+                        $source
+                    );
+
+                    $var_type = isset($conditional->left->inferredType) ? $conditional->left->inferredType : null;
+                    $other_type = isset($conditional->right->inferredType) ? $conditional->right->inferredType : null;
+                } else {
+                    throw new \UnexpectedValueException('$typed_value_position value');
+                }
+
+                if ($var_type) {
+                    if ($var_name) {
+                        $if_types[$var_name] = '!^' . $var_type;
+                    }
+
+                    if ($other_type
+                        && $conditional instanceof PhpParser\Node\Expr\BinaryOp\NotIdentical
+                        && $source instanceof StatementsSource
+                        && $project_checker
+                    ) {
+                        if (!TypeChecker::isContainedBy(
+                            $project_checker->codebase,
+                            $var_type,
+                            $other_type,
+                            true
+                        ) && !TypeChecker::isContainedBy(
+                            $project_checker->codebase,
+                            $other_type,
+                            $var_type,
+                            true
+                        )) {
+                            if ($var_type->from_docblock || $other_type->from_docblock) {
+                                if (IssueBuffer::accepts(
+                                    new DocblockTypeContradiction(
+                                        $var_type . ' can never contain ' . $other_type,
+                                        new CodeLocation($source, $conditional)
+                                    ),
+                                    $source->getSuppressedIssues()
+                                )) {
+                                    // fall through
+                                }
+                            } else {
+                                if (IssueBuffer::accepts(
+                                    new RedundantCondition(
+                                        $var_type . ' can never contain ' . $other_type,
+                                        new CodeLocation($source, $conditional)
+                                    ),
+                                    $source->getSuppressedIssues()
+                                )) {
+                                    // fall through
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -767,15 +874,15 @@ class AssertionFinder
     /**
      * @param  PhpParser\Node\Expr\FuncCall $expr
      * @param  string|null                  $this_class_name
-     * @param  StatementsSource             $source
-     * @param  bool                      $negate
+     * @param  FileSource                   $source
+     * @param  bool                         $negate
      *
      * @return array<string, string>
      */
     protected static function processFunctionCall(
         PhpParser\Node\Expr\FuncCall $expr,
         $this_class_name,
-        StatementsSource $source,
+        FileSource $source,
         $negate = false
     ) {
         $prefix = $negate ? '!' : '';
@@ -798,21 +905,35 @@ class AssertionFinder
             if ($first_var_name) {
                 $first_arg = $expr->args[1]->value;
 
+                $is_a_prefix = '';
+
+                if (isset($expr->args[2]->value)) {
+                    $third_arg = $expr->args[2]->value;
+
+                    if (!$third_arg instanceof PhpParser\Node\Expr\ConstFetch
+                        || !in_array(strtolower($third_arg->name->parts[0]), ['true', 'false'])
+                    ) {
+                        return $if_types;
+                    }
+
+                    $is_a_prefix = strtolower($third_arg->name->parts[0]) === 'true' ? 'isa-' : '';
+                }
+
                 if ($first_arg instanceof PhpParser\Node\Scalar\String_) {
-                    $if_types[$first_var_name] = $prefix . $first_arg->value;
+                    $if_types[$first_var_name] = $prefix . $is_a_prefix . $first_arg->value;
                 } elseif ($first_arg instanceof PhpParser\Node\Expr\ClassConstFetch
                     && $first_arg->class instanceof PhpParser\Node\Name
-                    && is_string($first_arg->name)
-                    && strtolower($first_arg->name) === 'class'
+                    && $first_arg->name instanceof PhpParser\Node\Identifier
+                    && strtolower($first_arg->name->name) === 'class'
                 ) {
                     $class_node = $first_arg->class;
 
                     if ($class_node->parts === ['static'] || $class_node->parts === ['self']) {
-                        $if_types[$first_var_name] = $prefix . $this_class_name;
+                        $if_types[$first_var_name] = $prefix . $is_a_prefix . $this_class_name;
                     } elseif ($class_node->parts === ['parent']) {
                         // do nothing
                     } else {
-                        $if_types[$first_var_name] = $prefix . ClassLikeChecker::getFQCLNFromNameObject(
+                        $if_types[$first_var_name] = $prefix . $is_a_prefix . ClassLikeChecker::getFQCLNFromNameObject(
                             $class_node,
                             $source->getAliases()
                         );
@@ -859,6 +980,32 @@ class AssertionFinder
             if ($first_var_name) {
                 $if_types[$first_var_name] = $prefix . 'callable';
             }
+        } elseif (self::hasArrayKeyExistsCheck($expr)) {
+            $array_root = isset($expr->args[1]->value)
+                ? ExpressionChecker::getArrayVarId(
+                    $expr->args[1]->value,
+                    $this_class_name,
+                    $source
+                )
+                : null;
+
+            if ($first_var_name === null && isset($expr->args[0])) {
+                $first_arg = $expr->args[0];
+
+                if ($first_arg->value instanceof PhpParser\Node\Scalar\String_) {
+                    $first_var_name = '"' . $first_arg->value->value . '"';
+                } elseif ($first_arg->value instanceof PhpParser\Node\Scalar\LNumber) {
+                    $first_var_name = (string) $first_arg->value->value;
+                }
+            }
+
+            if ($first_var_name !== null
+                && $array_root
+                && !strpos($first_var_name, '->')
+                && !strpos($first_var_name, '[')
+            ) {
+                $if_types[$array_root . '[' . $first_var_name . ']'] = $prefix . 'array-key-exists';
+            }
         }
 
         return $if_types;
@@ -867,14 +1014,14 @@ class AssertionFinder
     /**
      * @param  PhpParser\Node\Expr\Instanceof_ $stmt
      * @param  string|null                     $this_class_name
-     * @param  StatementsSource                $source
+     * @param  FileSource                $source
      *
      * @return string|null
      */
     protected static function getInstanceOfTypes(
         PhpParser\Node\Expr\Instanceof_ $stmt,
         $this_class_name,
-        StatementsSource $source
+        FileSource $source
     ) {
         if ($stmt->class instanceof PhpParser\Node\Name) {
             if (!in_array(strtolower($stmt->class->parts[0]), ['self', 'static', 'parent'], true)) {
@@ -998,8 +1145,8 @@ class AssertionFinder
                 $conditional->left instanceof PhpParser\Node\Scalar\String_
                 || ($conditional->left instanceof PhpParser\Node\Expr\ClassConstFetch
                     && $conditional->left->class instanceof PhpParser\Node\Name
-                    && is_string($conditional->left->name)
-                    && strtolower($conditional->left->name) === 'class')
+                    && $conditional->left->name instanceof PhpParser\Node\Identifier
+                    && strtolower($conditional->left->name->name) === 'class')
             )
         ) {
             return self::ASSIGNMENT_TO_RIGHT;
@@ -1012,8 +1159,8 @@ class AssertionFinder
                 $conditional->right instanceof PhpParser\Node\Scalar\String_
                 || ($conditional->right instanceof PhpParser\Node\Expr\ClassConstFetch
                     && $conditional->right->class instanceof PhpParser\Node\Name
-                    && is_string($conditional->right->name)
-                    && strtolower($conditional->right->name) === 'class')
+                    && $conditional->right->name instanceof PhpParser\Node\Identifier
+                    && strtolower($conditional->right->name->name) === 'class')
             )
         ) {
             return self::ASSIGNMENT_TO_LEFT;
@@ -1079,20 +1226,10 @@ class AssertionFinder
                 || (
                     $second_arg instanceof PhpParser\Node\Expr\ClassConstFetch
                     && $second_arg->class instanceof PhpParser\Node\Name
-                    && is_string($second_arg->name)
-                    && strtolower($second_arg->name) === 'class'
+                    && $second_arg->name instanceof PhpParser\Node\Identifier
+                    && strtolower($second_arg->name->name) === 'class'
                 )
             ) {
-                if (isset($stmt->args[2]->value)) {
-                    $third_arg = $stmt->args[2]->value;
-
-                    if (!$third_arg instanceof PhpParser\Node\Expr\ConstFetch
-                        || strtolower($third_arg->name->parts[0]) !== 'false'
-                    ) {
-                        return false;
-                    }
-                }
-
                 return true;
             }
         }
@@ -1242,6 +1379,20 @@ class AssertionFinder
     protected static function hasCallableCheck(PhpParser\Node\Expr\FuncCall $stmt)
     {
         if ($stmt->name instanceof PhpParser\Node\Name && $stmt->name->parts === ['is_callable']) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * @param   PhpParser\Node\Expr\FuncCall    $stmt
+     *
+     * @return  bool
+     */
+    protected static function hasArrayKeyExistsCheck(PhpParser\Node\Expr\FuncCall $stmt)
+    {
+        if ($stmt->name instanceof PhpParser\Node\Name && $stmt->name->parts === ['array_key_exists']) {
             return true;
         }
 

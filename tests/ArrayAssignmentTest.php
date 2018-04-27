@@ -251,7 +251,7 @@ class ArrayAssignmentTest extends TestCase
                     '$foo' => 'array{bar:array{baz:array{bat:string}}}',
                 ],
             ],
-            'conflictingTypes' => [
+            'conflictingTypesWithNoAssignment' => [
                 '<?php
                     $foo = [
                         "bar" => ["a" => "b"],
@@ -822,6 +822,78 @@ class ArrayAssignmentTest extends TestCase
                 'assertions' => [],
                 'error_levels' => ['MixedMethodCall', 'MixedArrayOffset'],
             ],
+            'mixedAccessNestedKeys' => [
+                '<?php
+                    function takesString(string $s) : void {}
+                    function updateArray(array $arr) : array {
+                        foreach ($arr as $i => $item) {
+                            $arr[$i]["a"]["b"] = 5;
+                            $arr[$i]["a"]["c"] = takesString($arr[$i]["a"]["c"]);
+                        }
+
+                        return $arr;
+                    }',
+                'assertions' => [],
+                'error_levels' => [
+                    'MixedArrayAccess', 'MixedAssignment', 'MixedArrayOffset', 'MixedArrayAssignment', 'MixedArgument',
+                ],
+            ],
+            'possiblyUndefinedArrayAccessWithIsset' => [
+                '<?php
+                    if (rand(0,1)) {
+                      $a = ["a" => 1];
+                    } else {
+                      $a = [2, 3];
+                    }
+
+                    if (isset($a[0])) {
+                        echo $a[0];
+                    }',
+            ],
+            'possiblyUndefinedArrayAccessWithArrayKeyExists' => [
+                '<?php
+                    if (rand(0,1)) {
+                      $a = ["a" => 1];
+                    } else {
+                      $a = [2, 3];
+                    }
+
+                    if (array_key_exists(0, $a)) {
+                        echo $a[0];
+                    }',
+            ],
+            'noCrashOnArrayKeyExistsBracket' => [
+                '<?php
+                    class MyCollection {
+                        /**
+                         * @param int $commenter
+                         * @param int $numToGet
+                         * @return int[]
+                         */
+                        public function getPosters($commenter, $numToGet=10) {
+                            $posters = array();
+                            $count = 0;
+                            $a = new ArrayObject([[1234]]);
+                            $iter = $a->getIterator();
+                            while ($iter->valid() && $count < $numToGet) {
+                                $value = $iter->current();
+                                if ($value[0] != $commenter) {
+                                    if (!array_key_exists($value[0], $posters)) {
+                                        $posters[$value[0]] = 1;
+                                        $count++;
+                                    }
+                                }
+                                $iter->next();
+                            }
+                            return array_keys($posters);
+                        }
+                    }',
+                'assertions' => [],
+                'error_levels' => [
+                    'MixedArrayAccess', 'MixedAssignment', 'MixedArrayOffset',
+                    'MixedArgument', 'LessSpecificReturnStatement', 'MoreSpecificReturnType',
+                ],
+            ],
         ];
     }
 
@@ -842,6 +914,17 @@ class ArrayAssignmentTest extends TestCase
                     $a = 5;
                     $a[0] = 5;',
                 'error_message' => 'InvalidArrayAssignment',
+            ],
+            'possiblyUndefinedArrayAccess' => [
+                '<?php
+                    if (rand(0,1)) {
+                      $a = ["a" => 1];
+                    } else {
+                      $a = [2, 3];
+                    }
+
+                    echo $a[0];',
+                'error_message' => 'PossiblyUndefinedArrayOffset',
             ],
             'mixedStringOffsetAssignment' => [
                 '<?php
@@ -889,6 +972,32 @@ class ArrayAssignmentTest extends TestCase
                         }
                     }',
                 'error_message' => 'InvalidPropertyAssignmentValue',
+            ],
+            'possiblyUndefinedArrayAccessWithArrayKeyExistsOnWrongKey' => [
+                '<?php
+                    if (rand(0,1)) {
+                      $a = ["a" => 1];
+                    } else {
+                      $a = [2, 3];
+                    }
+
+                    if (array_key_exists("a", $a)) {
+                        echo $a[0];
+                    }',
+                'error_message' => 'PossiblyUndefinedArrayOffset',
+            ],
+            'possiblyUndefinedArrayAccessWithArrayKeyExistsOnMissingKey' => [
+                '<?php
+                    if (rand(0,1)) {
+                      $a = ["a" => 1];
+                    } else {
+                      $a = [2, 3];
+                    }
+
+                    if (array_key_exists("b", $a)) {
+                        echo $a[0];
+                    }',
+                'error_message' => 'PossiblyUndefinedArrayOffset',
             ],
         ];
     }

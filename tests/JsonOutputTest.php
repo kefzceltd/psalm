@@ -25,12 +25,14 @@ class JsonOutputTest extends TestCase
             $config,
             $this->file_provider,
             new Provider\FakeParserCacheProvider(),
+            new \Psalm\Provider\NoCache\NoFileStorageCacheProvider(),
+            new \Psalm\Provider\NoCache\NoClassLikeStorageCacheProvider(),
             false,
             true,
             ProjectChecker::TYPE_JSON
         );
 
-        $this->project_checker->getCodebase()->collectReferences();
+        $this->project_checker->getCodebase()->reportUnusedCode();
     }
 
     /**
@@ -52,7 +54,7 @@ class JsonOutputTest extends TestCase
         $this->assertSame('somefile.php', $issue_data['file_path']);
         $this->assertSame('error', $issue_data['severity']);
         $this->assertSame($message, $issue_data['message']);
-        $this->assertSame($line_number, $issue_data['line_number']);
+        $this->assertSame($line_number, $issue_data['line_from']);
         $this->assertSame(
             $error,
             substr($code, $issue_data['from'], $issue_data['to'] - $issue_data['from'])
@@ -94,37 +96,8 @@ echo $a;';
             [
                 [
                     'severity' => 'error',
-                    'line_number' => 7,
-                    'type' => 'UndefinedConstant',
-                    'message' => 'Const CHANGE_ME is not defined',
-                    'file_name' => 'somefile.php',
-                    'file_path' => 'somefile.php',
-                    'snippet' => 'echo CHANGE_ME;',
-                    'selected_text' => 'CHANGE_ME',
-                    'from' => 125,
-                    'to' => 134,
-                    'snippet_from' => 120,
-                    'snippet_to' => 135,
-                    'column' => 6,
-                ],
-                [
-                    'severity' => 'error',
-                    'line_number' => 15,
-                    'type' => 'PossiblyUndefinedGlobalVariable',
-                    'message' => 'Possibly undefined global variable $a, first seen on line 10',
-                    'file_name' => 'somefile.php',
-                    'file_path' => 'somefile.php',
-                    'snippet' => 'echo $a',
-                    'selected_text' => '$a',
-                    'from' => 201,
-                    'to' => 203,
-                    'snippet_from' => 196,
-                    'snippet_to' => 203,
-                    'column' => 6,
-                ],
-                [
-                    'severity' => 'error',
-                    'line_number' => 3,
+                    'line_from' => 3,
+                    'line_to' => 3,
                     'type' => 'UndefinedVariable',
                     'message' => 'Cannot find referenced variable $as_you',
                     'file_name' => 'somefile.php',
@@ -135,11 +108,13 @@ echo $a;';
                     'to' => 73,
                     'snippet_from' => 57,
                     'snippet_to' => 83,
-                    'column' => 10,
+                    'column_from' => 10,
+                    'column_to' => 17,
                 ],
                 [
                     'severity' => 'error',
-                    'line_number' => 2,
+                    'line_from' => 2,
+                    'line_to' => 2,
                     'type' => 'UnusedParam',
                     'message' => 'Param $your_code is never referenced in this method',
                     'file_name' => 'somefile.php',
@@ -150,11 +125,13 @@ echo $a;';
                     'to' => 44,
                     'snippet_from' => 6,
                     'snippet_to' => 56,
-                    'column' => 29,
+                    'column_from' => 29,
+                    'column_to' => 39,
                 ],
                 [
                     'severity' => 'error',
-                    'line_number' => 2,
+                    'line_from' => 2,
+                    'line_to' => 2,
                     'type' => 'MixedInferredReturnType',
                     'message' => 'Could not verify return type \'string|null\' for psalmCanVerify',
                     'file_name' => 'somefile.php',
@@ -167,7 +144,42 @@ echo $a;';
                     'to' => 54,
                     'snippet_from' => 6,
                     'snippet_to' => 85,
-                    'column' => 42,
+                    'column_from' => 42,
+                    'column_to' => 49,
+                ],
+                [
+                    'severity' => 'error',
+                    'line_from' => 7,
+                    'line_to' => 7,
+                    'type' => 'UndefinedConstant',
+                    'message' => 'Const CHANGE_ME is not defined',
+                    'file_name' => 'somefile.php',
+                    'file_path' => 'somefile.php',
+                    'snippet' => 'echo CHANGE_ME;',
+                    'selected_text' => 'CHANGE_ME',
+                    'from' => 125,
+                    'to' => 134,
+                    'snippet_from' => 120,
+                    'snippet_to' => 135,
+                    'column_from' => 6,
+                    'column_to' => 15,
+                ],
+                [
+                    'severity' => 'error',
+                    'line_from' => 15,
+                    'line_to' => 15,
+                    'type' => 'PossiblyUndefinedGlobalVariable',
+                    'message' => 'Possibly undefined global variable $a, first seen on line 10',
+                    'file_name' => 'somefile.php',
+                    'file_path' => 'somefile.php',
+                    'snippet' => 'echo $a',
+                    'selected_text' => '$a',
+                    'from' => 201,
+                    'to' => 203,
+                    'snippet_from' => 196,
+                    'snippet_to' => 203,
+                    'column_from' => 6,
+                    'column_to' => 8,
                 ],
             ],
             $issue_data

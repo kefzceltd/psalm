@@ -259,7 +259,7 @@ class ClassLikes
                 && !$this->classlike_storage_provider->has($fq_class_name_lc)
             ) {
                 if ($this->debug_output) {
-                    echo 'Last-chance attempt to hydrate ' . $fq_class_name . PHP_EOL;
+                    echo 'Last-chance attempt to hydrate ' . $fq_class_name . "\n";
                 }
                 // attempt to load in the class
                 $this->scanner->queueClassLikeForScanning($fq_class_name);
@@ -308,7 +308,7 @@ class ClassLikes
                 && !$this->classlike_storage_provider->has($fq_class_name_lc)
             ) {
                 if ($this->debug_output) {
-                    echo 'Last-chance attempt to hydrate ' . $fq_class_name . PHP_EOL;
+                    echo 'Last-chance attempt to hydrate ' . $fq_class_name . "\n";
                 }
 
                 // attempt to load in the class
@@ -487,6 +487,10 @@ class ClassLikes
      */
     public function interfaceExtends($interface_name, $possible_parent)
     {
+        if (strtolower($interface_name) === 'iterable' && strtolower($possible_parent) === 'traversable') {
+            return true;
+        }
+
         return in_array($possible_parent, $this->getParentInterfaces($interface_name), true);
     }
 
@@ -700,6 +704,8 @@ class ClassLikes
                 && (substr($method_name, 0, 2) !== '__' || $method_name === '__construct')
                 && $method_storage->location
             ) {
+                $method_location = $method_storage->location;
+
                 $method_id = $classlike_storage->name . '::' . $method_storage->cased_name;
 
                 if ($method_storage->visibility === ClassLikeChecker::VISIBILITY_PUBLIC) {
@@ -732,7 +738,8 @@ class ClassLikes
                         if (IssueBuffer::accepts(
                             new PossiblyUnusedMethod(
                                 'Cannot find public calls to method ' . $method_id,
-                                $method_storage->location
+                                $method_storage->location,
+                                $method_id
                             ),
                             $method_storage->suppressed_issues
                         )) {
@@ -743,7 +750,8 @@ class ClassLikes
                     if (IssueBuffer::accepts(
                         new UnusedMethod(
                             'Method ' . $method_id . ' is never used',
-                            $method_storage->location
+                            $method_location,
+                            $method_id
                         )
                     )) {
                         // fall through
@@ -792,7 +800,7 @@ class ClassLikes
                 if ($property_storage->visibility === ClassLikeChecker::VISIBILITY_PUBLIC) {
                     if (IssueBuffer::accepts(
                         new PossiblyUnusedProperty(
-                            'Cannot find public calls to property ' . $property_id,
+                            'Cannot find uses of public property ' . $property_id,
                             $property_storage->location
                         ),
                         $classlike_storage->suppressed_issues

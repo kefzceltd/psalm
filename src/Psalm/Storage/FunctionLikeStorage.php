@@ -68,11 +68,6 @@ class FunctionLikeStorage
     public $returns_by_ref = false;
 
     /**
-     * @var bool
-     */
-    public $abstract = false;
-
-    /**
      * @var int
      */
     public $required_param_count;
@@ -102,6 +97,6 @@ class FunctionLikeStorage
      */
     public $referencing_locations;
 
-    /** @var array<int, string|int> */
+    /** @var array<int, Assertion> */
     public $assertions = [];
 }

@@ -1,8 +1,9 @@
 <?xml version="1.0"?>
 <psalm
-    name="Example Psalm config with recommended defaults"
-    useDocblockTypes="true"
     totallyTyped="false"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xmlns="https://getpsalm.org/schema/config"
+    xsi:schemaLocation="https://getpsalm.org/schema/config vendor/vimeo/psalm/config.xsd"
 >
     <projectFiles>
         <directory name="src" />
@@ -14,6 +15,9 @@
         <!-- level 3 issues - slightly lazy code writing, but provably low false-negatives -->
 
         <DeprecatedMethod errorLevel="info" />
+        <DeprecatedProperty errorLevel="info" />
+        <DeprecatedClass errorLevel="info" />
+        <DeprecatedInterface errorLevel="info" />
 
         <MissingClosureReturnType errorLevel="info" />
         <MissingReturnType errorLevel="info" />
@@ -29,19 +33,30 @@
         <DocblockTypeContradiction errorLevel="info" />
         <RedundantConditionGivenDocblockType errorLevel="info" />
 
+        <UnresolvableInclude errorLevel="info" />
+
+        <RawObjectIteration errorLevel="info" />
+
         <!-- level 4 issues - points to possible deficiencies in logic, higher false-positives -->
 
         <MoreSpecificReturnType errorLevel="info" />
+        <LessSpecificReturnStatement errorLevel="info" />
         <TypeCoercion errorLevel="info" />
         <RedundantCondition errorLevel="info" />
 
         <PossiblyFalseArgument errorLevel="info" />
+        <PossiblyFalseIterator errorLevel="info" />
+        <PossiblyFalseOperand errorLevel="info" />
         <PossiblyFalsePropertyAssignmentValue errorLevel="info" />
         <PossiblyFalseReference errorLevel="info" />
         <PossiblyInvalidArgument errorLevel="info" />
         <PossiblyInvalidArrayAccess errorLevel="info" />
         <PossiblyInvalidArrayAssignment errorLevel="info" />
+        <PossiblyInvalidArrayOffset errorLevel="info" />
+        <PossiblyInvalidFunctionCall errorLevel="info" />
+        <PossiblyInvalidIterator errorLevel="info" />
         <PossiblyInvalidMethodCall errorLevel="info" />
+        <PossiblyInvalidOperand errorLevel="info" />
         <PossiblyInvalidPropertyAssignment errorLevel="info" />
         <PossiblyInvalidPropertyAssignmentValue errorLevel="info" />
         <PossiblyInvalidPropertyFetch errorLevel="info" />
@@ -58,6 +73,7 @@
         <PossiblyNullReference errorLevel="info" />
         <PossiblyUndefinedGlobalVariable errorLevel="info" />
         <PossiblyUndefinedVariable errorLevel="info" />
+        <PossiblyUndefinedArrayOffset errorLevel="info" />
         <PossiblyUndefinedMethod errorLevel="info" />
 
         <!-- level 5 issues - should be avoided at mosts costs... -->
@@ -66,9 +82,12 @@
         <ImplicitToStringCast errorLevel="info" />
         <InvalidScalarArgument errorLevel="info" />
         <InvalidToString errorLevel="info" />
-        <MethodSignatureMismatch errorLevel="info" />
+        <InvalidOperand errorLevel="info" />
         <NoInterfaceProperties errorLevel="info" />
         <TooManyArguments errorLevel="info" />
         <TypeDoesNotContainType errorLevel="info" />
+        <TypeDoesNotContainNull errorLevel="info" />
+        <MissingDocblockType errorLevel="info" />
+        <ImplementedReturnTypeMismatch errorLevel="info" />
     </issueHandlers>
 </psalm>

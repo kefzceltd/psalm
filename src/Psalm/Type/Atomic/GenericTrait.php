@@ -18,7 +18,13 @@ trait GenericTrait
             $s .= $type_param . ', ';
         }
 
-        return $this->value . '<' . substr($s, 0, -2) . '>';
+        $extra_types = '';
+
+        if ($this instanceof TNamedObject && $this->extra_types) {
+            $extra_types = '&' . implode('&', $this->extra_types);
+        }
+
+        return $this->value . '<' . substr($s, 0, -2) . '>' . $extra_types;
     }
 
     /**
@@ -31,9 +37,13 @@ trait GenericTrait
      */
     public function toNamespacedString($namespace, array $aliased_classes, $this_class, $use_phpdoc_format)
     {
+        $base_value = $this instanceof TNamedObject
+            ? parent::toNamespacedString($namespace, $aliased_classes, $this_class, $use_phpdoc_format)
+            : $this->value;
+
         if ($use_phpdoc_format) {
-            if ($this->value !== 'array') {
-                return $this->value;
+            if ($this instanceof TNamedObject) {
+                return $base_value;
             }
 
             $value_type = $this->type_params[1];
@@ -51,7 +61,24 @@ trait GenericTrait
             return $value_type_string . '[]';
         }
 
-        return $this->value .
+        $extra_types = '';
+
+        if ($this instanceof TNamedObject && $this->extra_types) {
+            $extra_types = '&' . implode(
+                '&',
+                array_map(
+                    /**
+                     * @return string
+                     */
+                    function (Atomic $extra_type) use ($namespace, $aliased_classes, $this_class) {
+                        return $extra_type->toNamespacedString($namespace, $aliased_classes, $this_class, false);
+                    },
+                    $this->extra_types
+                )
+            );
+        }
+
+        return $base_value .
                 '<' .
                 implode(
                     ', ',
@@ -65,7 +92,7 @@ trait GenericTrait
                         $this->type_params
                     )
                 ) .
-                '>';
+                '>' . $extra_types;
     }
 
     public function __clone()
@@ -125,7 +152,7 @@ trait GenericTrait
     }
 
     /**
-     * @param  array<string, string|Union>     $template_types
+     * @param  array<string, Union>     $template_types
      *
      * @return void
      */

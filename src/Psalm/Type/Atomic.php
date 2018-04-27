@@ -7,15 +7,17 @@ use Psalm\CodeLocation;
 use Psalm\Issue\ReservedWord;
 use Psalm\IssueBuffer;
 use Psalm\StatementsSource;
+use Psalm\Storage\FileStorage;
 use Psalm\Type;
 use Psalm\Type\Atomic\ObjectLike;
-use Psalm\Type\Atomic\Scalar;
 use Psalm\Type\Atomic\TArray;
 use Psalm\Type\Atomic\TBool;
 use Psalm\Type\Atomic\TCallable;
+use Psalm\Type\Atomic\TClassString;
 use Psalm\Type\Atomic\TEmpty;
 use Psalm\Type\Atomic\TFalse;
 use Psalm\Type\Atomic\TFloat;
+use Psalm\Type\Atomic\TGenericParam;
 use Psalm\Type\Atomic\TInt;
 use Psalm\Type\Atomic\TMixed;
 use Psalm\Type\Atomic\TNamedObject;
@@ -50,10 +52,11 @@ abstract class Atomic
     /**
      * @param  string $value
      * @param  bool   $php_compatible
+     * @param  array<string, string> $template_types
      *
      * @return Atomic
      */
-    public static function create($value, $php_compatible = false)
+    public static function create($value, $php_compatible = false, array $template_types = [])
     {
         switch ($value) {
             case 'int':
@@ -104,10 +107,25 @@ abstract class Atomic
             case 'mixed':
                 return $php_compatible ? new TNamedObject($value) : new TMixed();
 
-            case 'numeric-string':
-                return new TNumericString();
+            case 'class-string':
+                return new TClassString();
+
+            case '$this':
+                return new TNamedObject('static');
 
             default:
+                if (strpos($value, '-')) {
+                    throw new \Psalm\Exception\TypeParseTreeException('no hyphens allowed');
+                }
+
+                if (is_numeric($value[0])) {
+                    throw new \Psalm\Exception\TypeParseTreeException('First character of type cannot be numeric');
+                }
+
+                if (isset($template_types[$value])) {
+                    return new TGenericParam($value);
+                }
+
                 return new TNamedObject($value);
         }
     }
@@ -156,24 +174,42 @@ abstract class Atomic
             return;
         }
 
-        if ($this instanceof TNamedObject &&
-            !isset($phantom_classes[strtolower($this->value)]) &&
-            ClassLikeChecker::checkFullyQualifiedClassLikeName(
-                $source,
-                $this->value,
-                $code_location,
-                $suppressed_issues,
-                $inferred
-            ) === false
-        ) {
-            return false;
+        if ($this instanceof TNamedObject) {
+            if (!isset($phantom_classes[strtolower($this->value)]) &&
+                ClassLikeChecker::checkFullyQualifiedClassLikeName(
+                    $source,
+                    $this->value,
+                    $code_location,
+                    $suppressed_issues,
+                    $inferred
+                ) === false
+            ) {
+                return false;
+            }
+
+            if ($this->extra_types) {
+                foreach ($this->extra_types as $extra_type) {
+                    if (!isset($phantom_classes[strtolower($extra_type->value)]) &&
+                        ClassLikeChecker::checkFullyQualifiedClassLikeName(
+                            $source,
+                            $extra_type->value,
+                            $code_location,
+                            $suppressed_issues,
+                            $inferred
+                        ) === false
+                    ) {
+                        return false;
+                    }
+                }
+            }
         }
 
         if ($this instanceof TResource && !$this->from_docblock) {
             if (IssueBuffer::accepts(
                 new ReservedWord(
                     '\'resource\' is a reserved word',
-                    $code_location
+                    $code_location,
+                    'resource'
                 ),
                 $source->getSuppressedIssues()
             )) {
@@ -191,18 +227,25 @@ abstract class Atomic
     }
 
     /**
-     * @param  string $referencing_file_path
      * @param  array<string, mixed> $phantom_classes
      *
      * @return void
      */
     public function queueClassLikesForScanning(
         Codebase $codebase,
-        $referencing_file_path = null,
+        FileStorage $file_storage = null,
         array $phantom_classes = []
     ) {
         if ($this instanceof TNamedObject && !isset($phantom_classes[strtolower($this->value)])) {
-            $codebase->scanner->queueClassLikeForScanning($this->value, $referencing_file_path);
+            $codebase->scanner->queueClassLikeForScanning(
+                $this->value,
+                $file_storage ? $file_storage->file_path : null,
+                false,
+                !$this->from_docblock
+            );
+            if ($file_storage) {
+                $file_storage->referenced_classlikes[] = $this->value;
+            }
 
             return;
         }
@@ -211,7 +254,7 @@ abstract class Atomic
             foreach ($this->type_params as $type_param) {
                 $type_param->queueClassLikesForScanning(
                     $codebase,
-                    $referencing_file_path,
+                    $file_storage,
                     $phantom_classes
                 );
             }
@@ -301,7 +344,7 @@ abstract class Atomic
     }
 
     /**
-     * @param  array<string, string|Type\Union>     $template_types
+     * @param  array<string, Type\Union>     $template_types
      *
      * @return void
      */

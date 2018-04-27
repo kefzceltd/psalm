@@ -2,36 +2,22 @@
 
 Psalm supports a wide range of docblock annotations.
 
-## Table of contents
-
-- [PHPDoc tags](#phpdoc-tags)
-  - [Off-label usage of PHPDoc tags](#off-label-usage-of-the-var-tag)
-- [Psalm-specific tags](#psalm-specific-tags)
-  - [@psalm-var, @psalm-param and @psalm-return](#psalm-var-psalm-param-and-psalm-return)
-  - [@psalm-suppress](#psalm-suppress-someissuename)
-  - [@psalm-ignore-nullable-return](#psalm-ignore-nullable-return)
-  - [@psalm-ignore-falsable-return](#psalm-ignore-falsable-return)
-  - [@template and @template-typeof](#template-and-template-typeof)
-  - [@psalm-seal-properties](#psalm-seal-properties)
-- [Type Syntax](#type-syntax)
-  - [Object-like arrays](#object-like-arrays)
-
 ## PHPDoc tags
 
 Psalm uses the following PHPDoc tags to understand your code:
-- [`@var`](https://docs.phpdoc.org/references/phpdoc/tags/var.html)  
+- [`@var`](https://docs.phpdoc.org/references/phpdoc/tags/var.html)
   Used for specifying the types of properties and variables
-- [`@return`](https://docs.phpdoc.org/references/phpdoc/tags/return.html)  
+- [`@return`](https://docs.phpdoc.org/references/phpdoc/tags/return.html)
   Used for specifying the return types of functions, methods and closures
-- [`@param`](https://docs.phpdoc.org/references/phpdoc/tags/param.html)  
+- [`@param`](https://docs.phpdoc.org/references/phpdoc/tags/param.html)
   Used for specifying types of parameters passed to functions, methods and closures
-- [`@property`](https://docs.phpdoc.org/references/phpdoc/tags/property.html)  
+- [`@property`](https://docs.phpdoc.org/references/phpdoc/tags/property.html)
   Used to specify what properties can be accessed on an object that uses `__get` and `__set`
-- [`@property-read`](https://docs.phpdoc.org/references/phpdoc/tags/property-read.html)  
+- [`@property-read`](https://docs.phpdoc.org/references/phpdoc/tags/property-read.html)
   Used to specify what properties can be read on object that uses `__get`
-- [`@property-write`](https://docs.phpdoc.org/references/phpdoc/tags/property-write.html)  
+- [`@property-write`](https://docs.phpdoc.org/references/phpdoc/tags/property-write.html)
   Used to specify what properties can be written on object that uses `__set`
-- [`@deprecated`](https://docs.phpdoc.org/references/phpdoc/tags/deprecated.html)  
+- [`@deprecated`](https://docs.phpdoc.org/references/phpdoc/tags/deprecated.html)
   Used to mark functions, methods, classes and interfaces as being deprecated
 
 ### Off-label usage of the `@var` tag
@@ -124,7 +110,7 @@ function instantiator(string $class_name) {
 }
 ```
 
-Psalm also uses `@template` annotations in its stubbed versions of PHP array functions e.g. 
+Psalm also uses `@template` annotations in its stubbed versions of PHP array functions e.g.
 
 ```php
 /**
@@ -167,9 +153,26 @@ $a->bar = 5; // this call fails
 
 Psalm supports PHPDoc’s [type syntax](https://docs.phpdoc.org/guides/types.html), and also the [proposed PHPDoc PSR type syntax](https://github.com/php-fig/fig-standards/blob/master/proposed/phpdoc.md#appendix-a-types).
 
-Beyond that, in order to support a very common style of PHP code, Psalm supports a special format for arrays where the key offsets are known: object-like arrays.
+### Class constants
+
+Psalm supports a special meta-type for `MyClass::class` constants, `class-string`, which can be used everywhere `string` can.
+
+For example, given a function with a `string` parameter `$class_name`, you can use the annotation `@param class-string $class_name` to tell Psalm make sure that the function is always called with a `::class` constant in that position:
+
+```php
+class A {}
+
+/**
+ * @param class-string $s
+ */
+function takesClassName(string $s) : void {}
+```
+
+`takesClassName("A");` would trigger a `TypeCoercion` issue (or a `PossiblyInvalidArgument` issue if [`allowCoercionFromStringToClassConst`](configuration.md#coding-style) was set to `false` in your config), whereas `takesClassName(A::class)` is fine.
 
 ### Object-like Arrays
+
+Psalm supports a special format for arrays where the key offsets are known: object-like arrays.
 
 Given an array
 
@@ -201,3 +204,28 @@ function foo(array $arr): void {
 foo(["cool", 4]); // passes
 foo([4, "cool"]); // fails
 ```
+### Callables and Closures
+
+Psalm supports a special format for `callable`s of the form
+
+```
+callable(Type1, OptionalType2=, ...SpreadType3):ReturnType
+```
+
+Using this annotation you can specify that a given function return a `Closure` e.g.
+
+```php
+/**
+ * @return Closure(bool):int
+ */
+function delayedAdd(int $x, int $y) : Closure {
+  return function(bool $debug) use ($x, $y) {
+    if ($debug) echo "got here" . PHP_EOL;
+    return $x + $y;
+  };
+}
+
+$adder = delayedAdd(3, 4);
+echo $adder(true);
+```
+

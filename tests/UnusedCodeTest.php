@@ -22,10 +22,12 @@ class UnusedCodeTest extends TestCase
         $this->project_checker = new \Psalm\Checker\ProjectChecker(
             new TestConfig(),
             $this->file_provider,
-            new Provider\FakeParserCacheProvider()
+            new Provider\FakeParserCacheProvider(),
+            new \Psalm\Provider\NoCache\NoFileStorageCacheProvider(),
+            new \Psalm\Provider\NoCache\NoClassLikeStorageCacheProvider()
         );
 
-        $this->project_checker->getCodebase()->collectReferences();
+        $this->project_checker->getCodebase()->reportUnusedCode();
     }
 
     /**
@@ -64,7 +66,8 @@ class UnusedCodeTest extends TestCase
         $context->collect_references = true;
 
         $this->analyzeFile($file_path, $context);
-        $this->project_checker->getCodebase()->classlikes->checkClassReferences();
+
+        $this->project_checker->checkClassReferences();
     }
 
     /**
@@ -100,7 +103,8 @@ class UnusedCodeTest extends TestCase
         $context->collect_references = true;
 
         $this->analyzeFile($file_path, $context);
-        $this->project_checker->getCodebase()->classlikes->checkClassReferences();
+
+        $this->project_checker->checkClassReferences();
     }
 
     /**
@@ -575,6 +579,143 @@ class UnusedCodeTest extends TestCase
                     }
                     $a = new A();
                     echo (bool) $a;',
+            ],
+            'everythingUsed' => [
+                '<?php
+                    interface I {
+                        public function foo();
+                    }
+                    class B implements I {
+                        public function foo() : void {}
+                    }
+
+                    class A
+                    {
+                        /**
+                         * @var I
+                         */
+                        private $i;
+
+                        /**
+                         * @param int[] $as
+                         */
+                        public function __construct(array $as) {
+
+                            foreach ($as as $a) {
+                                $this->a($a, 1);
+                            }
+
+                            $this->i = new B();
+                        }
+
+                        private function a(int $a, int $b): self
+                        {
+                            $this->v($a, $b);
+
+                            $this->i->foo();
+
+                            return $this;
+                        }
+
+                        private function v(int $a, int $b): void
+                        {
+                            if ($a + $b > 0) {
+                                throw new \RuntimeException("");
+                            }
+                        }
+                    }
+
+                    new A([1, 2, 3]);',
+            ],
+            'usedMethodCallVariable' => [
+                '<?php
+                    function reindex(array $arr, string $methodName): array {
+                        $ret = [];
+
+                        foreach ($arr as $element) {
+                            $ret[$element->$methodName()] = true;
+                        }
+
+                        return $ret;
+                    }',
+                'error_levels' => [
+                    'MixedAssignment',
+                    'MixedMethodCall',
+                    'MixedArrayOffset',
+                ],
+            ],
+            'globalVariableUsage' => [
+                '<?php
+                    $a = "hello";
+                    function example() : void {
+                        global $a;
+                        echo $a;
+                    }
+                    example();',
+            ],
+            'staticVar' => [
+                '<?php
+                    function use_static() : void {
+                        static $token;
+                        if (!$token) {
+                            $token = rand(1, 10);
+                        }
+                        echo "token is $token\n";
+                    }',
+            ],
+            'tryCatchWithUseInIf' => [
+                '<?php
+                    function example_string() : string {
+                        if (rand(0, 1) > 0) {
+                            return "value";
+                        }
+                        throw new Exception("fail");
+                    }
+
+                    function main() : void {
+                        try {
+                            $s = example_string();
+                            if (!$s) {
+                                echo "Failed to get string\n";
+                            }
+                        } catch (Exception $e) {
+                            $s = "fallback";
+                        }
+                        printf("s is %s\n", $s);
+                    }',
+            ],
+            'unusedParamWithUnderscore' => [
+                '<?php
+                    function foo(int $_) : void {}
+
+                    foo(4);',
+            ],
+            'unusedParamWithUnusedPrefix' => [
+                '<?php
+                    function foo(int $unusedArg) : void {}
+
+                    foo(4);',
+            ],
+            'possiblyUnusedParamWithUnderscore' => [
+                '<?php
+                    class A {
+                        public static function foo(int $_ = null) : void {}
+                    }
+
+                    A::foo();',
+            ],
+            'possiblyUnusedParamWithUnusedPrefix' => [
+                '<?php
+                    class A {
+                        public static function foo(int $unusedArg = null) : void {}
+                    }
+
+                    A::foo();',
+            ],
+            'usedClass' => [
+                '<?php
+                    class A { }
+                    new A();',
             ],
         ];
     }
