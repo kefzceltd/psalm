@@ -5,6 +5,7 @@ use PhpParser;
 use PhpParser\Node\Expr\PropertyFetch;
 use PhpParser\Node\Stmt\PropertyProperty;
 use Psalm\Checker\ClassLikeChecker;
+use Psalm\Checker\FunctionLikeChecker;
 use Psalm\Checker\Statements\ExpressionChecker;
 use Psalm\Checker\StatementsChecker;
 use Psalm\Checker\TypeChecker;
@@ -64,12 +65,15 @@ class PropertyAssignmentChecker
 
         $property_exists = false;
 
+        $property_ids = [];
+
         if ($stmt instanceof PropertyProperty) {
             if (!$context->self || !$stmt->default) {
                 return null;
             }
 
             $property_id = $context->self . '::$' . $prop_name;
+            $property_ids[] = $property_id;
 
             if (!$codebase->properties->propertyExists($property_id)) {
                 return null;
@@ -126,7 +130,7 @@ class PropertyAssignmentChecker
             }
 
             if ($lhs_type->isMixed()) {
-                $codebase->analyzer->incrementMixedCount($statements_checker->getCheckedFilePath());
+                $codebase->analyzer->incrementMixedCount($statements_checker->getFilePath());
 
                 if (IssueBuffer::accepts(
                     new MixedPropertyAssignment(
@@ -141,7 +145,7 @@ class PropertyAssignmentChecker
                 return null;
             }
 
-            $codebase->analyzer->incrementNonMixedCount($statements_checker->getCheckedFilePath());
+            $codebase->analyzer->incrementNonMixedCount($statements_checker->getFilePath());
 
             if ($lhs_type->isNull()) {
                 if (IssueBuffer::accepts(
@@ -250,8 +254,27 @@ class PropertyAssignmentChecker
                     return null;
                 }
 
-                if ($lhs_var_id !== '$this' &&
-                    $codebase->methodExists($lhs_type_part->value . '::__set')
+                $property_id = $lhs_type_part->value . '::$' . $prop_name;
+                $property_ids[] = $property_id;
+
+                $statements_checker_source = $statements_checker->getSource();
+
+                if ($codebase->methodExists($lhs_type_part->value . '::__set')
+                    && (!$statements_checker_source instanceof FunctionLikeChecker
+                        || $statements_checker_source->getMethodId() !== $lhs_type_part->value . '::__set')
+                    && (!$context->self || !$codebase->classExtends($context->self, $lhs_type_part->value))
+                    && (!$codebase->properties->propertyExists($property_id)
+                        || ($lhs_var_id !== '$this'
+                            && $lhs_type_part->value !== $context->self
+                            && ClassLikeChecker::checkPropertyVisibility(
+                                $property_id,
+                                $context->self,
+                                $statements_checker_source,
+                                new CodeLocation($statements_checker->getSource(), $stmt),
+                                $statements_checker->getSuppressedIssues(),
+                                false
+                            ) !== true)
+                    )
                 ) {
                     $class_storage = $project_checker->classlike_storage_provider->get((string)$lhs_type_part);
 
@@ -259,6 +282,7 @@ class PropertyAssignmentChecker
                         if (isset($class_storage->pseudo_property_set_types['$' . $prop_name])) {
                             $class_property_types[] =
                                 clone $class_storage->pseudo_property_set_types['$' . $prop_name];
+
                             $has_regular_setter = true;
                             $property_exists = true;
                             continue;
@@ -278,8 +302,6 @@ class PropertyAssignmentChecker
 
                 $has_regular_setter = true;
 
-                $property_id = $lhs_type_part->value . '::$' . $prop_name;
-
                 if (!$codebase->properties->propertyExists($property_id)) {
                     if ($stmt->var instanceof PhpParser\Node\Expr\Variable && $stmt->var->name === 'this') {
                         // if this is a proper error, we'll see it on the first pass
@@ -290,7 +312,8 @@ class PropertyAssignmentChecker
                         if (IssueBuffer::accepts(
                             new UndefinedThisPropertyAssignment(
                                 'Instance property ' . $property_id . ' is not defined',
-                                new CodeLocation($statements_checker->getSource(), $stmt)
+                                new CodeLocation($statements_checker->getSource(), $stmt),
+                                $property_id
                             ),
                             $statements_checker->getSuppressedIssues()
                         )) {
@@ -300,7 +323,8 @@ class PropertyAssignmentChecker
                         if (IssueBuffer::accepts(
                             new UndefinedPropertyAssignment(
                                 'Instance property ' . $property_id . ' is not defined',
-                                new CodeLocation($statements_checker->getSource(), $stmt)
+                                new CodeLocation($statements_checker->getSource(), $stmt),
+                                $property_id
                             ),
                             $statements_checker->getSuppressedIssues()
                         )) {
@@ -348,7 +372,8 @@ class PropertyAssignmentChecker
                     if (IssueBuffer::accepts(
                         new DeprecatedProperty(
                             $property_id . ' is marked deprecated',
-                            new CodeLocation($statements_checker->getSource(), $stmt)
+                            new CodeLocation($statements_checker->getSource(), $stmt),
+                            $property_id
                         ),
                         $statements_checker->getSuppressedIssues()
                     )) {
@@ -437,12 +462,6 @@ class PropertyAssignmentChecker
             }
         }
 
-        if ($var_id && count($class_property_types) === 1 && isset($class_property_types[0]->getTypes()['stdClass'])) {
-            $context->vars_in_scope[$var_id] = Type::getMixed();
-
-            return null;
-        }
-
         if (!$property_exists) {
             return null;
         }
@@ -458,46 +477,6 @@ class PropertyAssignmentChecker
         foreach ($class_property_types as $class_property_type) {
             if ($class_property_type->isMixed()) {
                 continue;
-            }
-
-            if (!$assignment_value_type->ignore_nullable_issues
-                && $assignment_value_type->isNullable()
-                && !$class_property_type->isNullable()
-            ) {
-                if (IssueBuffer::accepts(
-                    new PossiblyNullPropertyAssignmentValue(
-                        $var_id . ' with non-nullable declared type \'' . $class_property_type .
-                            '\' cannot be assigned nullable type \'' . $assignment_value_type . '\'',
-                        new CodeLocation(
-                            $statements_checker->getSource(),
-                            $assignment_value ?: $stmt,
-                            $context->include_location
-                        )
-                    ),
-                    $statements_checker->getSuppressedIssues()
-                )) {
-                    return false;
-                }
-            }
-
-            if (!$assignment_value_type->ignore_falsable_issues
-                && $assignment_value_type->isFalsable()
-                && !$class_property_type->hasBool()
-            ) {
-                if (IssueBuffer::accepts(
-                    new PossiblyFalsePropertyAssignmentValue(
-                        $var_id . ' with non-falsable declared type \'' . $class_property_type .
-                            '\' cannot be assigned possibly false type \'' . $assignment_value_type . '\'',
-                        new CodeLocation(
-                            $statements_checker->getSource(),
-                            $assignment_value ?: $stmt,
-                            $context->include_location
-                        )
-                    ),
-                    $statements_checker->getSuppressedIssues()
-                )) {
-                    return false;
-                }
             }
 
             $type_match_found = TypeChecker::isContainedBy(
@@ -564,21 +543,63 @@ class PropertyAssignmentChecker
             }
 
             if (!$type_match_found && !$type_coerced) {
-                foreach ($assignment_value_type->getTypes() as $assignment_value_type_part) {
-                    if (TypeChecker::isContainedBy(
-                        $project_checker->codebase,
-                        new Type\Union([$assignment_value_type_part]),
-                        $class_property_type,
-                        true,
-                        true
+                if (TypeChecker::canBeContainedBy(
+                    $project_checker->codebase,
+                    $assignment_value_type,
+                    $class_property_type,
+                    true,
+                    true
+                )) {
+                    $has_valid_assignment_value_type = true;
+                }
+
+                $invalid_assignment_value_types[] = $class_property_type->getId();
+            } else {
+                $has_valid_assignment_value_type = true;
+            }
+
+            if ($type_match_found) {
+                if (!$assignment_value_type->ignore_nullable_issues
+                    && $assignment_value_type->isNullable()
+                    && !$class_property_type->isNullable()
+                ) {
+                    if (IssueBuffer::accepts(
+                        new PossiblyNullPropertyAssignmentValue(
+                            $var_id . ' with non-nullable declared type \'' . $class_property_type .
+                                '\' cannot be assigned nullable type \'' . $assignment_value_type . '\'',
+                            new CodeLocation(
+                                $statements_checker->getSource(),
+                                $assignment_value ?: $stmt,
+                                $context->include_location
+                            ),
+                            $property_ids[0]
+                        ),
+                        $statements_checker->getSuppressedIssues()
                     )) {
-                        $has_valid_assignment_value_type = true;
+                        return false;
                     }
                 }
 
-                $invalid_assignment_value_types[] = (string) $class_property_type;
-            } else {
-                $has_valid_assignment_value_type = true;
+                if (!$assignment_value_type->ignore_falsable_issues
+                    && $assignment_value_type->isFalsable()
+                    && !$class_property_type->hasBool()
+                ) {
+                    if (IssueBuffer::accepts(
+                        new PossiblyFalsePropertyAssignmentValue(
+                            $var_id . ' with non-falsable declared type \'' . $class_property_type .
+                                '\' cannot be assigned possibly false type \'' . $assignment_value_type . '\'',
+                            new CodeLocation(
+                                $statements_checker->getSource(),
+                                $assignment_value ?: $stmt,
+                                $context->include_location
+                            ),
+                            $property_ids[0]
+                        ),
+                        $statements_checker->getSuppressedIssues()
+                    )) {
+                        return false;
+                    }
+                }
             }
         }
 
@@ -589,12 +610,13 @@ class PropertyAssignmentChecker
                 if (IssueBuffer::accepts(
                     new InvalidPropertyAssignmentValue(
                         $var_id . ' with declared type \'' . $invalid_class_property_type .
-                            '\' cannot be assigned type \'' . $assignment_value_type . '\'',
+                            '\' cannot be assigned type \'' . $assignment_value_type->getId() . '\'',
                         new CodeLocation(
                             $statements_checker->getSource(),
                             $assignment_value ?: $stmt,
                             $context->include_location
-                        )
+                        ),
+                        $property_ids[0]
                     ),
                     $statements_checker->getSuppressedIssues()
                 )) {
@@ -605,12 +627,13 @@ class PropertyAssignmentChecker
                     new PossiblyInvalidPropertyAssignmentValue(
                         $var_id . ' with declared type \'' . $invalid_class_property_type .
                             '\' cannot be assigned possibly different type \'' .
-                            $assignment_value_type . '\'',
+                            $assignment_value_type->getId() . '\'',
                         new CodeLocation(
                             $statements_checker->getSource(),
                             $assignment_value ?: $stmt,
                             $context->include_location
-                        )
+                        ),
+                        $property_ids[0]
                     ),
                     $statements_checker->getSuppressedIssues()
                 )) {
@@ -658,26 +681,15 @@ class PropertyAssignmentChecker
         $property_id = $fq_class_name . '::$' . $prop_name;
 
         if (!$codebase->properties->propertyExists($property_id)) {
-            if ($stmt->class instanceof PhpParser\Node\Name && $stmt->class->parts[0] === 'this') {
-                if (IssueBuffer::accepts(
-                    new UndefinedThisPropertyAssignment(
-                        'Static property ' . $property_id . ' is not defined',
-                        new CodeLocation($statements_checker->getSource(), $stmt)
-                    ),
-                    $statements_checker->getSuppressedIssues()
-                )) {
-                    return false;
-                }
-            } else {
-                if (IssueBuffer::accepts(
-                    new UndefinedPropertyAssignment(
-                        'Static property ' . $property_id . ' is not defined',
-                        new CodeLocation($statements_checker->getSource(), $stmt)
-                    ),
-                    $statements_checker->getSuppressedIssues()
-                )) {
-                    return false;
-                }
+            if (IssueBuffer::accepts(
+                new UndefinedPropertyAssignment(
+                    'Static property ' . $property_id . ' is not defined',
+                    new CodeLocation($statements_checker->getSource(), $stmt),
+                    $property_id
+                ),
+                $statements_checker->getSuppressedIssues()
+            )) {
+                return false;
             }
 
             return;
@@ -742,12 +754,71 @@ class PropertyAssignmentChecker
             $fq_class_name
         );
 
-        if (!TypeChecker::isContainedBy(
-            $codebase,
+        $type_match_found = TypeChecker::isContainedBy(
+            $project_checker->codebase,
             $assignment_value_type,
-            $class_property_type
-        )) {
-            if (TypeChecker::canBeIdenticalTo($codebase, $assignment_value_type, $class_property_type)) {
+            $class_property_type,
+            true,
+            true,
+            $has_scalar_match,
+            $type_coerced,
+            $type_coerced_from_mixed,
+            $to_string_cast
+        );
+
+        if ($type_coerced) {
+            if ($type_coerced_from_mixed) {
+                if (IssueBuffer::accepts(
+                    new MixedTypeCoercion(
+                        $var_id . ' expects \'' . $class_property_type . '\', '
+                            . ' parent type `' . $assignment_value_type . '` provided',
+                        new CodeLocation(
+                            $statements_checker->getSource(),
+                            $assignment_value ?: $stmt,
+                            $context->include_location
+                        )
+                    ),
+                    $statements_checker->getSuppressedIssues()
+                )) {
+                    // keep soldiering on
+                }
+            } else {
+                if (IssueBuffer::accepts(
+                    new TypeCoercion(
+                        $var_id . ' expects \'' . $class_property_type . '\', '
+                            . ' parent type \'' . $assignment_value_type . '\' provided',
+                        new CodeLocation(
+                            $statements_checker->getSource(),
+                            $assignment_value ?: $stmt,
+                            $context->include_location
+                        )
+                    ),
+                    $statements_checker->getSuppressedIssues()
+                )) {
+                    // keep soldiering on
+                }
+            }
+        }
+
+        if ($to_string_cast) {
+            if (IssueBuffer::accepts(
+                new ImplicitToStringCast(
+                    $var_id . ' expects \'' . $class_property_type . '\', '
+                        . '\'' . $assignment_value_type . '\' provided with a __toString method',
+                    new CodeLocation(
+                        $statements_checker->getSource(),
+                        $assignment_value ?: $stmt,
+                        $context->include_location
+                    )
+                ),
+                $statements_checker->getSuppressedIssues()
+            )) {
+                // fall through
+            }
+        }
+
+        if (!$type_match_found && !$type_coerced) {
+            if (TypeChecker::canBeContainedBy($codebase, $assignment_value_type, $class_property_type)) {
                 if (IssueBuffer::accepts(
                     new PossiblyInvalidPropertyAssignmentValue(
                         $var_id . ' with declared type \'' . $class_property_type . '\' cannot be assigned type \'' .
@@ -755,7 +826,8 @@ class PropertyAssignmentChecker
                         new CodeLocation(
                             $statements_checker->getSource(),
                             $assignment_value ?: $stmt
-                        )
+                        ),
+                        $property_id
                     ),
                     $statements_checker->getSuppressedIssues()
                 )) {
@@ -769,7 +841,8 @@ class PropertyAssignmentChecker
                         new CodeLocation(
                             $statements_checker->getSource(),
                             $assignment_value ?: $stmt
-                        )
+                        ),
+                        $property_id
                     ),
                     $statements_checker->getSuppressedIssues()
                 )) {

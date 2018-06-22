@@ -29,7 +29,12 @@ use Psalm\Type;
 use Psalm\Type\Atomic\ObjectLike;
 use Psalm\Type\Atomic\TArray;
 use Psalm\Type\Atomic\TEmpty;
+use Psalm\Type\Atomic\TLiteralFloat;
+use Psalm\Type\Atomic\TLiteralInt;
+use Psalm\Type\Atomic\TLiteralString;
+use Psalm\Type\Atomic\TFloat;
 use Psalm\Type\Atomic\TGenericParam;
+use Psalm\Type\Atomic\TInt;
 use Psalm\Type\Atomic\TMixed;
 use Psalm\Type\Atomic\TNamedObject;
 use Psalm\Type\Atomic\TNull;
@@ -65,12 +70,21 @@ class ArrayFetchChecker
             return false;
         }
 
+        $dim_var_id = null;
+        $new_offset_type = null;
+
         if ($stmt->dim) {
             if (isset($stmt->dim->inferredType)) {
                 $used_key_type = $stmt->dim->inferredType;
             } else {
                 $used_key_type = Type::getMixed();
             }
+
+            $dim_var_id = ExpressionChecker::getArrayVarId(
+                $stmt->dim,
+                $statements_checker->getFQCLN(),
+                $statements_checker
+            );
         } else {
             $used_key_type = Type::getInt();
         }
@@ -127,6 +141,51 @@ class ArrayFetchChecker
                 null,
                 $context->inside_isset
             );
+
+            if ($context->inside_isset
+                && $stmt->dim
+                && isset($stmt->dim->inferredType)
+                && $stmt->var->inferredType->hasArray()
+                && ($stmt->var instanceof PhpParser\Node\Expr\ClassConstFetch
+                    || $stmt->var instanceof PhpParser\Node\Expr\ConstFetch)
+            ) {
+                /** @var TArray|ObjectLike */
+                $array_type = $stmt->var->inferredType->getTypes()['array'];
+
+                if ($array_type instanceof TArray) {
+                    $const_array_key_type = $array_type->type_params[0];
+                } else {
+                    $const_array_key_type = $array_type->getGenericKeyType();
+                }
+
+                if ($dim_var_id && !$const_array_key_type->isMixed() && !$stmt->dim->inferredType->isMixed()) {
+                    $new_offset_type = clone $stmt->dim->inferredType;
+                    $const_array_key_atomic_types = $const_array_key_type->getTypes();
+                    $project_checker = $statements_checker->getFileChecker()->project_checker;
+
+                    foreach ($new_offset_type->getTypes() as $offset_key => $offset_atomic_type) {
+                        if ($offset_atomic_type instanceof TString
+                            || $offset_atomic_type instanceof TInt
+                        ) {
+                            if (!isset($const_array_key_atomic_types[$offset_key])
+                                && !TypeChecker::isContainedBy(
+                                    $project_checker->codebase,
+                                    new Type\Union([$offset_atomic_type]),
+                                    $const_array_key_type
+                                )
+                            ) {
+                                $new_offset_type->removeType($offset_key);
+                            }
+                        } elseif (!TypeChecker::isContainedBy(
+                            $project_checker->codebase,
+                            $const_array_key_type,
+                            new Type\Union([$offset_atomic_type])
+                        )) {
+                            $new_offset_type->removeType($offset_key);
+                        }
+                    }
+                }
+            }
         }
 
         if ($keyed_array_var_id && $context->hasVariable($keyed_array_var_id, $statements_checker)) {
@@ -147,6 +206,10 @@ class ArrayFetchChecker
                     return false;
                 }
             }
+        }
+
+        if ($context->inside_isset && $dim_var_id && $new_offset_type && $new_offset_type->getTypes()) {
+            $context->vars_in_scope[$dim_var_id] = $new_offset_type;
         }
 
         if ($keyed_array_var_id && !$context->inside_isset) {
@@ -194,6 +257,24 @@ class ArrayFetchChecker
             || $stmt->dim instanceof PhpParser\Node\Scalar\LNumber
         ) {
             $key_value = $stmt->dim->value;
+        } elseif (isset($stmt->dim->inferredType)) {
+            foreach ($stmt->dim->inferredType->getTypes() as $possible_value_type) {
+                if ($possible_value_type instanceof TLiteralString
+                    || $possible_value_type instanceof TLiteralInt
+                ) {
+                    if ($key_value !== null) {
+                        $key_value = null;
+                        break;
+                    }
+
+                    $key_value = $possible_value_type->value;
+                } elseif ($possible_value_type instanceof TString
+                    || $possible_value_type instanceof TInt
+                ) {
+                    $key_value = null;
+                    break;
+                }
+            }
         }
 
         $array_access_type = null;
@@ -289,6 +370,8 @@ class ArrayFetchChecker
                     $type = new ObjectLike([$key_value => new Type\Union([new TEmpty])]);
                 }
 
+                $offset_type = self::replaceOffsetTypeWithInts($offset_type);
+
                 if ($type instanceof TArray) {
                     // if we're assigning to an empty array with a key offset, refashion that array
                     if ($in_assignment) {
@@ -301,12 +384,22 @@ class ArrayFetchChecker
                             $offset_type,
                             $type->type_params[0],
                             true,
-                            $offset_type->ignore_falsable_issues
-                        )) {
-                            $expected_offset_types[] = (string)$type->type_params[0];
+                            $offset_type->ignore_falsable_issues,
+                            $has_scalar_match,
+                            $type_coerced,
+                            $type_coerced_from_mixed,
+                            $to_string_cast,
+                            $type_coerced_from_scalar
+                        ) && !$type_coerced_from_scalar
+                        ) {
+                            $expected_offset_types[] = $type->type_params[0]->getId();
                         } else {
                             $has_valid_offset = true;
                         }
+                    }
+
+                    if (!$stmt->dim && $type->count !== null) {
+                        $type->count++;
                     }
 
                     if ($in_assignment && $replacement_type) {
@@ -337,7 +430,7 @@ class ArrayFetchChecker
                         }
 
                         if (!IssueBuffer::isRecording()) {
-                            $array_access_type = Type::getMixed();
+                            $array_access_type = Type::getMixed(true);
                         }
                     }
                 } else {
@@ -376,17 +469,19 @@ class ArrayFetchChecker
                                 );
                             }
                         } else {
-                            $object_like_keys = array_keys($type->properties);
+                            if (!$inside_isset || $type->sealed) {
+                                $object_like_keys = array_keys($type->properties);
 
-                            if (count($object_like_keys) === 1) {
-                                $expected_keys_string = '\'' . $object_like_keys[0] . '\'';
-                            } else {
-                                $last_key = array_pop($object_like_keys);
-                                $expected_keys_string = '\'' . implode('\', \'', $object_like_keys) .
-                                    '\' or \'' . $last_key . '\'';
+                                if (count($object_like_keys) === 1) {
+                                    $expected_keys_string = '\'' . $object_like_keys[0] . '\'';
+                                } else {
+                                    $last_key = array_pop($object_like_keys);
+                                    $expected_keys_string = '\'' . implode('\', \'', $object_like_keys) .
+                                        '\' or \'' . $last_key . '\'';
+                                }
+
+                                $expected_offset_types[] = $expected_keys_string;
                             }
-
-                            $expected_offset_types[] = $expected_keys_string;
 
                             $array_access_type = Type::getMixed();
                         }
@@ -395,8 +490,15 @@ class ArrayFetchChecker
                         $offset_type,
                         $type->getGenericKeyType(),
                         true,
-                        $offset_type->ignore_falsable_issues
-                    ) || $in_assignment
+                        $offset_type->ignore_falsable_issues,
+                        $has_scalar_match,
+                        $type_coerced,
+                        $type_coerced_from_mixed,
+                        $to_string_cast,
+                        $type_coerced_from_scalar
+                    )
+                    || $type_coerced_from_scalar
+                    || $in_assignment
                     ) {
                         if ($replacement_type) {
                             $generic_params = Type::combineUnionTypes(
@@ -409,10 +511,17 @@ class ArrayFetchChecker
                                 $offset_type
                             );
 
+                            $property_count = $type->sealed ? count($type->properties) : null;
+
                             $type = new TArray([
                                 $new_key_type,
                                 $generic_params,
                             ]);
+
+                            if (!$stmt->dim && $property_count) {
+                                ++$property_count;
+                                $type->count = $property_count;
+                            }
 
                             if (!$array_access_type) {
                                 $array_access_type = clone $generic_params;
@@ -435,7 +544,9 @@ class ArrayFetchChecker
 
                         $has_valid_offset = true;
                     } else {
-                        $expected_offset_types[] = (string)$type->getGenericKeyType();
+                        if (!$inside_isset || $type->sealed) {
+                            $expected_offset_types[] = (string)$type->getGenericKeyType()->getId();
+                        }
 
                         $array_access_type = Type::getMixed();
                     }
@@ -446,7 +557,7 @@ class ArrayFetchChecker
             if ($type instanceof TString) {
                 if ($in_assignment && $replacement_type) {
                     if ($replacement_type->isMixed()) {
-                        $codebase->analyzer->incrementMixedCount($statements_checker->getCheckedFilePath());
+                        $codebase->analyzer->incrementMixedCount($statements_checker->getFilePath());
 
                         if (IssueBuffer::accepts(
                             new MixedStringOffsetAssignment(
@@ -458,7 +569,7 @@ class ArrayFetchChecker
                             // fall through
                         }
                     } else {
-                        $codebase->analyzer->incrementNonMixedCount($statements_checker->getCheckedFilePath());
+                        $codebase->analyzer->incrementNonMixedCount($statements_checker->getFilePath());
                     }
                 }
 
@@ -485,28 +596,30 @@ class ArrayFetchChecker
                 continue;
             }
 
-            if ($type instanceof TMixed || $type instanceof TGenericParam ||  $type instanceof TEmpty) {
-                $codebase->analyzer->incrementMixedCount($statements_checker->getCheckedFilePath());
+            if ($type instanceof TMixed || $type instanceof TGenericParam || $type instanceof TEmpty) {
+                $codebase->analyzer->incrementMixedCount($statements_checker->getFilePath());
 
-                if ($in_assignment) {
-                    if (IssueBuffer::accepts(
-                        new MixedArrayAssignment(
-                            'Cannot access array value on mixed variable ' . $array_var_id,
-                            new CodeLocation($statements_checker->getSource(), $stmt)
-                        ),
-                        $statements_checker->getSuppressedIssues()
-                    )) {
-                        // fall through
-                    }
-                } else {
-                    if (IssueBuffer::accepts(
-                        new MixedArrayAccess(
-                            'Cannot access array value on mixed variable ' . $array_var_id,
-                            new CodeLocation($statements_checker->getSource(), $stmt)
-                        ),
-                        $statements_checker->getSuppressedIssues()
-                    )) {
-                        // fall through
+                if (!$inside_isset) {
+                    if ($in_assignment) {
+                        if (IssueBuffer::accepts(
+                            new MixedArrayAssignment(
+                                'Cannot access array value on mixed variable ' . $array_var_id,
+                                new CodeLocation($statements_checker->getSource(), $stmt)
+                            ),
+                            $statements_checker->getSuppressedIssues()
+                        )) {
+                            // fall through
+                        }
+                    } else {
+                        if (IssueBuffer::accepts(
+                            new MixedArrayAccess(
+                                'Cannot access array value on mixed variable ' . $array_var_id,
+                                new CodeLocation($statements_checker->getSource(), $stmt)
+                            ),
+                            $statements_checker->getSuppressedIssues()
+                        )) {
+                            // fall through
+                        }
                     }
                 }
 
@@ -514,7 +627,7 @@ class ArrayFetchChecker
                 break;
             }
 
-            $codebase->analyzer->incrementNonMixedCount($statements_checker->getCheckedFilePath());
+            $codebase->analyzer->incrementNonMixedCount($statements_checker->getFilePath());
 
             if ($type instanceof Type\Atomic\TFalse && $array_type->ignore_falsable_issues) {
                 continue;
@@ -591,7 +704,7 @@ class ArrayFetchChecker
         }
 
         if ($offset_type->isMixed()) {
-            $codebase->analyzer->incrementMixedCount($statements_checker->getCheckedFilePath());
+            $codebase->analyzer->incrementMixedCount($statements_checker->getFilePath());
 
             if (IssueBuffer::accepts(
                 new MixedArrayOffset(
@@ -603,12 +716,12 @@ class ArrayFetchChecker
                 // fall through
             }
         } else {
-            $codebase->analyzer->incrementNonMixedCount($statements_checker->getCheckedFilePath());
+            $codebase->analyzer->incrementNonMixedCount($statements_checker->getFilePath());
 
             if ($expected_offset_types) {
                 $invalid_offset_type = $expected_offset_types[0];
 
-                $used_offset = 'using a ' . $offset_type . ' offset';
+                $used_offset = 'using a ' . $offset_type->getId() . ' offset';
 
                 if ($key_value !== null) {
                     $used_offset = 'using offset value of '
@@ -650,5 +763,24 @@ class ArrayFetchChecker
         }
 
         return $array_access_type;
+    }
+
+    /**
+     * @return Type\Union
+     */
+    public static function replaceOffsetTypeWithInts(Type\Union $offset_type)
+    {
+        $offset_string_types = $offset_type->getLiteralStrings();
+
+        $offset_type = clone $offset_type;
+
+        foreach ($offset_string_types as $key => $offset_string_type) {
+            if (preg_match('/^(0|[1-9][0-9]*)$/', $offset_string_type->value)) {
+                $offset_type->addType(new Type\Atomic\TLiteralInt((int) $offset_string_type->value));
+                $offset_type->removeType($key);
+            }
+        }
+
+        return $offset_type;
     }
 }

@@ -475,10 +475,6 @@ class TraitTest extends TestCase
             'aliasedMethodInternalCallWithLocalDefinition' => [
                 '<?php
                     trait T {
-                        public function foo() : int {
-                            return $this->bar();
-                        }
-
                         public function bar() : int {
                             return 3;
                         }
@@ -495,6 +491,26 @@ class TraitTest extends TestCase
 
                         public function baz() : string {
                             return $this->bar();
+                        }
+                    }',
+            ],
+            'allMethodsReplaced' => [
+                '<?php
+                    trait T {
+                        protected function foo() : void {}
+
+                        public function bat() : void {
+                            $this->foo();
+                        }
+                    }
+
+                    class C {
+                        use T;
+
+                        protected function foo(string $s) : void {}
+
+                        public function bat() : void {
+                            $this->foo("bat");
                         }
                     }',
             ],
@@ -521,6 +537,53 @@ class TraitTest extends TestCase
                             return $this->bar();
                         }
                     }',
+            ],
+            'traitClassConst' => [
+                '<?php
+                    trait A {
+                        public function foo(): string {
+                            return B::class;
+                        }
+                    }
+
+                    trait B {}
+
+                    class C {
+                        use A;
+                    }'
+            ],
+            'noRedundantConditionForTraitStatic' => [
+                '<?php
+                    trait Foo {
+                        public function bar() : array {
+                            $type = static::class;
+                            $r = new \ReflectionClass($type);
+                            $values = $r->getConstants();
+                            $callback =
+                                /** @param mixed $v */
+                                function ($v) : bool {
+                                    return \is_int($v) || \is_string($v);
+                                };
+
+                            if (is_a($type, \Bat::class, true)) {
+                                $callback =
+                                    /** @param mixed $v */
+                                    function ($v) : bool {
+                                        return \is_int($v) && 0 === ($v & $v - 1) && $v > 0;
+                                    };
+                            }
+
+                            return array_filter($values, $callback);
+                        }
+                    }
+
+                    class Bar {
+                        use Foo;
+                    }
+
+                    class Bat {
+                        use Foo;
+                    }'
             ],
         ];
     }
@@ -569,7 +632,7 @@ class TraitTest extends TestCase
                         }
                     }',
                 'error_message' => 'MissingPropertyType - src' . DIRECTORY_SEPARATOR . 'somefile.php:3 - Property T::$foo does not have a ' .
-                    'declared type - consider null|int',
+                    'declared type - consider int|null',
             ],
             'missingPropertyTypeWithConstructorInit' => [
                 '<?php
@@ -603,7 +666,7 @@ class TraitTest extends TestCase
                         }
                     }',
                 'error_message' => 'MissingPropertyType - src' . DIRECTORY_SEPARATOR . 'somefile.php:3 - Property T::$foo does not have a ' .
-                    'declared type - consider null|int',
+                    'declared type - consider int|null',
             ],
             'missingPropertyTypeWithConstructorInitAndNullDefault' => [
                 '<?php
@@ -647,6 +710,40 @@ class TraitTest extends TestCase
                         use T;
                     }',
                 'error_message' => 'MissingPropertyType',
+            ],
+            'nestedTraitWithBadReturnType' => [
+                '<?php
+                    trait A {
+                        public function foo() : string {
+                            return 5;
+                        }
+                    }
+
+                    trait B {
+                        use A;
+                    }
+
+                    class C {
+                        use B;
+                    }',
+                'error_message' => 'InvalidReturnType',
+            ],
+            'replaceTraitMethod' => [
+                '<?php
+                    trait T {
+                        protected function foo() : void {}
+
+                        public function bat() : void {
+                            $this->foo();
+                        }
+                    }
+
+                    class C {
+                        use T;
+
+                        protected function foo(string $s) : void {}
+                    }',
+                'error_message' => 'TooFewArguments',
             ],
         ];
     }

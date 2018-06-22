@@ -42,16 +42,21 @@ class Clause
     /** @var bool */
     public $reconcilable;
 
+    /** @var bool */
+    public $generated = false;
+
     /**
      * @param array<string, array<string>>  $possibilities
      * @param bool                          $wedge
      * @param bool                          $reconcilable
+     * @param bool                          $generated
      */
-    public function __construct(array $possibilities, $wedge = false, $reconcilable = true)
+    public function __construct(array $possibilities, $wedge = false, $reconcilable = true, $generated = false)
     {
         $this->possibilities = $possibilities;
         $this->wedge = $wedge;
         $this->reconcilable = $reconcilable;
+        $this->generated = $generated;
     }
 
     /**
@@ -89,10 +94,51 @@ class Clause
 
         $possibility_string = json_encode($this->possibilities);
         if (!$possibility_string) {
-            throw new \LogicException('Error converting possibilities to json');
+            return (string)rand(0, 10000000);
         }
 
         return md5($possibility_string) .
             ($this->wedge || !$this->reconcilable ? spl_object_hash($this) : '');
+    }
+
+    public function __toString()
+    {
+        return implode(
+            ' || ',
+            array_map(
+                /**
+                 * @param string $var_id
+                 * @param string[] $values
+                 *
+                 * @return string
+                 */
+                function ($var_id, $values) {
+                    return implode(
+                        ' || ',
+                        array_map(
+                            /**
+                             * @param string $value
+                             *
+                             * @return string
+                             */
+                            function ($value) use ($var_id) {
+                                if ($value === 'falsy') {
+                                    return '!' . $var_id;
+                                }
+
+                                if ($value === '!falsy') {
+                                    return $var_id;
+                                }
+
+                                return $var_id . '==' . $value;
+                            },
+                            $values
+                        )
+                    );
+                },
+                array_keys($this->possibilities),
+                array_values($this->possibilities)
+            )
+        );
     }
 }

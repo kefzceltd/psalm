@@ -2,14 +2,14 @@
 namespace Psalm\Checker;
 
 use Psalm\Aliases;
-use Psalm\ClassLikeDocblockComment;
 use Psalm\Exception\DocblockParseException;
 use Psalm\Exception\IncorrectDocblockException;
 use Psalm\Exception\TypeParseTreeException;
 use Psalm\FileSource;
-use Psalm\FunctionDocblockComment;
+use Psalm\Scanner\ClassLikeDocblockComment;
+use Psalm\Scanner\FunctionDocblockComment;
+use Psalm\Scanner\VarDocblockComment;
 use Psalm\Type;
-use Psalm\VarDocblockComment;
 
 class CommentChecker
 {
@@ -18,7 +18,7 @@ class CommentChecker
     /**
      * @param  string           $comment
      * @param  Aliases          $aliases
-     * @param  array<string, string>|null   $template_types
+     * @param  array<string, string>|null   $template_type_names
      * @param  int|null         $var_line_number
      * @param  int|null         $came_from_line_number what line number in $source that $comment came from
      *
@@ -31,13 +31,13 @@ class CommentChecker
         $comment,
         FileSource $source,
         Aliases $aliases,
-        array $template_types = null,
+        array $template_type_names = null,
         $var_line_number = null,
         $came_from_line_number = null
     ) {
         $var_id = null;
 
-        $var_type_string = null;
+        $var_type_tokens = null;
         $original_type = null;
 
         $var_comments = [];
@@ -71,10 +71,10 @@ class CommentChecker
                     }
 
                     try {
-                        $var_type_string = Type::fixUpLocalType(
+                        $var_type_tokens = Type::fixUpLocalType(
                             $line_parts[0],
                             $aliases,
-                            $template_types
+                            $template_type_names
                         );
                     } catch (TypeParseTreeException $e) {
                         throw new DocblockParseException($line_parts[0] . ' is not a valid type');
@@ -89,26 +89,26 @@ class CommentChecker
                     }
                 }
 
-                if (!$var_type_string || !$original_type) {
+                if (!$var_type_tokens || !$original_type) {
                     continue;
                 }
 
                 try {
-                    $defined_type = Type::parseString($var_type_string, false, $template_types ?: []);
+                    $defined_type = Type::parseTokens($var_type_tokens, false, $template_type_names ?: []);
                 } catch (TypeParseTreeException $e) {
                     if (is_int($came_from_line_number)) {
                         throw new DocblockParseException(
-                            $var_type_string .
+                            implode('', $var_type_tokens) .
                             ' is not a valid type' .
                             ' (from ' .
-                            $source->getCheckedFilePath() .
+                            $source->getFilePath() .
                             ':' .
                             $came_from_line_number .
                             ')'
                         );
                     }
 
-                    throw new DocblockParseException($var_type_string . ' is not a valid type');
+                    throw new DocblockParseException(implode('', $var_type_tokens) . ' is not a valid type');
                 }
 
                 $defined_type->setFromDocblock();
@@ -197,12 +197,9 @@ class CommentChecker
                 }
 
                 if (count($line_parts) > 1) {
-                    if (preg_match('/^' . self::TYPE_REGEX . '$/', $line_parts[0])
-                        && !preg_match('/\[[^\]]+\]/', $line_parts[0])
+                    if (!preg_match('/\[[^\]]+\]/', $line_parts[0])
                         && preg_match('/^(\.\.\.)?&?\$[A-Za-z0-9_]+,?$/', $line_parts[1])
-                        && !strpos($line_parts[0], '::')
                         && $line_parts[0][0] !== '{'
-                        && !in_array($line_parts[0], ['null', 'false', 'true'], true)
                     ) {
                         if ($line_parts[1][0] === '&') {
                             $line_parts[1] = substr($line_parts[1], 1);
@@ -226,32 +223,77 @@ class CommentChecker
             }
         }
 
+        if (isset($comments['specials']['global'])) {
+            foreach ($comments['specials']['global'] as $line_number => $global) {
+                try {
+                    $line_parts = self::splitDocLine($global);
+                } catch (DocblockParseException $e) {
+                    throw $e;
+                }
+
+                if (count($line_parts) === 1 && isset($line_parts[0][0]) && $line_parts[0][0] === '$') {
+                    continue;
+                }
+
+                if (count($line_parts) > 1) {
+                    if (!preg_match('/\[[^\]]+\]/', $line_parts[0])
+                        && preg_match('/^(\.\.\.)?&?\$[A-Za-z0-9_]+,?$/', $line_parts[1])
+                        && $line_parts[0][0] !== '{'
+                    ) {
+                        if ($line_parts[1][0] === '&') {
+                            $line_parts[1] = substr($line_parts[1], 1);
+                        }
+
+                        if ($line_parts[0][0] === '$' && !preg_match('/^\$this(\||$)/', $line_parts[0])) {
+                            throw new IncorrectDocblockException('Misplaced variable');
+                        }
+
+                        $line_parts[1] = preg_replace('/,$/', '', $line_parts[1]);
+
+                        $info->globals[] = [
+                            'name' => $line_parts[1],
+                            'type' => $line_parts[0],
+                            'line_number' => (int)$line_number,
+                        ];
+                    }
+                } else {
+                    throw new DocblockParseException('Badly-formatted @param');
+                }
+            }
+        }
+
         if (isset($comments['specials']['deprecated'])) {
             $info->deprecated = true;
         }
 
         if (isset($comments['specials']['psalm-suppress'])) {
-            /** @var string $suppress_entry */
             foreach ($comments['specials']['psalm-suppress'] as $suppress_entry) {
                 $info->suppress[] = preg_split('/[\s]+/', $suppress_entry)[0];
             }
         }
 
+        if (isset($comments['specials']['throws'])) {
+            foreach ($comments['specials']['throws'] as $throws_entry) {
+                $info->throws[] = preg_split('/[\s]+/', $throws_entry)[0];
+            }
+        }
+
         if (isset($comments['specials']['template'])) {
-            /** @var string $suppress_entry */
             foreach ($comments['specials']['template'] as $template_line) {
                 $template_type = preg_split('/[\s]+/', $template_line);
 
                 if (count($template_type) > 2 && in_array(strtolower($template_type[1]), ['as', 'super'], true)) {
-                    $info->template_types[] = [$template_type[0], strtolower($template_type[1]), $template_type[2]];
+                    $info->template_type_names[] = [
+                        $template_type[0],
+                        strtolower($template_type[1]), $template_type[2]
+                    ];
                 } else {
-                    $info->template_types[] = [$template_type[0]];
+                    $info->template_type_names[] = [$template_type[0]];
                 }
             }
         }
 
         if (isset($comments['specials']['template-typeof'])) {
-            /** @var string $suppress_entry */
             foreach ($comments['specials']['template-typeof'] as $template_typeof) {
                 $typeof_parts = preg_split('/[\s]+/', $template_typeof);
 
@@ -262,6 +304,51 @@ class CommentChecker
                 $info->template_typeofs[] = [
                     'template_type' => $typeof_parts[0],
                     'param_name' => substr($typeof_parts[1], 1),
+                ];
+            }
+        }
+
+        if (isset($comments['specials']['psalm-assert'])) {
+            foreach ($comments['specials']['psalm-assert'] as $assertion) {
+                $assertion_parts = preg_split('/[\s]+/', $assertion);
+
+                if (count($assertion_parts) < 2 || $assertion_parts[1][0] !== '$') {
+                    throw new IncorrectDocblockException('Misplaced variable');
+                }
+
+                $info->assertions[] = [
+                    'type' => $assertion_parts[0],
+                    'param_name' => substr($assertion_parts[1], 1),
+                ];
+            }
+        }
+
+        if (isset($comments['specials']['psalm-assert-if-true'])) {
+            foreach ($comments['specials']['psalm-assert-if-true'] as $assertion) {
+                $assertion_parts = preg_split('/[\s]+/', $assertion);
+
+                if (count($assertion_parts) < 2 || $assertion_parts[1][0] !== '$') {
+                    throw new IncorrectDocblockException('Misplaced variable');
+                }
+
+                $info->if_true_assertions[] = [
+                    'type' => $assertion_parts[0],
+                    'param_name' => substr($assertion_parts[1], 1),
+                ];
+            }
+        }
+
+        if (isset($comments['specials']['psalm-assert-if-false'])) {
+            foreach ($comments['specials']['psalm-assert-if-false'] as $assertion) {
+                $assertion_parts = preg_split('/[\s]+/', $assertion);
+
+                if (count($assertion_parts) < 2 || $assertion_parts[1][0] !== '$') {
+                    throw new IncorrectDocblockException('Misplaced variable');
+                }
+
+                $info->if_false_assertions[] = [
+                    'type' => $assertion_parts[0],
+                    'param_name' => substr($assertion_parts[1], 1),
                 ];
             }
         }
@@ -289,15 +376,23 @@ class CommentChecker
         $info = new ClassLikeDocblockComment();
 
         if (isset($comments['specials']['template'])) {
-            /** @var string $suppress_entry */
             foreach ($comments['specials']['template'] as $template_line) {
                 $template_type = preg_split('/[\s]+/', $template_line);
 
                 if (count($template_type) > 2 && in_array(strtolower($template_type[1]), ['as', 'super'], true)) {
-                    $info->template_types[] = [$template_type[0], strtolower($template_type[1]), $template_type[2]];
+                    $info->template_type_names[] = [
+                        $template_type[0],
+                        strtolower($template_type[1]), $template_type[2]
+                    ];
                 } else {
-                    $info->template_types[] = [$template_type[0]];
+                    $info->template_type_names[] = [$template_type[0]];
                 }
+            }
+        }
+
+        if (isset($comments['specials']['template-extends'])) {
+            foreach ($comments['specials']['template-extends'] as $template_line) {
+                $info->template_parents[] = $template_line;
             }
         }
 
@@ -314,14 +409,12 @@ class CommentChecker
         }
 
         if (isset($comments['specials']['psalm-suppress'])) {
-            /** @var string $suppress_entry */
             foreach ($comments['specials']['psalm-suppress'] as $suppress_entry) {
                 $info->suppressed_issues[] = preg_split('/[\s]+/', $suppress_entry)[0];
             }
         }
 
         if (isset($comments['specials']['method'])) {
-            /** @var string $method_entry */
             foreach ($comments['specials']['method'] as $method_entry) {
                 $method_entry = preg_replace('/[ \t]+/', ' ', trim($method_entry));
 
@@ -343,7 +436,9 @@ class CommentChecker
                     $method_entry = substr($method_entry, 0, (int) $matches[0][1] + strlen((string) $matches[0][0]));
                 }
 
-                $php_string = '<?php ' . $return_docblock . ' function ' . $method_entry . '{}';
+                $method_entry = preg_replace('/[a-zA-Z\\\\0-9_]+(\|[a-zA-Z\\\\0-9_]+)+ \$/', '$', $method_entry);
+
+                $php_string = '<?php class A { ' . $return_docblock . ' public function ' . $method_entry . '{} }';
 
                 try {
                     $statements = \Psalm\Provider\StatementsProvider::parseStatements($php_string);
@@ -351,11 +446,16 @@ class CommentChecker
                     throw new DocblockParseException('Badly-formatted @method string ' . $method_entry);
                 }
 
-                if (!$statements[0] instanceof \PhpParser\Node\Stmt\Function_) {
+                if (!$statements[0] instanceof \PhpParser\Node\Stmt\Class_
+                    || !isset($statements[0]->stmts[0])
+                    || !$statements[0]->stmts[0] instanceof \PhpParser\Node\Stmt\ClassMethod
+                ) {
                     throw new DocblockParseException('Badly-formatted @method string ' . $method_entry);
                 }
 
-                $info->methods[] = $statements[0];
+
+
+                $info->methods[] = $statements[0]->stmts[0];
             }
         }
 
@@ -438,9 +538,44 @@ class CommentChecker
 
         $return_block = preg_replace('/[ \t]+/', ' ', $return_block);
 
+        $quote_char = null;
+        $escaped = false;
+
         for ($i = 0, $l = strlen($return_block); $i < $l; ++$i) {
             $char = $return_block[$i];
             $next_char = $i < $l - 1 ? $return_block[$i + 1] : null;
+
+            if ($quote_char) {
+                if ($char === $quote_char && $i > 1 && !$escaped) {
+                    $quote_char = null;
+
+                    $type .= $char;
+
+                    continue;
+                }
+
+                if ($char === '\\' && !$escaped && ($next_char === $quote_char || $next_char === '\\')) {
+                    $escaped = true;
+
+                    $type .= $char;
+
+                    continue;
+                }
+
+                $escaped = false;
+
+                $type .= $char;
+
+                continue;
+            }
+
+            if ($char === '"' || $char === '\'') {
+                $quote_char = $char;
+
+                $type .= $char;
+
+                continue;
+            }
 
             if ($char === '[' || $char === '{' || $char === '(' || $char === '<') {
                 $brackets .= $char;
@@ -636,7 +771,7 @@ class CommentChecker
             $last_type = null;
 
             foreach ($parsed_doc_comment['specials'] as $type => $lines) {
-                if ($last_type !== null && ($last_type !== 'return' || $last_type !== 'psalm-return')) {
+                if ($last_type !== null && $last_type !== 'psalm-return') {
                     $doc_comment_text .= $left_padding . ' *' . "\n";
                 }
 

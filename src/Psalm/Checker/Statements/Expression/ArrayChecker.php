@@ -43,11 +43,15 @@ class ArrayChecker
 
         $array_keys = [];
 
+        $int_offset_diff = 0;
+
         /** @var int $int_offset */
         foreach ($stmt->items as $int_offset => $item) {
             if ($item === null) {
                 continue;
             }
+
+            $item_key_value = null;
 
             if ($item->key) {
                 if (ExpressionChecker::analyze($statements_checker, $item->key, $context) === false) {
@@ -55,30 +59,40 @@ class ArrayChecker
                 }
 
                 if (isset($item->key->inferredType)) {
+                    $key_type = $item->key->inferredType;
+
+                    if ($item->key instanceof PhpParser\Node\Scalar\String_
+                        && preg_match('/^(0|[1-9][0-9]*)$/', $item->key->value)
+                    ) {
+                        $key_type = Type::getInt(false, (int) $item->key->value);
+                    }
+
                     if ($item_key_type) {
-                        $item_key_type = Type::combineUnionTypes($item->key->inferredType, $item_key_type);
+                        $item_key_type = Type::combineUnionTypes($key_type, $item_key_type);
                     } else {
-                        $item_key_type = $item->key->inferredType;
+                        $item_key_type = $key_type;
+                    }
+
+                    if ($item->key->inferredType->isSingleStringLiteral()) {
+                        $item_key_value = $item->key->inferredType->getSingleStringLiteral();
+                    } elseif ($item->key->inferredType->isSingleIntLiteral()) {
+                        $item_key_value = $item->key->inferredType->getSingleIntLiteral();
+
+                        if ($item_key_value > $int_offset + $int_offset_diff) {
+                            $int_offset_diff = $item_key_value - ($int_offset + $int_offset_diff);
+                        }
                     }
                 }
             } else {
+                $item_key_value = $int_offset + $int_offset_diff;
                 $item_key_type = Type::getInt();
             }
 
-            if (ExpressionChecker::analyze($statements_checker, $item->value, $context) === false) {
-                return false;
-            }
-
-            if ($item->key instanceof PhpParser\Node\Scalar\String_
-                || $item->key instanceof PhpParser\Node\Scalar\LNumber
-                || !$item->key
-            ) {
-                $array_key = $item->key ? $item->key->value : $int_offset;
-
-                if (isset($array_keys[$array_key])) {
+            if ($item_key_value !== null) {
+                if (isset($array_keys[$item_key_value])) {
                     if (IssueBuffer::accepts(
                         new DuplicateArrayKey(
-                            'Key \'' . $array_key . '\' already exists on array',
+                            'Key \'' . $item_key_value . '\' already exists on array',
                             new CodeLocation($statements_checker->getSource(), $item)
                         ),
                         $statements_checker->getSuppressedIssues()
@@ -87,7 +101,11 @@ class ArrayChecker
                     }
                 }
 
-                $array_keys[$array_key] = true;
+                $array_keys[$item_key_value] = true;
+            }
+
+            if (ExpressionChecker::analyze($statements_checker, $item->value, $context) === false) {
+                return false;
             }
 
             if ($item_value_type && $item_value_type->isMixed() && !$can_create_objectlike) {
@@ -95,32 +113,22 @@ class ArrayChecker
             }
 
             if (isset($item->value->inferredType)) {
-                if ($item->key instanceof PhpParser\Node\Scalar\String_
-                    || $item->key instanceof PhpParser\Node\Scalar\LNumber
-                    || !$item->key
-                ) {
-                    $array_key = $item->key ? $item->key->value : $int_offset;
-
-                    $property_types[$array_key] = $item->value->inferredType;
+                if ($item_key_value !== null) {
+                    $property_types[$item_key_value] = $item->value->inferredType;
                 } else {
                     $can_create_objectlike = false;
                 }
 
                 if ($item_value_type) {
-                    $item_value_type = Type::combineUnionTypes($item->value->inferredType, $item_value_type);
+                    $item_value_type = Type::combineUnionTypes($item->value->inferredType, clone $item_value_type);
                 } else {
                     $item_value_type = $item->value->inferredType;
                 }
             } else {
                 $item_value_type = Type::getMixed();
 
-                if ($item->key instanceof PhpParser\Node\Scalar\String_
-                    || $item->key instanceof PhpParser\Node\Scalar\LNumber
-                    || !$item->key
-                ) {
-                    $array_key = $item->key ? $item->key->value : $int_offset;
-
-                    $property_types[$array_key] = $item_value_type;
+                if ($item_key_value !== null) {
+                    $property_types[$item_key_value] = $item_value_type;
                 } else {
                     $can_create_objectlike = false;
                 }
@@ -133,16 +141,23 @@ class ArrayChecker
             && ($item_key_type->hasString() || $item_key_type->hasInt())
             && $can_create_objectlike
         ) {
-            $stmt->inferredType = new Type\Union([new Type\Atomic\ObjectLike($property_types)]);
+            $object_like = new Type\Atomic\ObjectLike($property_types);
+            $object_like->sealed = true;
+
+            $stmt->inferredType = new Type\Union([$object_like]);
 
             return null;
         }
 
+        $array_type = new Type\Atomic\TArray([
+            $item_key_type ?: new Type\Union([new TInt, new TString]),
+            $item_value_type ?: Type::getMixed(),
+        ]);
+
+        $array_type->count = count($stmt->items);
+
         $stmt->inferredType = new Type\Union([
-            new Type\Atomic\TArray([
-                $item_key_type ?: new Type\Union([new TInt, new TString]),
-                $item_value_type ?: Type::getMixed(),
-            ]),
+            $array_type,
         ]);
 
         return null;

@@ -104,16 +104,6 @@ abstract class ClassLikeChecker extends SourceChecker implements StatementsSourc
         $this->fq_class_name = $fq_class_name;
 
         $this->storage = $this->file_checker->project_checker->classlike_storage_provider->get($fq_class_name);
-
-        if ($this->storage->location) {
-            $storage_file_path = $this->storage->location->file_path;
-            $source_file_path = $this->source->getCheckedFilePath();
-
-            if (!Config::getInstance()->use_case_sensitive_file_names) {
-                $storage_file_path = strtolower($storage_file_path);
-                $source_file_path = strtolower($source_file_path);
-            }
-        }
     }
 
     /**
@@ -207,14 +197,14 @@ abstract class ClassLikeChecker extends SourceChecker implements StatementsSourc
             return;
         }
 
-        $project_checker = $statements_source->getFileChecker()->project_checker;
-        $codebase = $project_checker->codebase;
-
         $fq_class_name = preg_replace('/^\\\/', '', $fq_class_name);
 
-        if (in_array($fq_class_name, ['callable', 'iterable'], true)) {
+        if (in_array($fq_class_name, ['callable', 'iterable', 'self', 'static', 'parent'], true)) {
             return true;
         }
+
+        $project_checker = $statements_source->getFileChecker()->project_checker;
+        $codebase = $project_checker->codebase;
 
         if (preg_match(
             '/(^|\\\)(int|float|bool|string|void|null|false|true|resource|object|numeric|mixed)$/i',
@@ -242,15 +232,17 @@ abstract class ClassLikeChecker extends SourceChecker implements StatementsSourc
         $interface_exists = $codebase->interfaceExists($fq_class_name);
 
         if (!$class_exists && !$interface_exists) {
-            if (IssueBuffer::accepts(
-                new UndefinedClass(
-                    'Class or interface ' . $fq_class_name . ' does not exist',
-                    $code_location,
-                    $fq_class_name
-                ),
-                $suppressed_issues
-            )) {
-                return false;
+            if (!$codebase->classlikes->traitExists($fq_class_name)) {
+                if (IssueBuffer::accepts(
+                    new UndefinedClass(
+                        'Class or interface ' . $fq_class_name . ' does not exist',
+                        $code_location,
+                        $fq_class_name
+                    ),
+                    $suppressed_issues
+                )) {
+                    return false;
+                }
             }
 
             return null;
@@ -413,16 +405,20 @@ abstract class ClassLikeChecker extends SourceChecker implements StatementsSourc
     {
         switch (gettype($value)) {
             case 'boolean':
-                return Type::getBool();
+                if ($value) {
+                    return Type::getTrue();
+                }
+
+                return Type::getFalse();
 
             case 'integer':
-                return Type::getInt();
+                return Type::getInt(false, $value);
 
             case 'double':
-                return Type::getFloat();
+                return Type::getFloat($value);
 
             case 'string':
-                return Type::getString();
+                return Type::getString($value);
 
             case 'array':
                 return Type::getArray();

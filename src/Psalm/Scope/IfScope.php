@@ -1,6 +1,7 @@
 <?php
 namespace Psalm\Scope;
 
+use Psalm\CodeLocation;
 use Psalm\Clause;
 use Psalm\Type;
 
@@ -27,6 +28,11 @@ class IfScope
     public $assigned_var_ids = null;
 
     /**
+     * @var array<string, bool>
+     */
+    public $possibly_assigned_var_ids = [];
+
+    /**
      * @var array<string, Type\Union>
      */
     public $possibly_redefined_vars = [];
@@ -37,7 +43,7 @@ class IfScope
     public $updated_vars = [];
 
     /**
-     * @var array<string, string>
+     * @var array<string, array<int, array<int, string>>>
      */
     public $negated_types = [];
 
@@ -54,9 +60,13 @@ class IfScope
     /**
      * @var array<int, Clause>
      */
-    public $negated_clauses;
+    public $negated_clauses = [];
 
     /**
+     * These are the set of clauses that could be applied after the `if`
+     * statement, if the `if` statement contains branches with leaving statments,
+     * and the else leaves too
+     *
      * @var array<int, Clause>
      */
     public $reasonable_clauses = [];
@@ -72,4 +82,9 @@ class IfScope
      * @var string[]
      */
     public $final_actions = [];
+
+    /**
+     * @var array<string, array<string, CodeLocation>>
+     */
+    public $new_unreferenced_vars = [];
 }

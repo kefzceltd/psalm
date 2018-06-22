@@ -48,7 +48,10 @@ class FileStorage
     public $declaring_constants = [];
 
     /** @var array<string, string> */
-    public $included_file_paths = [];
+    public $required_file_paths = [];
+
+    /** @var array<string, string> */
+    public $required_by_file_paths = [];
 
     /** @var bool */
     public $populated = false;
@@ -56,8 +59,24 @@ class FileStorage
     /** @var bool */
     public $deep_scan = false;
 
+    /** @var bool */
+    public $has_extra_statements = false;
+
     /**
      * @var string
      */
     public $hash = '';
+
+    /**
+     * @var bool
+     */
+    public $has_visitor_issues = false;
+
+    /**
+     * @param string $file_path
+     */
+    public function __construct($file_path)
+    {
+        $this->file_path = $file_path;
+    }
 }

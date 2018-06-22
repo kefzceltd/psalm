@@ -179,27 +179,35 @@ class ConstFetchChecker
                 }
 
                 if ($all_class_constants && isset($all_class_constants[$stmt->name->name])) {
-                    IssueBuffer::add(
+                    if (IssueBuffer::accepts(
                         new InaccessibleClassConstant(
                             'Constant ' . $const_id . ' is not visible in this context',
                             new CodeLocation($statements_checker->getSource(), $stmt)
-                        )
-                    );
+                        ),
+                        $statements_checker->getSuppressedIssues()
+                    )) {
+                        // fall through
+                    }
                 } else {
-                    IssueBuffer::add(
+                    if (IssueBuffer::accepts(
                         new UndefinedConstant(
                             'Constant ' . $const_id . ' is not defined',
                             new CodeLocation($statements_checker->getSource(), $stmt)
-                        )
-                    );
+                        ),
+                        $statements_checker->getSuppressedIssues()
+                    )) {
+                        // fall through
+                    }
                 }
 
                 return false;
             }
-            $stmt->inferredType = isset($class_constants[$stmt->name->name])
-                && $first_part_lc !== 'static'
-                ? $class_constants[$stmt->name->name]
-                : Type::getMixed();
+
+            if (isset($class_constants[$stmt->name->name]) && $first_part_lc !== 'static') {
+                $stmt->inferredType = clone $class_constants[$stmt->name->name];
+            } else {
+                $stmt->inferredType = Type::getMixed();
+            }
 
             return null;
         }

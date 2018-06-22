@@ -3,6 +3,7 @@ namespace Psalm\Checker\Statements\Expression\Call;
 
 use PhpParser;
 use Psalm\Checker\ClassLikeChecker;
+use Psalm\Checker\FunctionLikeChecker;
 use Psalm\Checker\MethodChecker;
 use Psalm\Checker\Statements\ExpressionChecker;
 use Psalm\Checker\StatementsChecker;
@@ -198,6 +199,11 @@ class StaticCallChecker extends \Psalm\Checker\Statements\Expression\CallChecker
                     continue;
                 }
 
+                // ok for now
+                if ($lhs_type_part instanceof Type\Atomic\TLiteralClassString) {
+                    continue;
+                }
+
                 if ($lhs_type_part instanceof Type\Atomic\TString) {
                     if ($config->allow_string_standin_for_class
                         && !$lhs_type_part instanceof Type\Atomic\TNumericString
@@ -259,11 +265,16 @@ class StaticCallChecker extends \Psalm\Checker\Statements\Expression\CallChecker
                 $method_id = $fq_class_name . '::' . strtolower($stmt->name->name);
                 $cased_method_id = $fq_class_name . '::' . $stmt->name->name;
 
+                $source_method_id = $source instanceof FunctionLikeChecker
+                    ? $source->getMethodId()
+                    : null;
+
                 $does_method_exist = MethodChecker::checkMethodExists(
                     $project_checker,
                     $cased_method_id,
                     new CodeLocation($source, $stmt),
-                    $statements_checker->getSuppressedIssues()
+                    $statements_checker->getSuppressedIssues(),
+                    $source_method_id
                 );
 
                 if (!$does_method_exist) {
@@ -304,12 +315,40 @@ class StaticCallChecker extends \Psalm\Checker\Statements\Expression\CallChecker
                 ) {
                     if (MethodChecker::checkStatic(
                         $method_id,
-                        strtolower($stmt->class->parts[0]) === 'self',
+                        strtolower($stmt->class->parts[0]) === 'self' || $context->self === $fq_class_name,
+                        !$statements_checker->isStatic(),
                         $project_checker,
                         new CodeLocation($source, $stmt),
-                        $statements_checker->getSuppressedIssues()
+                        $statements_checker->getSuppressedIssues(),
+                        $is_dynamic_this_method
                     ) === false) {
                         // fall through
+                    }
+
+                    if ($is_dynamic_this_method) {
+                        $fake_method_call_expr = new PhpParser\Node\Expr\MethodCall(
+                            new PhpParser\Node\Expr\Variable(
+                                'this',
+                                $stmt->class->getAttributes()
+                            ),
+                            $stmt->name,
+                            $stmt->args,
+                            $stmt->getAttributes()
+                        );
+
+                        if (MethodCallChecker::analyze(
+                            $statements_checker,
+                            $fake_method_call_expr,
+                            $context
+                        ) === false) {
+                            return false;
+                        }
+
+                        if (isset($fake_method_call_expr->inferredType)) {
+                            $stmt->inferredType = $fake_method_call_expr->inferredType;
+                        }
+
+                        return null;
                     }
                 }
 
@@ -341,7 +380,8 @@ class StaticCallChecker extends \Psalm\Checker\Statements\Expression\CallChecker
 
                 $return_type_candidate = $codebase->methods->getMethodReturnType(
                     $method_id,
-                    $self_fq_class_name
+                    $self_fq_class_name,
+                    $stmt->args
                 );
 
                 if ($return_type_candidate) {
@@ -394,8 +434,10 @@ class StaticCallChecker extends \Psalm\Checker\Statements\Expression\CallChecker
                             $method_id,
                             $appearing_method_id,
                             $declaring_method_id,
+                            null,
                             $stmt->args,
                             $code_location,
+                            $context,
                             $file_manipulations,
                             $return_type_candidate
                         );

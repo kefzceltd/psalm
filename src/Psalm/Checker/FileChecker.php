@@ -25,12 +25,22 @@ class FileChecker extends SourceChecker implements StatementsSource
     /**
      * @var string|null
      */
-    protected $actual_file_name;
+    protected $root_file_path;
 
     /**
      * @var string|null
      */
-    protected $actual_file_path;
+    protected $root_file_name;
+
+    /**
+     * @var array<string, bool>
+     */
+    protected $required_file_paths = [];
+
+    /**
+     * @var array<string, bool>
+     */
+    protected $parent_file_paths = [];
 
     /**
      * @var array<int, string>
@@ -84,7 +94,7 @@ class FileChecker extends SourceChecker implements StatementsSource
      *
      * @return void
      */
-    public function analyze(Context $file_context = null, $preserve_checkers = false)
+    public function analyze(Context $file_context = null, $preserve_checkers = false, Context $global_context = null)
     {
         $codebase = $this->project_checker->codebase;
 
@@ -114,7 +124,7 @@ class FileChecker extends SourceChecker implements StatementsSource
         // if there are any leftover statements, evaluate them,
         // in turn causing the classes/interfaces be evaluated
         if ($leftover_stmts) {
-            $statements_checker->analyze($leftover_stmts, $this->context, null, null, true);
+            $statements_checker->analyze($leftover_stmts, $this->context, $global_context, true);
         }
 
         // check any leftover interfaces not already evaluated
@@ -321,17 +331,93 @@ class FileChecker extends SourceChecker implements StatementsSource
     /**
      * @return string
      */
-    public function getCheckedFileName()
+    public function getRootFileName()
     {
-        return $this->actual_file_name ?: $this->file_name;
+        return $this->root_file_name ?: $this->file_name;
     }
 
     /**
      * @return string
      */
-    public function getCheckedFilePath()
+    public function getRootFilePath()
     {
-        return $this->actual_file_path ?: $this->file_path;
+        return $this->root_file_path ?: $this->file_path;
+    }
+
+    /**
+     * @param string $file_path
+     * @param string $file_name
+     *
+     * @return void
+     */
+    public function setRootFilePath($file_path, $file_name)
+    {
+        $this->root_file_name = $file_name;
+        $this->root_file_path = $file_path;
+    }
+
+    /**
+     * @param string $file_path
+     *
+     * @return void
+     */
+    public function addRequiredFilePath($file_path)
+    {
+        $this->required_file_paths[$file_path] = true;
+    }
+
+    /**
+     * @param string $file_path
+     *
+     * @return void
+     */
+    public function addParentFilePath($file_path)
+    {
+        $this->parent_file_paths[$file_path] = true;
+    }
+
+    /**
+     * @param string $file_path
+     *
+     * @return bool
+     */
+    public function hasParentFilePath($file_path)
+    {
+        return $this->file_path === $file_path || isset($this->parent_file_paths[$file_path]);
+    }
+
+    /**
+     * @param string $file_path
+     *
+     * @return bool
+     */
+    public function hasAlreadyRequiredFilePath($file_path)
+    {
+        return isset($this->required_file_paths[$file_path]);
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    public function getRequiredFilePaths()
+    {
+        return array_keys($this->required_file_paths);
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    public function getParentFilePaths()
+    {
+        return array_keys($this->parent_file_paths);
+    }
+
+    /**
+     * @return int
+     */
+    public function getRequireNesting()
+    {
+        return count($this->parent_file_paths);
     }
 
     /**

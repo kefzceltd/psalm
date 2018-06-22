@@ -170,7 +170,7 @@ class AssignmentChecker
         $codebase = $project_checker->codebase;
 
         if ($assign_value_type->isMixed()) {
-            $codebase->analyzer->incrementMixedCount($statements_checker->getCheckedFilePath());
+            $codebase->analyzer->incrementMixedCount($statements_checker->getFilePath());
 
             if (!$assign_var instanceof PhpParser\Node\Expr\PropertyFetch) {
                 if (IssueBuffer::accepts(
@@ -184,7 +184,7 @@ class AssignmentChecker
                 }
             }
         } else {
-            $codebase->analyzer->incrementNonMixedCount($statements_checker->getCheckedFilePath());
+            $codebase->analyzer->incrementNonMixedCount($statements_checker->getFilePath());
 
             if ($var_id
                 && isset($context->byref_constraints[$var_id])
@@ -239,11 +239,12 @@ class AssignmentChecker
             $context->vars_in_scope[$var_id] = $assign_value_type;
             $context->vars_possibly_in_scope[$var_id] = true;
             $context->assigned_var_ids[$var_id] = true;
+            $context->possibly_assigned_var_ids[$var_id] = true;
 
             $location = new CodeLocation($statements_checker, $assign_var);
 
             if ($context->collect_references) {
-                $context->unreferenced_vars[$var_id] = $location;
+                $context->unreferenced_vars[$var_id] = [$location->getHash() => $location];
             }
 
             if (!$statements_checker->hasVariable($var_id)) {
@@ -260,7 +261,7 @@ class AssignmentChecker
             }
 
             if (isset($context->byref_constraints[$var_id])) {
-                $statements_checker->registerVariableUse($location);
+                $statements_checker->registerVariableUses([$location->getHash() => $location]);
             }
         } elseif ($assign_var instanceof PhpParser\Node\Expr\List_
             || $assign_var instanceof PhpParser\Node\Expr\Array_
@@ -337,12 +338,16 @@ class AssignmentChecker
 
                 if ($list_var_id) {
                     $context->vars_possibly_in_scope[$list_var_id] = true;
+                    $context->assigned_var_ids[$list_var_id] = true;
+                    $context->possibly_assigned_var_ids[$list_var_id] = true;
+
+                    $already_in_scope = isset($context->vars_in_scope[$var_id]);
 
                     if (strpos($list_var_id, '-') === false && strpos($list_var_id, '[') === false) {
-                        $location = new CodeLocation($statements_checker, $assign_var);
+                        $location = new CodeLocation($statements_checker, $var);
 
                         if ($context->collect_references) {
-                            $context->unreferenced_vars[$list_var_id] = $location;
+                            $context->unreferenced_vars[$list_var_id] = [$location->getHash() => $location];
                         }
 
                         if (!$statements_checker->hasVariable($list_var_id)) {
@@ -359,7 +364,7 @@ class AssignmentChecker
                         }
 
                         if (isset($context->byref_constraints[$list_var_id])) {
-                            $statements_checker->registerVariableUse($location);
+                            $statements_checker->registerVariableUses([$location->getHash() => $location]);
                         }
                     }
 
@@ -382,7 +387,7 @@ class AssignmentChecker
                         }
                     }
 
-                    if ($context->hasVariable($list_var_id)) {
+                    if ($already_in_scope) {
                         // removes dependennt vars from $context
                         $context->removeDescendents(
                             $list_var_id,
@@ -403,20 +408,32 @@ class AssignmentChecker
                 $assign_value_type
             );
         } elseif ($assign_var instanceof PhpParser\Node\Expr\PropertyFetch) {
+            if (!$assign_var->name instanceof PhpParser\Node\Identifier) {
+                if (ExpressionChecker::analyze($statements_checker, $assign_var->name, $context) === false) {
+                    return false;
+                }
+            }
+
             if ($assign_var->name instanceof PhpParser\Node\Identifier) {
+                $prop_name = $assign_var->name->name;
+            } elseif (isset($assign_var->name->inferredType)
+                && $assign_var->name->inferredType->isSingleStringLiteral()
+            ) {
+                $prop_name = $assign_var->name->inferredType->getSingleStringLiteral();
+            } else {
+                $prop_name = null;
+            }
+
+            if ($prop_name) {
                 PropertyAssignmentChecker::analyzeInstance(
                     $statements_checker,
                     $assign_var,
-                    $assign_var->name->name,
+                    $prop_name,
                     $assign_value,
                     $assign_value_type,
                     $context
                 );
             } else {
-                if (ExpressionChecker::analyze($statements_checker, $assign_var->name, $context) === false) {
-                    return false;
-                }
-
                 if (ExpressionChecker::analyze($statements_checker, $assign_var->var, $context) === false) {
                     return false;
                 }
@@ -492,6 +509,17 @@ class AssignmentChecker
             $statements_checker
         );
 
+        if ($array_var_id && $context->collect_references && $stmt->var instanceof PhpParser\Node\Expr\Variable) {
+            $location = new CodeLocation($statements_checker, $stmt->var);
+            $context->assigned_var_ids[$array_var_id] = true;
+            $context->possibly_assigned_var_ids[$array_var_id] = true;
+            $statements_checker->registerVariableAssignment(
+                $array_var_id,
+                $location
+            );
+            $context->unreferenced_vars[$array_var_id] = [$location->getHash() => $location];
+        }
+
         $var_type = isset($stmt->var->inferredType) ? clone $stmt->var->inferredType : null;
         $expr_type = isset($stmt->expr->inferredType) ? $stmt->expr->inferredType : null;
 
@@ -510,17 +538,26 @@ class AssignmentChecker
                 $context
             );
 
-            if ($result_type && $array_var_id) {
+            if ($stmt->var instanceof PhpParser\Node\Expr\ArrayDimFetch) {
+                ArrayAssignmentChecker::analyze(
+                    $statements_checker,
+                    $stmt->var,
+                    $context,
+                    $result_type ?: Type::getMixed(true)
+                );
+            } elseif ($result_type && $array_var_id) {
                 $context->vars_in_scope[$array_var_id] = $result_type;
+                $stmt->inferredType = clone $context->vars_in_scope[$array_var_id];
             }
         } elseif ($stmt instanceof PhpParser\Node\Expr\AssignOp\Div
             && $var_type
             && $expr_type
-            && $var_type->hasNumericType()
-            && $expr_type->hasNumericType()
+            && $var_type->hasDefinitelyNumericType()
+            && $expr_type->hasDefinitelyNumericType()
             && $array_var_id
         ) {
             $context->vars_in_scope[$array_var_id] = Type::combineUnionTypes(Type::getFloat(), Type::getInt());
+            $stmt->inferredType = clone $context->vars_in_scope[$array_var_id];
         } elseif ($stmt instanceof PhpParser\Node\Expr\AssignOp\Concat) {
             BinaryOpChecker::analyzeConcatOp(
                 $statements_checker,
@@ -532,6 +569,7 @@ class AssignmentChecker
 
             if ($result_type && $array_var_id) {
                 $context->vars_in_scope[$array_var_id] = $result_type;
+                $stmt->inferredType = clone $context->vars_in_scope[$array_var_id];
             }
         }
 

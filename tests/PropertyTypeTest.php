@@ -167,6 +167,7 @@ class PropertyTypeTest extends TestCase
                 'error_levels' => [
                     'UndefinedThisPropertyFetch',
                     'MixedAssignment',
+                    'MixedArgument',
                     'MixedMethodCall',
                     'MixedPropertyFetch',
                 ],
@@ -204,6 +205,9 @@ class PropertyTypeTest extends TestCase
                     }
 
                     $a = rand(0, 10) ? new A(): new B();
+                    if (rand(0, 1)) {
+                        $a = null;
+                    }
                     $b = null;
 
                     if (rand(0, 10) === 4) {
@@ -456,7 +460,7 @@ class PropertyTypeTest extends TestCase
                     }
 
                     class A {
-                      use T;
+                        use T;
                     }',
             ],
             'abstractClassWithNoConstructor' => [
@@ -883,6 +887,47 @@ class PropertyTypeTest extends TestCase
                         }
                     }',
             ],
+            'suppressUndefinedThisPropertyFetch' => [
+                '<?php
+                    class A {
+                        public function __construct() {
+                            /** @psalm-suppress UndefinedThisPropertyAssignment */
+                            $this->bar = rand(0, 1) ? "hello" : null;
+                        }
+
+                        /** @psalm-suppress UndefinedThisPropertyFetch */
+                        public function foo() : void {
+                            if ($this->bar === null && rand(0, 1)) {}
+                        }
+                    }',
+            ],
+            'suppressUndefinedPropertyFetch' => [
+                '<?php
+                    class A {
+                        public function __construct() {
+                            /** @psalm-suppress UndefinedThisPropertyAssignment */
+                            $this->bar = rand(0, 1) ? "hello" : null;
+                        }
+                    }
+
+                    $a = new A();
+                    /** @psalm-suppress UndefinedPropertyFetch */
+                    if ($a->bar === null && rand(0, 1)) {}',
+            ],
+            'setPropertiesOfSpecialObjects' => [
+                '<?php
+                    $a = new stdClass();
+                    $a->b = "c";
+
+                    $d = new SimpleXMLElement("<person><child role=\"son\"></child></person>");
+                    $d->e = "f";',
+                'assertions' => [
+                    '$a' => 'stdClass',
+                    '$a->b' => 'string',
+                    '$d' => 'SimpleXMLElement',
+                    '$d->e' => 'mixed',
+                ],
+            ],
         ];
     }
 
@@ -917,6 +962,17 @@ class PropertyTypeTest extends TestCase
                     }',
                 'error_message' => 'UndefinedThisPropertyAssignment',
             ],
+            'undefinedStaticPropertyAssignment' => [
+                '<?php
+                    class A {
+                        public static function barBar(): void
+                        {
+                            /** @psalm-suppress UndefinedPropertyFetch */
+                            self::$foo = 5;
+                        }
+                    }',
+                'error_message' => 'UndefinedPropertyAssignment',
+            ],
             'undefinedThisPropertyFetch' => [
                 '<?php
                     class A {
@@ -936,7 +992,7 @@ class PropertyTypeTest extends TestCase
                         }
                     }',
                 'error_message' => 'MissingPropertyType - src' . DIRECTORY_SEPARATOR . 'somefile.php:3 - Property A::$foo does not have a ' .
-                    'declared type - consider null|int',
+                    'declared type - consider int|null',
             ],
             'missingPropertyTypeWithConstructorInit' => [
                 '<?php
@@ -964,7 +1020,7 @@ class PropertyTypeTest extends TestCase
                         }
                     }',
                 'error_message' => 'MissingPropertyType - src' . DIRECTORY_SEPARATOR . 'somefile.php:3 - Property A::$foo does not have a ' .
-                    'declared type - consider null|int',
+                    'declared type - consider int|null',
             ],
             'missingPropertyTypeWithConstructorInitAndNullDefault' => [
                 '<?php
@@ -991,6 +1047,77 @@ class PropertyTypeTest extends TestCase
                     }',
                 'error_message' => 'InvalidPropertyAssignmentValue',
             ],
+            'badStaticAssignment' => [
+                '<?php
+                    class A {
+                        /** @var string */
+                        public static $foo = "a";
+
+                        public static function barBar(): void
+                        {
+                            self::$foo = 5;
+                        }
+                    }',
+                'error_message' => 'InvalidPropertyAssignmentValue',
+            ],
+            'typeCoercion' => [
+                '<?php
+                    class A {
+                        /** @var B|null */
+                        public $foo;
+
+                        public function barBar(A $a): void
+                        {
+                            $this->foo = $a;
+                        }
+                    }
+
+                    class B extends A {}',
+                'error_message' => 'TypeCoercion',
+            ],
+            'mixedTypeCoercion' => [
+                '<?php
+                    class A {
+                        /** @var array<int, A> */
+                        public $foo = [];
+
+                        /** @param A[] $arr */
+                        public function barBar(array $arr): void
+                        {
+                            $this->foo = $arr;
+                        }
+                    }',
+                'error_message' => 'MixedTypeCoercion',
+            ],
+            'staticTypeCoercion' => [
+                '<?php
+                    class A {
+                        /** @var B|null */
+                        public static $foo;
+
+                        public static function barBar(A $a): void
+                        {
+                            self::$foo = $a;
+                        }
+                    }
+
+                    class B extends A {}',
+                'error_message' => 'TypeCoercion',
+            ],
+            'staticMixedTypeCoercion' => [
+                '<?php
+                    class A {
+                        /** @var array<int, A> */
+                        public static $foo = [];
+
+                        /** @param A[] $arr */
+                        public static function barBar(array $arr): void
+                        {
+                            self::$foo = $arr;
+                        }
+                    }',
+                'error_message' => 'MixedTypeCoercion',
+            ],
             'possiblyBadAssignment' => [
                 '<?php
                     class A {
@@ -1000,6 +1127,19 @@ class PropertyTypeTest extends TestCase
                         public function barBar(): void
                         {
                             $this->foo = rand(0, 1) ? 5 : "hello";
+                        }
+                    }',
+                'error_message' => 'PossiblyInvalidPropertyAssignmentValue',
+            ],
+            'possiblyBadStaticAssignment' => [
+                '<?php
+                    class A {
+                        /** @var string */
+                        public static $foo = "a";
+
+                        public function barBar(): void
+                        {
+                            self::$foo = rand(0, 1) ? 5 : "hello";
                         }
                     }',
                 'error_message' => 'PossiblyInvalidPropertyAssignmentValue',

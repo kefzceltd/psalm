@@ -42,17 +42,21 @@ class MethodChecker extends FunctionLikeChecker
      *
      * @param  string          $method_id
      * @param  bool            $self_call
+     * @param  bool            $is_context_dynamic
      * @param  CodeLocation    $code_location
      * @param  array<string>   $suppressed_issues
+     * @param  bool            $is_dynamic_this_method
      *
      * @return bool
      */
     public static function checkStatic(
         $method_id,
         $self_call,
+        $is_context_dynamic,
         ProjectChecker $project_checker,
         CodeLocation $code_location,
-        array $suppressed_issues
+        array $suppressed_issues,
+        &$is_dynamic_this_method = false
     ) {
         $codebase_methods = $project_checker->codebase->methods;
 
@@ -66,16 +70,20 @@ class MethodChecker extends FunctionLikeChecker
 
         if (!$storage->is_static) {
             if ($self_call) {
-                if (IssueBuffer::accepts(
-                    new NonStaticSelfCall(
-                        'Method ' . $codebase_methods->getCasedMethodId($method_id) .
-                            ' is not static, but is called ' .
-                            'using self::',
-                        $code_location
-                    ),
-                    $suppressed_issues
-                )) {
-                    return false;
+                if (!$is_context_dynamic) {
+                    if (IssueBuffer::accepts(
+                        new NonStaticSelfCall(
+                            'Method ' . $codebase_methods->getCasedMethodId($method_id) .
+                                ' is not static, but is called ' .
+                                'using self::',
+                            $code_location
+                        ),
+                        $suppressed_issues
+                    )) {
+                        return false;
+                    }
+                } else {
+                    $is_dynamic_this_method = true;
                 }
             } else {
                 if (IssueBuffer::accepts(
@@ -99,6 +107,7 @@ class MethodChecker extends FunctionLikeChecker
      * @param  string       $method_id
      * @param  CodeLocation $code_location
      * @param  array        $suppressed_issues
+     * @param  string|null  $source_method_id
      *
      * @return bool|null
      */
@@ -106,9 +115,13 @@ class MethodChecker extends FunctionLikeChecker
         ProjectChecker $project_checker,
         $method_id,
         CodeLocation $code_location,
-        array $suppressed_issues
+        array $suppressed_issues,
+        $source_method_id = null
     ) {
-        if ($project_checker->codebase->methodExists($method_id, $code_location)) {
+        if ($project_checker->codebase->methodExists(
+            $method_id,
+            $source_method_id !== $method_id ? $code_location : null
+        )) {
             return true;
         }
 
@@ -183,7 +196,7 @@ class MethodChecker extends FunctionLikeChecker
         if (!$declaring_method_id) {
             $method_name = explode('::', $method_id)[1];
 
-            if ($method_name === '__construct') {
+            if ($method_name === '__construct' || $method_id === 'Closure::__invoke') {
                 return null;
             }
 

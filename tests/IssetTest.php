@@ -12,6 +12,33 @@ class IssetTest extends TestCase
     public function providerFileCheckerValidCodeParse()
     {
         return [
+            'issetWithSimpleAssignment' => [
+                '<?php
+                    $array = [];
+
+                    if (isset($array[$a = 5])) {
+                        print "hello";
+                    }
+
+                    print $a;',
+                'assertions' => [],
+                'error_levels' => ['EmptyArrayAccess'],
+            ],
+            'issetWithMultipleAssignments' => [
+                '<?php
+                    if (rand(0, 4) > 2) {
+                        $arr = [5 => [3 => "hello"]];
+                    }
+
+                    if (isset($arr[$a = 5][$b = 3])) {
+
+                    }
+
+                    echo $a;
+                    echo $b;',
+                'assertions' => [],
+                'error_levels' => ['MixedArrayAccess'],
+            ],
             'isset' => [
                 '<?php
                     $a = isset($b) ? $b : null;',
@@ -61,9 +88,6 @@ class IssetTest extends TestCase
                     }',
                 'assertions' => [],
                 'error_levels' => ['PossiblyInvalidArrayAccess'],
-                'scope_vars' => [
-                    '$foo' => \Psalm\Type::getArray(),
-                ],
             ],
             'nullCoalesceKeyedOffset' => [
                 '<?php
@@ -251,6 +275,18 @@ class IssetTest extends TestCase
                         return $arr;
                     }',
             ],
+            'arrayAccessAfterOneIsset' => [
+                '<?php
+                    $arr = [];
+
+                    foreach ([1, 2, 3] as $foo) {
+                        if (!isset($arr["bar"])) {
+                            $arr["bar"] = 0;
+                        }
+
+                        echo $arr["bar"];
+                    }',
+            ],
             'arrayAccessAfterTwoIssets' => [
                 '<?php
                     $arr = [];
@@ -267,6 +303,78 @@ class IssetTest extends TestCase
                         echo $arr["bar"];
                     }',
             ],
+            'issetAdditionalVar' => [
+                '<?php
+                    class Example {
+                        const FOO = "foo";
+                        /**
+                         * @param array{bar:string} $params
+                         */
+                        public function test(array $params) : bool {
+                            if (isset($params[self::FOO])) {
+                                return true;
+                            }
+
+                            if (isset($params["bat"])) {
+                                return true;
+                            }
+
+                            return false;
+                        }
+                    }'
+            ],
+            'noRedundantConditionAfterIsset' => [
+                '<?php
+                    /** @param array<string, array<int, string>> $arr */
+                    function foo(array $arr, string $k) : void {
+                        if (!isset($arr[$k])) {
+                            return;
+                        }
+
+                        if ($arr[$k][0]) {}
+                    }',
+            ],
+            'mixedArrayIsset' => [
+                '<?php
+                    $a = isset($_GET["a"]) ? $_GET["a"] : "";
+                    if ($a) {}',
+                'assertions' => [],
+                'error_levels' => ['MixedAssignment', 'MixedArrayAccess'],
+            ],
+            'nestedArrayAccessInLoopAfterIsset' => [
+                '<?php
+                    $arr = [];
+                    while (rand(0, 1)) {
+                        if (rand(0, 1)) {
+                            if (!isset($arr["a"]["b"])) {
+                                $arr["a"]["b"] = "foo";
+                            }
+                            echo $arr["a"]["b"];
+                        } else {
+                            $arr["c"] = "foo";
+                        }
+                    }'
+            ],
+            'issetVarInLoopBeforeAssignment' => [
+                '<?php
+                    function foo() : void {
+                        while (rand(0, 1)) {
+                            if (!isset($foo)) {
+                                $foo = 1;
+                            }
+                        }
+                    }',
+            ],
+            'issetOnArrayAccess' => [
+                '<?php
+                    function foo(ArrayAccess $arr) : void {
+                        $a = isset($arr["a"]) ? $arr["a"] : "a";
+                        takesInt($a);
+                    }
+                    function takesInt(int $i) : void {}',
+                'assertions' => [],
+                'error_levels' => ['MixedAssignment', 'MixedArgument'],
+            ]
         ];
     }
 
@@ -291,7 +399,23 @@ class IssetTest extends TestCase
                         $b = 1;
                         echo $arr[$b][$c];
                     }',
-                'error_message' => 'PossiblyNullArrayAccess',
+                'error_message' => 'NullArrayAccess',
+            ],
+            'issetAdditionalVarWithSealedObjectLike' => [
+                '<?php
+                    class Example {
+                        const FOO = "foo";
+                        public function test() : bool {
+                            $params = ["bar" => "bat"];
+
+                            if (isset($params[self::FOO])) {
+                                return true;
+                            }
+
+                            return false;
+                        }
+                    }',
+                'error_message' => 'InvalidArrayOffset',
             ],
         ];
     }

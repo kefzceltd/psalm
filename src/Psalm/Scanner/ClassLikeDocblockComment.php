@@ -1,5 +1,5 @@
 <?php
-namespace Psalm;
+namespace Psalm\Scanner;
 
 class ClassLikeDocblockComment
 {
@@ -13,7 +13,12 @@ class ClassLikeDocblockComment
     /**
      * @var array<int, array<int, string>>
      */
-    public $template_types = [];
+    public $template_type_names = [];
+
+    /**
+     * @var array<int, string>
+     */
+    public $template_parents = [];
 
     /**
      * @var array<int, array{name:string, type:string, tag:string, line_number:int}>
@@ -21,7 +26,7 @@ class ClassLikeDocblockComment
     public $properties = [];
 
     /**
-     * @var array<int, \PhpParser\Node\Stmt\Function_>
+     * @var array<int, \PhpParser\Node\Stmt\ClassMethod>
      */
     public $methods = [];
 

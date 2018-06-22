@@ -3,6 +3,7 @@ namespace Psalm\Tests;
 
 class EmptyTest extends TestCase
 {
+    use Traits\FileCheckerInvalidCodeParseTestTrait;
     use Traits\FileCheckerValidCodeParseTestTrait;
 
     /**
@@ -177,6 +178,60 @@ class EmptyTest extends TestCase
                 '<?php
                     function takesBool(bool $p): void {}
                     takesBool(empty($q));'
+            ],
+            'noRedundantConditionAfterFalsyIntChecks' => [
+                '<?php
+                    function foo(int $t) : void {
+                        if (!$t) {
+                            foreach ([0, 1, 2] as $a) {
+                                if (!$t) {
+                                    $t = $a;
+                                }
+                            }
+                        }
+                    }',
+            ],
+            'noRedundantConditionAfterEmptyMixedChecks' => [
+                '<?php
+                    function foo($t) : void {
+                        if (empty($t)) {
+                            foreach ($_GET["u"] as $a) {
+                                if (empty($t)) {
+                                    $t = $a;
+                                }
+                            }
+                        }
+                    }',
+                'assertions' => [],
+                'error_levels' => ['MixedAssignment', 'MissingParamType'],
+            ],
+            'noReconciliationForMixed' => [
+                '<?php
+                    function foo(array $arr) : void {
+                        $a = empty($arr["a"]) ? "" : $arr["a"];
+
+                        if ($a) {}
+                    }',
+                'assertions' => [],
+                'error_levels' => ['MixedAssignment', 'MissingParamType'],
+            ],
+        ];
+    }
+
+    /**
+     * @return array
+     */
+    public function providerFileCheckerInvalidCodeParse()
+    {
+        return [
+            'preventImpossibleEmpty' => [
+                '<?php
+                    function foo(array $arr) : void {
+                        if (empty($ar)) {
+                            // do something
+                        }
+                    }',
+                'error_message' => 'UndefinedVariable',
             ],
         ];
     }

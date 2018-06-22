@@ -146,6 +146,17 @@ class ScopeTest extends TestCase
                         return $foo;
                     }',
             ],
+            'globalReturnWithAnnotation' => [
+                '<?php
+                    /**
+                     * @global string $foo
+                     */
+                    function a(): string {
+                        global $foo;
+
+                        return $foo;
+                    }',
+            ],
             'negateAssertionAndOther' => [
                 '<?php
                     $a = rand(0, 10) ? "hello" : null;
@@ -167,7 +178,7 @@ class ScopeTest extends TestCase
                         }
                     }',
                 'assertions' => [
-                    '$a' => 'null|string',
+                    '$a' => 'string|null',
                 ],
                 'error_levels' => ['PossiblyFalseArgument'],
             ],
@@ -213,6 +224,16 @@ class ScopeTest extends TestCase
 
                         $bar = 5;
                     }',
+            ],
+            'suppressInvalidThis' => [
+                '<?php
+                    /** @psalm-suppress InvalidScope */
+                    if (!isset($this->value)) {
+                        $this->value = ["x", "y"];
+                        echo count($this->value) - 2;
+                    }',
+                'assertions' => [],
+                'error_levels' => ['MixedPropertyAssignment', 'MixedArgument'],
             ],
         ];
     }

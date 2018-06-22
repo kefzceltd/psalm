@@ -1,5 +1,5 @@
 <?php
-namespace Psalm;
+namespace Psalm\Scanner;
 
 class FunctionDocblockComment
 {
@@ -12,6 +12,11 @@ class FunctionDocblockComment
      * @var array<int, array{name:string, type:string, line_number: int}>
      */
     public $params = [];
+
+    /**
+     * @var array<int, array{name:string, type:string, line_number: int}>
+     */
+    public $globals = [];
 
     /**
      * Whether or not the function is deprecated
@@ -46,16 +51,36 @@ class FunctionDocblockComment
      */
     public $suppress = [];
 
+    /**
+     * @var array<int, string>
+     */
+    public $throws = [];
+
     /** @var int */
     public $return_type_line_number;
 
     /**
      * @var array<int, array<int, string>>
      */
-    public $template_types = [];
+    public $template_type_names = [];
 
     /**
      * @var array<int, array{template_type: string, param_name: string, line_number?: int}>
      */
     public $template_typeofs = [];
+
+    /**
+     * @var array<int, array{type: string, param_name: string}>
+     */
+    public $assertions = [];
+
+    /**
+     * @var array<int, array{type: string, param_name: string}>
+     */
+    public $if_true_assertions = [];
+
+    /**
+     * @var array<int, array{type: string, param_name: string}>
+     */
+    public $if_false_assertions = [];
 }

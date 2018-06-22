@@ -148,6 +148,9 @@ class DocumentationTest extends TestCase
 
         foreach (self::getCodeBlocksFromDocs() as $issue_name => $blocks) {
             switch ($issue_name) {
+                case 'MissingThrowsDocblock':
+                    continue 2;
+
                 case 'InvalidStringClass':
                     continue 2;
 
@@ -169,6 +172,10 @@ class DocumentationTest extends TestCase
 
                 case 'MixedStringOffsetAssignment':
                     $ignored_issues = ['MixedAssignment'];
+                    break;
+
+                case 'ParadoxicalCondition':
+                    $ignored_issues = ['MissingParamType'];
                     break;
 
                 case 'UnusedClass':

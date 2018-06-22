@@ -2,6 +2,7 @@
 namespace Psalm\Checker\Statements\Expression\Fetch;
 
 use PhpParser;
+use Psalm\Checker\FunctionLikeChecker;
 use Psalm\Checker\Statements\ExpressionChecker;
 use Psalm\Checker\StatementsChecker;
 use Psalm\CodeLocation;
@@ -23,6 +24,7 @@ class VariableFetchChecker
      * @param   bool                            $passed_by_reference
      * @param   Type\Union|null                 $by_ref_type
      * @param   bool                            $array_assignment
+     * @param   bool                            $from_global - when used in a global keyword
      *
      * @return  false|null
      */
@@ -32,7 +34,8 @@ class VariableFetchChecker
         Context $context,
         $passed_by_reference = false,
         Type\Union $by_ref_type = null,
-        $array_assignment = false
+        $array_assignment = false,
+        $from_global = false
     ) {
         if ($stmt->name === 'this') {
             if ($statements_checker->isStatic()) {
@@ -57,6 +60,9 @@ class VariableFetchChecker
                 )) {
                     return false;
                 }
+
+                $context->vars_in_scope['$this'] = Type::getMixed();
+                $context->vars_possibly_in_scope['$this'] = true;
 
                 return null;
             }
@@ -157,8 +163,10 @@ class VariableFetchChecker
                             $context->branch_point
                         );
                     }
-                } elseif (!$context->inside_isset) {
-                    if ($context->is_global) {
+                } elseif (!$context->inside_isset
+                    || $statements_checker->getSource() instanceof FunctionLikeChecker
+                ) {
+                    if ($context->is_global || $from_global) {
                         if (IssueBuffer::accepts(
                             new UndefinedGlobalVariable(
                                 'Cannot find referenced variable ' . $var_name . ' in global scope',
@@ -174,12 +182,15 @@ class VariableFetchChecker
                         return null;
                     }
 
-                    IssueBuffer::add(
+                    if (IssueBuffer::accepts(
                         new UndefinedVariable(
                             'Cannot find referenced variable ' . $var_name,
                             new CodeLocation($statements_checker->getSource(), $stmt)
-                        )
-                    );
+                        ),
+                        $statements_checker->getSuppressedIssues()
+                    )) {
+                        // fall through
+                    }
 
                     $stmt->inferredType = Type::getMixed();
 
@@ -244,7 +255,7 @@ class VariableFetchChecker
                     }
                 }
 
-                $statements_checker->registerVariableUse($first_appearance);
+                $statements_checker->registerVariableUses([$first_appearance->getHash() => $first_appearance]);
             }
         } else {
             $stmt->inferredType = clone $context->vars_in_scope[$var_name];

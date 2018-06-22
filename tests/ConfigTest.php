@@ -19,6 +19,14 @@ class ConfigTest extends TestCase
     public static function setUpBeforeClass()
     {
         self::$config = new TestConfig();
+
+        if (!defined('PSALM_VERSION')) {
+            define('PSALM_VERSION', '2.0.0');
+        }
+
+        if (!defined('PHP_PARSER_VERSION')) {
+            define('PHP_PARSER_VERSION', '4.0.0');
+        }
     }
 
     /**
@@ -56,6 +64,7 @@ class ConfigTest extends TestCase
             function ($issue_name) {
                 return !empty($issue_name)
                     && $issue_name !== 'MethodIssue'
+                    && $issue_name !== 'PropertyIssue'
                     && $issue_name !== 'ClassIssue'
                     && $issue_name !== 'CodeIssue';
             }
@@ -131,6 +140,62 @@ class ConfigTest extends TestCase
     /**
      * @return void
      */
+    public function testIgnoreWildcardProjectDirectory()
+    {
+        $this->project_checker = $this->getProjectCheckerWithConfig(
+            Config::loadFromXML(
+                dirname(__DIR__),
+                '<?xml version="1.0"?>
+                <psalm>
+                    <projectFiles>
+                        <directory name="src" />
+                        <ignoreFiles>
+                            <directory name="src/**/Checker" />
+                        </ignoreFiles>
+                    </projectFiles>
+                </psalm>'
+            )
+        );
+
+        $config = $this->project_checker->getConfig();
+
+        $this->assertTrue($config->isInProjectDirs(realpath('src/Psalm/Type.php')));
+        $this->assertFalse($config->isInProjectDirs(realpath('src/Psalm/Checker/FileChecker.php')));
+        $this->assertFalse($config->isInProjectDirs(realpath('src/Psalm/Checker/Statements/ReturnChecker.php')));
+        $this->assertFalse($config->isInProjectDirs(realpath('examples/StringChecker.php')));
+    }
+
+    /**
+     * @return void
+     */
+    public function testIgnoreWildcardFiles()
+    {
+        $this->project_checker = $this->getProjectCheckerWithConfig(
+            Config::loadFromXML(
+                dirname(__DIR__),
+                '<?xml version="1.0"?>
+                <psalm>
+                    <projectFiles>
+                        <directory name="src" />
+                        <ignoreFiles>
+                            <file name="src/Psalm/Checker/*Checker.php" />
+                        </ignoreFiles>
+                    </projectFiles>
+                </psalm>'
+            )
+        );
+
+        $config = $this->project_checker->getConfig();
+
+        $this->assertTrue($config->isInProjectDirs(realpath('src/Psalm/Type.php')));
+        $this->assertFalse($config->isInProjectDirs(realpath('src/Psalm/Checker/FileChecker.php')));
+        $this->assertTrue($config->isInProjectDirs(realpath('src/Psalm/Checker/Statements/ReturnChecker.php')));
+        $this->assertFalse($config->isInProjectDirs(realpath('examples/StringChecker.php')));
+    }
+
+    /**
+     * @return void
+     */
     public function testIssueHandler()
     {
         $this->project_checker = $this->getProjectCheckerWithConfig(
@@ -190,6 +255,11 @@ class ConfigTest extends TestCase
                                 <referencedMethod name="Psalm\Bodger::find1" />
                             </errorLevel>
                         </UndefinedMethod>
+                        <UndefinedPropertyFetch>
+                            <errorLevel type="suppress">
+                                <referencedProperty name="Psalm\Bodger::$find3" />
+                            </errorLevel>
+                        </UndefinedPropertyFetch>
                     </issueHandlers>
                 </psalm>'
             )
@@ -239,9 +309,17 @@ class ConfigTest extends TestCase
 
         $this->assertSame(
             'error',
-            $config->getReportingLevelForMethod(
+            $config->getReportingLevelForProperty(
                 'UndefinedMethod',
-                'Psalm\Bodger::find2'
+                'Psalm\Bodger::$find3'
+            )
+        );
+
+        $this->assertSame(
+            'error',
+            $config->getReportingLevelForProperty(
+                'UndefinedMethod',
+                'Psalm\Bodger::$find4'
             )
         );
     }
@@ -432,6 +510,38 @@ class ConfigTest extends TestCase
             $file_path,
             '<?php
                 echo barBar("hello");'
+        );
+
+        $this->analyzeFile($file_path, new Context());
+    }
+
+    /**
+     * @return void
+     */
+    public function testPolyfilledFunction()
+    {
+        $this->project_checker = $this->getProjectCheckerWithConfig(
+            TestConfig::loadFromXML(
+                dirname(__DIR__),
+                '<?xml version="1.0"?>
+                <psalm>
+                    <projectFiles>
+                        <directory name="src" />
+                    </projectFiles>
+
+                    <stubs>
+                        <file name="tests/stubs/polyfill.php" />
+                    </stubs>
+                </psalm>'
+            )
+        );
+
+        $file_path = getcwd() . '/src/somefile.php';
+
+        $this->addFile(
+            $file_path,
+            '<?php
+                $a = random_bytes(16);'
         );
 
         $this->analyzeFile($file_path, new Context());
@@ -687,6 +797,47 @@ class ConfigTest extends TestCase
             $file_path,
             '<?php
                 function foo() {}'
+        );
+
+        $this->analyzeFile($file_path, new Context());
+    }
+
+    /**
+     * @return void
+     */
+    public function testMethodCallMemoize()
+    {
+        $this->project_checker = $this->getProjectCheckerWithConfig(
+            TestConfig::loadFromXML(
+                dirname(__DIR__),
+                '<?xml version="1.0"?>
+                <psalm memoizeMethodCallResults="true">
+                    <projectFiles>
+                        <directory name="src" />
+                    </projectFiles>
+                </psalm>'
+            )
+        );
+
+        $file_path = getcwd() . '/src/somefile.php';
+
+        $this->addFile(
+            $file_path,
+            '<?php
+                class A {
+                    function getFoo() : ?Foo {
+                        return rand(0, 1) ? new Foo : null;
+                    }
+                }
+                class Foo {
+                    public function bar() : void {}
+                };
+
+                $a = new A();
+
+                if ($a->getFoo()) {
+                    $a->getFoo()->bar();
+                }'
         );
 
         $this->analyzeFile($file_path, new Context());

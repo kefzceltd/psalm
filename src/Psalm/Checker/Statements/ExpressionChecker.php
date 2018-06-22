@@ -48,6 +48,7 @@ use Psalm\Type\Atomic\TMixed;
 use Psalm\Type\Atomic\TNamedObject;
 use Psalm\Type\Atomic\TObject;
 use Psalm\Type\Atomic\TString;
+use Psalm\Type\TypeCombination;
 
 class ExpressionChecker
 {
@@ -63,7 +64,8 @@ class ExpressionChecker
         StatementsChecker $statements_checker,
         PhpParser\Node\Expr $stmt,
         Context $context,
-        $array_assignment = false
+        $array_assignment = false,
+        Context $global_context = null
     ) {
         if ($stmt instanceof PhpParser\Node\Expr\Variable) {
             if (VariableFetchChecker::analyze(
@@ -108,7 +110,7 @@ class ExpressionChecker
         } elseif ($stmt instanceof PhpParser\Node\Expr\ConstFetch) {
             ConstFetchChecker::analyze($statements_checker, $stmt, $context);
         } elseif ($stmt instanceof PhpParser\Node\Scalar\String_) {
-            $stmt->inferredType = Type::getString();
+            $stmt->inferredType = Type::getString(strlen($stmt->value) < 30 ? $stmt->value : null);
         } elseif ($stmt instanceof PhpParser\Node\Scalar\EncapsedStringPart) {
             // do nothing
         } elseif ($stmt instanceof PhpParser\Node\Scalar\MagicConst) {
@@ -131,9 +133,9 @@ class ExpressionChecker
                     break;
             }
         } elseif ($stmt instanceof PhpParser\Node\Scalar\LNumber) {
-            $stmt->inferredType = Type::getInt();
+            $stmt->inferredType = Type::getInt(false, $stmt->value);
         } elseif ($stmt instanceof PhpParser\Node\Scalar\DNumber) {
-            $stmt->inferredType = Type::getFloat();
+            $stmt->inferredType = Type::getFloat($stmt->value);
         } elseif ($stmt instanceof PhpParser\Node\Expr\UnaryMinus ||
             $stmt instanceof PhpParser\Node\Expr\UnaryPlus
         ) {
@@ -150,6 +152,16 @@ class ExpressionChecker
 
                 foreach ($stmt->expr->inferredType->getTypes() as $type_part) {
                     if ($type_part instanceof TInt || $type_part instanceof TFloat) {
+                        if ($type_part instanceof Type\Atomic\TLiteralInt
+                            && $stmt instanceof PhpParser\Node\Expr\UnaryMinus
+                        ) {
+                            $type_part->value = -$type_part->value;
+                        } elseif ($type_part instanceof Type\Atomic\TLiteralFloat
+                            && $stmt instanceof PhpParser\Node\Expr\UnaryMinus
+                        ) {
+                            $type_part->value = -$type_part->value;
+                        }
+
                         $acceptable_types[] = $type_part;
                     } elseif ($type_part instanceof TString) {
                         $acceptable_types[] = new TInt;
@@ -198,13 +210,46 @@ class ExpressionChecker
             }
 
             if (isset($stmt->var->inferredType)) {
+                $return_type = null;
+
+                $fake_right_expr = new PhpParser\Node\Scalar\LNumber(1, $stmt->getAttributes());
+                $fake_right_expr->inferredType = Type::getInt();
+
+                BinaryOpChecker::analyzeNonDivArithmenticOp(
+                    $statements_checker,
+                    $stmt->var,
+                    $fake_right_expr,
+                    $stmt,
+                    $return_type,
+                    $context
+                );
+
                 $stmt->inferredType = clone $stmt->var->inferredType;
                 $stmt->inferredType->from_calculation = true;
+
+                foreach ($stmt->inferredType->getTypes() as $atomic_type) {
+                    if ($atomic_type instanceof Type\Atomic\TLiteralInt) {
+                        $stmt->inferredType->addType(new Type\Atomic\TInt);
+                    } elseif ($atomic_type instanceof Type\Atomic\TLiteralFloat) {
+                        $stmt->inferredType->addType(new Type\Atomic\TFloat);
+                    }
+                }
 
                 $var_id = self::getArrayVarId($stmt->var, null);
 
                 if ($var_id && isset($context->vars_in_scope[$var_id])) {
                     $context->vars_in_scope[$var_id] = $stmt->inferredType;
+
+                    if ($context->collect_references && $stmt->var instanceof PhpParser\Node\Expr\Variable) {
+                        $location = new CodeLocation($statements_checker, $stmt->var);
+                        $context->assigned_var_ids[$var_id] = true;
+                        $context->possibly_assigned_var_ids[$var_id] = true;
+                        $statements_checker->registerVariableAssignment(
+                            $var_id,
+                            $location
+                        );
+                        $context->unreferenced_vars[$var_id] = [$location->getHash() => $location];
+                    }
                 }
             } else {
                 $stmt->inferredType = Type::getMixed();
@@ -340,6 +385,7 @@ class ExpressionChecker
 
             if (isset($stmt->expr->inferredType)
                 && !$stmt->expr->inferredType->isMixed()
+                && !isset($stmt->expr->inferredType->getTypes()['resource'])
                 && !TypeChecker::isContainedBy(
                     $statements_checker->getFileChecker()->project_checker->codebase,
                     $stmt->expr->inferredType,
@@ -394,7 +440,7 @@ class ExpressionChecker
             }
 
             if ($all_permissible) {
-                $stmt->inferredType = Type::combineTypes($permissible_atomic_types);
+                $stmt->inferredType = TypeCombination::combineTypes($permissible_atomic_types);
             } else {
                 $stmt->inferredType = Type::getArray();
             }
@@ -440,7 +486,7 @@ class ExpressionChecker
                 }
             }
         } elseif ($stmt instanceof PhpParser\Node\Expr\Include_) {
-            IncludeChecker::analyze($statements_checker, $stmt, $context);
+            IncludeChecker::analyze($statements_checker, $stmt, $context, $global_context);
         } elseif ($stmt instanceof PhpParser\Node\Expr\Eval_) {
             $context->check_classes = false;
             $context->check_variables = false;
@@ -551,7 +597,7 @@ class ExpressionChecker
                     $statements_checker->registerVariable($var_id, $location, null);
 
                     if ($context->collect_references) {
-                        $context->unreferenced_vars[$var_id] = $location;
+                        $context->unreferenced_vars[$var_id] = [$location->getHash() => $location];
                     }
 
                     $context->hasVariable($var_id, $statements_checker);
@@ -707,20 +753,49 @@ class ExpressionChecker
                     && is_string($stmt->dim->name)
                 ) {
                     $offset = '$' . $stmt->dim->name;
+                } elseif ($stmt->dim instanceof PhpParser\Node\Expr\ConstFetch) {
+                    $offset = implode('\\', $stmt->dim->name->parts);
                 }
 
                 return $root_var_id && $offset !== null ? $root_var_id . '[' . $offset . ']' : null;
             }
         }
 
-        if ($stmt instanceof PhpParser\Node\Expr\PropertyFetch && $stmt->name instanceof PhpParser\Node\Identifier) {
+        if ($stmt instanceof PhpParser\Node\Expr\PropertyFetch) {
             $object_id = self::getArrayVarId($stmt->var, $this_class_name, $source);
 
             if (!$object_id) {
                 return null;
             }
 
-            return $object_id . '->' . $stmt->name;
+            if ($stmt->name instanceof PhpParser\Node\Identifier) {
+                return $object_id . '->' . $stmt->name;
+            } elseif (isset($stmt->name->inferredType) && $stmt->name->inferredType->isSingleStringLiteral()) {
+                return $object_id . '->' . $stmt->name->inferredType->getSingleStringLiteral();
+            } else {
+                return null;
+            }
+        }
+
+        if ($stmt instanceof PhpParser\Node\Expr\MethodCall
+            && $stmt->name instanceof PhpParser\Node\Identifier
+            && !$stmt->args
+        ) {
+            $config = \Psalm\Config::getInstance();
+
+            if ($config->memoize_method_calls) {
+                $lhs_var_name = self::getArrayVarId(
+                    $stmt->var,
+                    $this_class_name,
+                    $source
+                );
+
+                if (!$lhs_var_name) {
+                    return null;
+                }
+
+                return $lhs_var_name . '->' . strtolower($stmt->name->name) . '()';
+            }
         }
 
         return self::getVarId($stmt, $this_class_name, $source);
@@ -798,6 +873,27 @@ class ExpressionChecker
             }
         }
 
+        if ($return_type instanceof Type\Atomic\TScalarClassConstant) {
+            if ($project_checker->codebase->classOrInterfaceExists($return_type->fq_classlike_name)) {
+                $class_constants = $project_checker->codebase->classlikes->getConstantsForClass(
+                    $return_type->fq_classlike_name,
+                    \ReflectionProperty::IS_PRIVATE
+                );
+
+                if (isset($class_constants[$return_type->const_name])) {
+                    $const_type = $class_constants[$return_type->const_name];
+
+                    if ($const_type->isSingle()) {
+                        $const_type = clone $const_type;
+
+                        return array_values($const_type->getTypes())[0];
+                    }
+                }
+            }
+
+            return new TMixed();
+        }
+
         if ($return_type instanceof Type\Atomic\TArray || $return_type instanceof Type\Atomic\TGenericObject) {
             foreach ($return_type->type_params as &$type_param) {
                 $type_param = self::fleshOutType(
@@ -834,13 +930,17 @@ class ExpressionChecker
         Context $context
     ) {
         foreach ($stmt->uses as $use) {
-            if (!$use->var->name instanceof PhpParser\Node\Identifier) {
+            if (!is_string($use->var->name)) {
                 continue;
             }
 
             $use_var_id = '$' . $use->var->name;
 
             if (!$context->hasVariable($use_var_id, $statements_checker)) {
+                if ($use_var_id === '$argv' || $use_var_id === '$argc') {
+                    continue;
+                }
+
                 if ($use->byRef) {
                     $context->vars_in_scope[$use_var_id] = Type::getMixed();
                     $context->vars_possibly_in_scope[$use_var_id] = true;
@@ -901,6 +1001,16 @@ class ExpressionChecker
                     }
 
                     continue;
+                }
+            } elseif ($use->byRef) {
+                foreach ($context->vars_in_scope[$use_var_id]->getTypes() as $atomic_type) {
+                    if ($atomic_type instanceof Type\Atomic\TLiteralInt) {
+                        $context->vars_in_scope[$use_var_id]->addType(new Type\Atomic\TInt);
+                    } elseif ($atomic_type instanceof Type\Atomic\TLiteralFloat) {
+                        $context->vars_in_scope[$use_var_id]->addType(new Type\Atomic\TFloat);
+                    } elseif ($atomic_type instanceof Type\Atomic\TLiteralString) {
+                        $context->vars_in_scope[$use_var_id]->addType(new Type\Atomic\TString);
+                    }
                 }
             }
         }
@@ -1128,6 +1238,7 @@ class ExpressionChecker
         PhpParser\Node\Expr $stmt,
         Context $context
     ) {
+
         $context->inside_isset = true;
 
         if (self::analyze($statements_checker, $stmt, $context) === false) {

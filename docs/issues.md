@@ -815,6 +815,20 @@ function foo() {
 }
 ```
 
+### MissingThrowsDocblock
+
+Emitted when a function doesn't have a return type defined
+
+```php
+function foo(int $x, int $y) : int {
+    if ($y === 0) {
+        throw new \InvalidArgumentException('Cannot divide by zero');
+    }
+
+    return intdiv($x, $y);
+}
+```
+
 ### MixedArgument
 
 Emitted when Psalm cannot determine the type of an argument
@@ -999,7 +1013,7 @@ Emitted when calling a non-static function statically
 class A {
     public function foo(): void {}
 
-    public function bar(): void {
+    public static function bar(): void {
         self::foo();
     }
 }
@@ -1131,8 +1145,8 @@ class B extends A {
 Emitted when a paradox is encountered in your programs logic that could not be caught by `RedundantCondition`
 
 ```php
-function foo(?string $a) : ?string {
-    if ($a) return $a;
+function foo($a) : void {
+    if ($a) return;
     if ($a) echo "cannot happen";
 }
 ```

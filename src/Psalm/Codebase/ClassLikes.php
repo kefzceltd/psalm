@@ -454,6 +454,10 @@ class ClassLikes
             return true;
         }
 
+        if ($interface_id === 'arrayaccess' && $fq_class_name === 'domnodelist') {
+            return true;
+        }
+
         if (isset(ClassLikeChecker::$SPECIAL_TYPES[$interface_id])
             || isset(ClassLikeChecker::$SPECIAL_TYPES[$fq_class_name])
         ) {
@@ -506,6 +510,16 @@ class ClassLikes
         $storage = $this->classlike_storage_provider->get($fq_interface_name);
 
         return $storage->parent_interfaces;
+    }
+
+    /**
+     * @param  string         $fq_trait_name
+     *
+     * @return bool
+     */
+    public function traitExists($fq_trait_name)
+    {
+        return $this->hasFullyQualifiedTraitName($fq_trait_name);
     }
 
     /**
@@ -614,9 +628,10 @@ class ClassLikes
                 continue;
             }
 
-            if ($classlike_storage->location &&
-                $this->config &&
-                $this->config->isInProjectDirs($classlike_storage->location->file_path)
+            if ($classlike_storage->location
+                && $this->config
+                && $this->config->isInProjectDirs($classlike_storage->location->file_path)
+                && !$classlike_storage->is_trait
             ) {
                 if (!isset($this->classlike_references[$fq_class_name_lc])) {
                     if (IssueBuffer::accepts(
@@ -698,7 +713,29 @@ class ClassLikes
      */
     private function checkMethodReferences(ClassLikeStorage $classlike_storage)
     {
-        foreach ($classlike_storage->methods as $method_name => $method_storage) {
+        foreach ($classlike_storage->appearing_method_ids as $method_name => $appearing_method_id) {
+            list($appearing_fq_classlike_name) = explode('::', $appearing_method_id);
+
+            if ($appearing_fq_classlike_name !== $classlike_storage->name) {
+                continue;
+            }
+
+            if (isset($classlike_storage->methods[$method_name])) {
+                $method_storage = $classlike_storage->methods[$method_name];
+            } else {
+                $declaring_method_id = $classlike_storage->declaring_method_ids[$method_name];
+
+                list($declaring_fq_classlike_name) = explode('::', $declaring_method_id);
+
+                try {
+                    $declaring_classlike_storage = $this->classlike_storage_provider->get($declaring_fq_classlike_name);
+                } catch (\InvalidArgumentException $e) {
+                    continue;
+                }
+
+                $method_storage = $declaring_classlike_storage->methods[$method_name];
+            }
+
             if (($method_storage->referencing_locations === null
                     || count($method_storage->referencing_locations) === 0)
                 && (substr($method_name, 0, 2) !== '__' || $method_name === '__construct')
@@ -713,12 +750,14 @@ class ClassLikes
 
                     $has_parent_references = false;
 
-                    foreach ($classlike_storage->overridden_method_ids[$method_name_lc] as $parent_method_id) {
-                        $parent_method_storage = $this->methods->getStorage($parent_method_id);
+                    if (isset($classlike_storage->overridden_method_ids[$method_name_lc])) {
+                        foreach ($classlike_storage->overridden_method_ids[$method_name_lc] as $parent_method_id) {
+                            $parent_method_storage = $this->methods->getStorage($parent_method_id);
 
-                        if (!$parent_method_storage->abstract || $parent_method_storage->referencing_locations) {
-                            $has_parent_references = true;
-                            break;
+                            if (!$parent_method_storage->abstract || $parent_method_storage->referencing_locations) {
+                                $has_parent_references = true;
+                                break;
+                            }
                         }
                     }
 
@@ -763,14 +802,16 @@ class ClassLikes
 
                     $method_name_lc = strtolower($method_name);
 
-                    foreach ($classlike_storage->overridden_method_ids[$method_name_lc] as $parent_method_id) {
-                        $parent_method_storage = $this->methods->getStorage($parent_method_id);
+                    if (isset($classlike_storage->overridden_method_ids[$method_name_lc])) {
+                        foreach ($classlike_storage->overridden_method_ids[$method_name_lc] as $parent_method_id) {
+                            $parent_method_storage = $this->methods->getStorage($parent_method_id);
 
-                        if (!$parent_method_storage->abstract
-                            && isset($parent_method_storage->used_params[$offset])
-                        ) {
-                            $has_parent_references = true;
-                            break;
+                            if (!$parent_method_storage->abstract
+                                && isset($parent_method_storage->used_params[$offset])
+                            ) {
+                                $has_parent_references = true;
+                                break;
+                            }
                         }
                     }
 

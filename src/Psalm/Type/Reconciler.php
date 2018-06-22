@@ -8,6 +8,7 @@ use Psalm\Checker\TraitChecker;
 use Psalm\Checker\TypeChecker;
 use Psalm\CodeLocation;
 use Psalm\Issue\DocblockTypeContradiction;
+use Psalm\Issue\ParadoxicalCondition;
 use Psalm\Issue\RedundantCondition;
 use Psalm\Issue\RedundantConditionGivenDocblockType;
 use Psalm\Issue\TypeDoesNotContainNull;
@@ -34,10 +35,13 @@ use Psalm\Type\Atomic\TTrue;
 
 class Reconciler
 {
+    /** @var array<string, array<int, string>> */
+    private static $broken_paths = [];
+
     /**
      * Takes two arrays and consolidates them, removing null values from existing types where applicable
      *
-     * @param  array<string, string>     $new_types
+     * @param  array<string, string[][]> $new_types
      * @param  array<string, Type\Union> $existing_types
      * @param  array<string>             $changed_var_ids
      * @param  array<string, bool>       $referenced_var_ids
@@ -56,19 +60,68 @@ class Reconciler
         CodeLocation $code_location = null,
         array $suppressed_issues = []
     ) {
-        $keys = [];
+        foreach ($new_types as $nk => $type) {
+            if ((strpos($nk, '[') || strpos($nk, '->'))
+                && ($type[0][0] === '^isset'
+                    || $type[0][0] === '!^empty'
+                    || $type[0][0] === 'isset'
+                    || $type[0][0] === '!empty')
+            ) {
+                $isset_or_empty = $type[0][0] === 'isset' || $type[0][0] === '^isset'
+                    ? '^isset'
+                    : '!^empty';
 
-        foreach ($existing_types as $ek => $_) {
-            if (!in_array($ek, $keys, true)) {
-                $keys[] = $ek;
+                $key_parts = Reconciler::breakUpPathIntoParts($nk);
+
+                $base_key = array_shift($key_parts);
+
+                if (!isset($new_types[$base_key])) {
+                    $new_types[$base_key] = [['!^bool'], ['!^int'], ['^isset']];
+                } else {
+                    $new_types[$base_key][] = ['!^bool'];
+                    $new_types[$base_key][] = ['!^int'];
+                    $new_types[$base_key][] = ['^isset'];
+                }
+
+                while ($key_parts) {
+                    $divider = array_shift($key_parts);
+
+                    if ($divider === '[') {
+                        $array_key = array_shift($key_parts);
+                        array_shift($key_parts);
+
+                        $new_base_key = $base_key . '[' . $array_key . ']';
+
+                        $base_key = $new_base_key;
+                    } elseif ($divider === '->') {
+                        $property_name = array_shift($key_parts);
+                        $new_base_key = $base_key . '->' . $property_name;
+
+                        $base_key = $new_base_key;
+                    } else {
+                        throw new \InvalidArgumentException('Unexpected divider ' . $divider);
+                    }
+
+                    if (!$key_parts) {
+                        break;
+                    }
+
+                    if (!isset($new_types[$base_key])) {
+                        $new_types[$base_key] = [['!^bool'], ['!^int'], ['^isset']];
+                    } else {
+                        $new_types[$base_key][] = ['!^bool'];
+                        $new_types[$base_key][] = ['!^int'];
+                        $new_types[$base_key][] = ['^isset'];
+                    }
+                }
+
+                // replace with a less specific check
+                $new_types[$nk][0][0] = $isset_or_empty;
             }
         }
 
-        foreach ($new_types as $nk => $_) {
-            if (!in_array($nk, $keys, true)) {
-                $keys[] = $nk;
-            }
-        }
+        // make sure array keys come after base keys
+        ksort($new_types);
 
         if (empty($new_types)) {
             return $existing_types;
@@ -76,13 +129,7 @@ class Reconciler
 
         $project_checker = $statements_checker->getFileChecker()->project_checker;
 
-        foreach ($keys as $key) {
-            if (!isset($new_types[$key])) {
-                continue;
-            }
-
-            $new_type_parts = explode('&', $new_types[$key]);
-
+        foreach ($new_types as $key => $new_type_parts) {
             $result_type = isset($existing_types[$key])
                 ? clone $existing_types[$key]
                 : self::getValueForKey($project_checker, $key, $existing_types);
@@ -91,28 +138,43 @@ class Reconciler
                 throw new \InvalidArgumentException('Union::$types cannot be empty after get value for ' . $key);
             }
 
-            $before_adjustment = $result_type ? $result_type->getId() : '';
+            $before_adjustment = $result_type ? clone $result_type : null;
 
             $failed_reconciliation = false;
-            $from_docblock = $result_type && $result_type->from_docblock;
-            $possibly_undefined = $result_type && $result_type->possibly_undefined;
-            $from_calculation = $result_type && $result_type->from_calculation;
+            $has_negation = false;
+            $has_equality = false;
+            $has_isset = false;
 
-            foreach ($new_type_parts as $new_type_part) {
-                $new_type_part_parts = explode('|', $new_type_part);
-
+            foreach ($new_type_parts as $new_type_part_parts) {
                 $orred_type = null;
 
                 foreach ($new_type_part_parts as $new_type_part_part) {
+                    switch ($new_type_part_part[0]) {
+                        case '!':
+                            $has_negation = true;
+                            break;
+                        case '^':
+                        case '~':
+                            $has_equality = true;
+                    }
+
+                    $has_isset = $has_isset
+                        || $new_type_part_part === 'isset'
+                        || $new_type_part_part === 'array-key-exists';
+
                     $result_type_candidate = self::reconcileTypes(
                         $new_type_part_part,
-                        $result_type,
+                        $result_type ? clone $result_type : null,
                         $key,
                         $statements_checker,
                         $code_location && isset($referenced_var_ids[$key]) ? $code_location : null,
                         $suppressed_issues,
                         $failed_reconciliation
                     );
+
+                    if (!$result_type_candidate->getTypes()) {
+                        $result_type_candidate->addType(new TEmpty);
+                    }
 
                     $orred_type = $orred_type
                         ? Type::combineUnionTypes($result_type_candidate, $orred_type)
@@ -122,20 +184,17 @@ class Reconciler
                 $result_type = $orred_type;
             }
 
-            if ($result_type === null) {
-                continue;
+            if (!$result_type) {
+                throw new \UnexpectedValueException('$result_type should not be null');
             }
 
-            if ($result_type->getId() !== $before_adjustment
-                || $result_type->from_docblock !== $from_docblock
-                || $result_type->possibly_undefined !== $possibly_undefined
-                || $result_type->from_calculation !== $from_calculation
-                || $failed_reconciliation
-            ) {
+            $type_changed = !$before_adjustment || !$result_type->equals($before_adjustment);
+
+            if ($type_changed || $failed_reconciliation) {
                 $changed_var_ids[] = $key;
 
                 if (substr($key, -1) === ']') {
-                    $key_parts = AlgebraChecker::breakUpPathIntoParts($key);
+                    $key_parts = self::breakUpPathIntoParts($key);
                     self::adjustObjectLikeType(
                         $key_parts,
                         $existing_types,
@@ -143,6 +202,35 @@ class Reconciler
                         $result_type
                     );
                 }
+            } elseif ($code_location
+                && isset($referenced_var_ids[$key])
+                && !$has_negation
+                && !$has_equality
+                && !$result_type->isMixed()
+                && (!$has_isset || substr($key, -1, 1) !== ']')
+            ) {
+                $reconcile_key = implode(
+                    '&',
+                    array_map(
+                        /**
+                         * @return string
+                         */
+                        function (array $new_type_part_parts) {
+                            return implode('|', $new_type_part_parts);
+                        },
+                        $new_type_parts
+                    )
+                );
+
+                self::triggerIssueForImpossible(
+                    $result_type,
+                    $before_adjustment ? $before_adjustment->getId() : '',
+                    $key,
+                    $reconcile_key,
+                    !$type_changed,
+                    $code_location,
+                    $suppressed_issues
+                );
             }
 
             if ($failed_reconciliation) {
@@ -186,353 +274,76 @@ class Reconciler
         $project_checker = $statements_checker->getFileChecker()->project_checker;
         $codebase = $project_checker->codebase;
 
+        $is_strict_equality = false;
+        $is_loose_equality = false;
+        $is_equality = false;
+        $is_negation = false;
+
+        if ($new_var_type[0] === '!') {
+            $new_var_type = substr($new_var_type, 1);
+            $is_negation = true;
+        }
+
+        if ($new_var_type[0] === '^') {
+            $new_var_type = substr($new_var_type, 1);
+            $is_strict_equality = true;
+            $is_equality = true;
+        }
+
+        if ($new_var_type[0] === '~') {
+            $new_var_type = substr($new_var_type, 1);
+            $is_loose_equality = true;
+            $is_equality = true;
+        }
+
         if ($existing_var_type === null) {
-            if ($new_var_type === '^isset'
-                || $new_var_type === '^!empty'
-                || $new_var_type === 'isset'
-                || $new_var_type === '!empty'
+            if (($new_var_type === 'isset' && !$is_negation)
+                || ($new_var_type === 'empty' && $is_negation)
             ) {
-                return Type::getMixed();
+                return Type::getMixed(true);
             }
 
             if ($new_var_type === 'array-key-exists') {
-                return Type::getMixed();
+                return Type::getMixed(true);
             }
 
-            if ($new_var_type[0] !== '!' && $new_var_type !== 'falsy' && $new_var_type !== 'empty') {
-                if ($new_var_type[0] === '^') {
-                    $new_var_type = substr($new_var_type, 1);
+            if (!$is_negation && $new_var_type !== 'falsy' && $new_var_type !== 'empty') {
+                if ($is_equality) {
+                    $bracket_pos = strpos($new_var_type, '(');
+
+                    if ($bracket_pos) {
+                        $new_var_type = substr($new_var_type, 0, $bracket_pos);
+                    }
                 }
 
                 return Type::parseString($new_var_type);
             }
 
-            if ($new_var_type === '!falsy') {
-                return Type::getMixed();
-            }
-
             return Type::getMixed();
+        }
+
+        $old_var_type_string = $existing_var_type->getId();
+
+        if ($is_negation) {
+            return self::handleNegatedType(
+                $statements_checker,
+                $new_var_type,
+                $is_strict_equality,
+                $is_loose_equality,
+                $existing_var_type,
+                $old_var_type_string,
+                $key,
+                $code_location,
+                $suppressed_issues,
+                $failed_reconciliation
+            );
         }
 
         if ($new_var_type === 'mixed' && $existing_var_type->isMixed()) {
             return $existing_var_type;
         }
 
-        $old_var_type_string = $existing_var_type->getId();
-
-        if ($new_var_type[0] === '!') {
-            // this is a specific value comparison type that cannot be negated
-            if ($new_var_type[1] === '^') {
-                return $existing_var_type;
-            }
-
-            if ($new_var_type === '!isset' || $new_var_type === '!array-key-exists') {
-                return Type::getNull();
-            }
-
-            if ($new_var_type === '!object' && !$existing_var_type->isMixed()) {
-                $non_object_types = [];
-                $did_remove_type = false;
-
-                foreach ($existing_var_type->getTypes() as $type) {
-                    if (!$type->isObjectType()) {
-                        $non_object_types[] = $type;
-                    } else {
-                        $did_remove_type = true;
-                    }
-                }
-
-                if ((!$did_remove_type || !$non_object_types)) {
-                    if ($key && $code_location) {
-                        self::triggerIssueForImpossible(
-                            $existing_var_type,
-                            $old_var_type_string,
-                            $key,
-                            $new_var_type,
-                            !$did_remove_type,
-                            $code_location,
-                            $suppressed_issues
-                        );
-                    }
-                }
-
-                if ($non_object_types) {
-                    return new Type\Union($non_object_types);
-                }
-
-                $failed_reconciliation = true;
-
-                return Type::getMixed();
-            }
-
-            if ($new_var_type === '!scalar' && !$existing_var_type->isMixed()) {
-                $non_scalar_types = [];
-                $did_remove_type = false;
-
-                foreach ($existing_var_type->getTypes() as $type) {
-                    if (!($type instanceof Scalar)) {
-                        $non_scalar_types[] = $type;
-                    } else {
-                        $did_remove_type = true;
-                    }
-                }
-
-                if ((!$did_remove_type || !$non_scalar_types)) {
-                    if ($key && $code_location) {
-                        self::triggerIssueForImpossible(
-                            $existing_var_type,
-                            $old_var_type_string,
-                            $key,
-                            $new_var_type,
-                            !$did_remove_type,
-                            $code_location,
-                            $suppressed_issues
-                        );
-                    }
-                }
-
-                if ($non_scalar_types) {
-                    return new Type\Union($non_scalar_types);
-                }
-
-                $failed_reconciliation = true;
-
-                return Type::getMixed();
-            }
-
-            if ($new_var_type === '!bool' && !$existing_var_type->isMixed()) {
-                $non_bool_types = [];
-                $did_remove_type = false;
-
-                foreach ($existing_var_type->getTypes() as $type) {
-                    if (!$type instanceof TBool) {
-                        $non_bool_types[] = $type;
-                    } else {
-                        $did_remove_type = true;
-                    }
-                }
-
-                if (!$did_remove_type || !$non_bool_types) {
-                    if ($key && $code_location) {
-                        self::triggerIssueForImpossible(
-                            $existing_var_type,
-                            $old_var_type_string,
-                            $key,
-                            $new_var_type,
-                            !$did_remove_type,
-                            $code_location,
-                            $suppressed_issues
-                        );
-                    }
-                }
-
-                if ($non_bool_types) {
-                    return new Type\Union($non_bool_types);
-                }
-
-                $failed_reconciliation = true;
-
-                return Type::getMixed();
-            }
-
-            if ($new_var_type === '!numeric' && !$existing_var_type->isMixed()) {
-                $non_numeric_types = [];
-                $did_remove_type = $existing_var_type->hasString();
-
-                foreach ($existing_var_type->getTypes() as $type) {
-                    if (!$type->isNumericType()) {
-                        $non_numeric_types[] = $type;
-                    } else {
-                        $did_remove_type = true;
-                    }
-                }
-
-                if ((!$non_numeric_types || !$did_remove_type)) {
-                    if ($key && $code_location) {
-                        self::triggerIssueForImpossible(
-                            $existing_var_type,
-                            $old_var_type_string,
-                            $key,
-                            $new_var_type,
-                            $did_remove_type,
-                            $code_location,
-                            $suppressed_issues
-                        );
-                    }
-                }
-
-                if ($non_numeric_types) {
-                    return new Type\Union($non_numeric_types);
-                }
-
-                $failed_reconciliation = true;
-
-                return Type::getMixed();
-            }
-
-            if (($new_var_type === '!falsy' || $new_var_type === '!empty')
-                && !$existing_var_type->isMixed()
-            ) {
-                $did_remove_type = $existing_var_type->hasString()
-                    || $existing_var_type->hasNumericType()
-                    || $existing_var_type->isEmpty()
-                    || $existing_var_type->hasType('bool')
-                    || $existing_var_type->possibly_undefined;
-
-                if ($existing_var_type->hasType('null')) {
-                    $did_remove_type = true;
-                    $existing_var_type->removeType('null');
-                }
-
-                if ($existing_var_type->hasType('false')) {
-                    $did_remove_type = true;
-                    $existing_var_type->removeType('false');
-                }
-
-                if ($existing_var_type->hasType('bool')) {
-                    $did_remove_type = true;
-                    $existing_var_type->removeType('bool');
-                    $existing_var_type->addType(new TTrue);
-                }
-
-                if ($existing_var_type->hasType('array')) {
-                    $did_remove_type = true;
-
-                    if ($existing_var_type->getTypes()['array']->getId() === 'array<empty, empty>') {
-                        $existing_var_type->removeType('array');
-                    }
-                }
-
-                $existing_var_type->possibly_undefined = false;
-
-                if (!$did_remove_type || empty($existing_var_type->getTypes())) {
-                    if ($key && $code_location) {
-                        self::triggerIssueForImpossible(
-                            $existing_var_type,
-                            $old_var_type_string,
-                            $key,
-                            $new_var_type,
-                            !$did_remove_type,
-                            $code_location,
-                            $suppressed_issues
-                        );
-                    }
-                }
-
-                if ($existing_var_type->getTypes()) {
-                    return $existing_var_type;
-                }
-
-                $failed_reconciliation = true;
-
-                return Type::getMixed();
-            }
-
-            if ($new_var_type === '!null' && !$existing_var_type->isMixed()) {
-                $did_remove_type = false;
-
-                if ($existing_var_type->hasType('null')) {
-                    $did_remove_type = true;
-                    $existing_var_type->removeType('null');
-                }
-
-                if (!$did_remove_type || empty($existing_var_type->getTypes())) {
-                    if ($key && $code_location) {
-                        self::triggerIssueForImpossible(
-                            $existing_var_type,
-                            $old_var_type_string,
-                            $key,
-                            $new_var_type,
-                            !$did_remove_type,
-                            $code_location,
-                            $suppressed_issues
-                        );
-                    }
-                }
-
-                if ($existing_var_type->getTypes()) {
-                    return $existing_var_type;
-                }
-
-                $failed_reconciliation = true;
-
-                return Type::getMixed();
-            }
-
-            $negated_type = substr($new_var_type, 1);
-
-            $existing_var_atomic_types = $existing_var_type->getTypes();
-
-            if (isset($existing_var_atomic_types['int'])
-                && $existing_var_type->from_calculation
-                && ($negated_type === 'int' || $negated_type === 'float')
-            ) {
-                $existing_var_type->removeType($negated_type);
-
-                if ($negated_type === 'int') {
-                    $existing_var_type->addType(new Type\Atomic\TFloat);
-                } else {
-                    $existing_var_type->addType(new Type\Atomic\TInt);
-                }
-
-                $existing_var_type->from_calculation = false;
-
-                return $existing_var_type;
-            }
-
-            if ($negated_type === 'false' && isset($existing_var_atomic_types['bool'])) {
-                $existing_var_type->removeType('bool');
-                $existing_var_type->addType(new TTrue);
-            } elseif ($negated_type === 'true' && isset($existing_var_atomic_types['bool'])) {
-                $existing_var_type->removeType('bool');
-                $existing_var_type->addType(new TFalse);
-            } elseif (strtolower($negated_type) === 'traversable'
-                && isset($existing_var_type->getTypes()['iterable'])
-            ) {
-                $existing_var_type->removeType('iterable');
-                $existing_var_type->addType(new TArray(
-                    [
-                        new Type\Union([new TMixed]),
-                        new Type\Union([new TMixed]),
-                    ]
-                ));
-            } elseif (strtolower($negated_type) === 'array'
-                && isset($existing_var_type->getTypes()['iterable'])
-            ) {
-                $existing_var_type->removeType('iterable');
-                $existing_var_type->addType(new TNamedObject('Traversable'));
-            } elseif (substr($negated_type, 0, 9) === 'getclass-') {
-                $negated_type = substr($negated_type, 9);
-            } else {
-                $existing_var_type->removeType($negated_type);
-            }
-
-            if (empty($existing_var_type->getTypes())) {
-                if ($key !== '$this'
-                    || !($statements_checker->getSource()->getSource() instanceof TraitChecker)
-                ) {
-                    if ($key && $code_location) {
-                        self::triggerIssueForImpossible(
-                            $existing_var_type,
-                            $old_var_type_string,
-                            $key,
-                            $new_var_type,
-                            true,
-                            $code_location,
-                            $suppressed_issues
-                        );
-                    }
-                }
-
-                $failed_reconciliation = true;
-
-                return Type::getMixed();
-            }
-
-            return $existing_var_type;
-        }
-
-        if ($new_var_type === '^isset' || $new_var_type === 'isset') {
+        if ($new_var_type === 'isset') {
             $existing_var_type->removeType('null');
 
             if (empty($existing_var_type->getTypes())) {
@@ -559,40 +370,14 @@ class Reconciler
             return $existing_var_type;
         }
 
-        if ($new_var_type === '^!empty') {
-            $existing_var_type->removeType('null');
-            $existing_var_type->removeType('false');
-
-            if ($existing_var_type->hasType('array')
-                && $existing_var_type->getTypes()['array']->getId() === 'array<empty, empty>'
-            ) {
-                $existing_var_type->removeType('array');
-            }
-
-            if ($existing_var_type->getTypes()) {
-                return $existing_var_type;
-            }
-
-            $failed_reconciliation = true;
-
-            return Type::getMixed();
-        }
-
-        $is_strict_equality = false;
-
-        if ($new_var_type[0] === '^') {
-            $new_var_type = substr($new_var_type, 1);
-            $is_strict_equality = true;
-        }
+        $existing_var_atomic_types = $existing_var_type->getTypes();
 
         if ($new_var_type === 'falsy' || $new_var_type === 'empty') {
             if ($existing_var_type->isMixed()) {
-                return $existing_var_type;
+                return new Type\Union([new Type\Atomic\TEmptyMixed]);
             }
 
-            $did_remove_type = $existing_var_type->hasString()
-                || $existing_var_type->hasScalar()
-                || $existing_var_type->hasNumericType();
+            $did_remove_type = $existing_var_type->hasDefinitelyNumericType();
 
             if ($existing_var_type->hasType('bool')) {
                 $did_remove_type = true;
@@ -605,8 +390,43 @@ class Reconciler
                 $existing_var_type->removeType('true');
             }
 
-            if ($existing_var_type->hasType('array')
-                && $existing_var_type->getTypes()['array']->getId() !== 'array<empty, empty>'
+            if ($existing_var_type->hasString()) {
+                $existing_string_types = $existing_var_type->getLiteralStrings();
+
+                if ($existing_string_types) {
+                    foreach ($existing_string_types as $key => $literal_type) {
+                        if ($literal_type->value) {
+                            $existing_var_type->removeType($key);
+                            $did_remove_type = true;
+                        }
+                    }
+                } else {
+                    $did_remove_type = true;
+                    $existing_var_type->removeType('string');
+                    $existing_var_type->addType(new Type\Atomic\TLiteralString(''));
+                    $existing_var_type->addType(new Type\Atomic\TLiteralString('0'));
+                }
+            }
+
+            if ($existing_var_type->hasInt()) {
+                $existing_int_types = $existing_var_type->getLiteralInts();
+
+                if ($existing_int_types) {
+                    foreach ($existing_int_types as $key => $literal_type) {
+                        if ($literal_type->value) {
+                            $existing_var_type->removeType($key);
+                            $did_remove_type = true;
+                        }
+                    }
+                } else {
+                    $did_remove_type = true;
+                    $existing_var_type->removeType('int');
+                    $existing_var_type->addType(new Type\Atomic\TLiteralInt(0));
+                }
+            }
+
+            if (isset($existing_var_atomic_types['array'])
+                && $existing_var_atomic_types['array']->getId() !== 'array<empty, empty>'
             ) {
                 $did_remove_type = true;
                 $existing_var_type->addType(new TArray(
@@ -617,7 +437,14 @@ class Reconciler
                 ));
             }
 
-            foreach ($existing_var_type->getTypes() as $type_key => $type) {
+            if (isset($existing_var_atomic_types['scalar'])
+                && $existing_var_atomic_types['scalar']->getId() !== 'empty-scalar'
+            ) {
+                $did_remove_type = true;
+                $existing_var_type->addType(new Type\Atomic\TEmptyScalar);
+            }
+
+            foreach ($existing_var_atomic_types as $type_key => $type) {
                 if ($type instanceof TNamedObject
                     || $type instanceof TResource
                     || $type instanceof TCallable
@@ -655,7 +482,7 @@ class Reconciler
             $object_types = [];
             $did_remove_type = false;
 
-            foreach ($existing_var_type->getTypes() as $type) {
+            foreach ($existing_var_atomic_types as $type) {
                 if ($type->isObjectType()) {
                     $object_types[] = $type;
                 } else {
@@ -663,7 +490,7 @@ class Reconciler
                 }
             }
 
-            if ((!$object_types || !$did_remove_type) && !$is_strict_equality) {
+            if ((!$object_types || !$did_remove_type) && !$is_equality) {
                 if ($key && $code_location) {
                     self::triggerIssueForImpossible(
                         $existing_var_type,
@@ -709,7 +536,7 @@ class Reconciler
                 }
             }
 
-            if ((!$did_remove_type || !$numeric_types) && !$is_strict_equality) {
+            if ((!$did_remove_type || !$numeric_types) && !$is_equality) {
                 if ($key && $code_location) {
                     self::triggerIssueForImpossible(
                         $existing_var_type,
@@ -736,7 +563,7 @@ class Reconciler
             $scalar_types = [];
             $did_remove_type = false;
 
-            foreach ($existing_var_type->getTypes() as $type) {
+            foreach ($existing_var_atomic_types as $type) {
                 if ($type instanceof Scalar) {
                     $scalar_types[] = $type;
                 } else {
@@ -744,7 +571,7 @@ class Reconciler
                 }
             }
 
-            if ((!$did_remove_type || !$scalar_types) && !$is_strict_equality) {
+            if ((!$did_remove_type || !$scalar_types) && !$is_equality) {
                 if ($key && $code_location) {
                     self::triggerIssueForImpossible(
                         $existing_var_type,
@@ -771,7 +598,7 @@ class Reconciler
             $bool_types = [];
             $did_remove_type = false;
 
-            foreach ($existing_var_type->getTypes() as $type) {
+            foreach ($existing_var_atomic_types as $type) {
                 if ($type instanceof TBool) {
                     $bool_types[] = $type;
                 } else {
@@ -779,7 +606,7 @@ class Reconciler
                 }
             }
 
-            if ((!$did_remove_type || !$bool_types) && !$is_strict_equality) {
+            if ((!$did_remove_type || !$bool_types) && !$is_equality) {
                 if ($key && $code_location) {
                     self::triggerIssueForImpossible(
                         $existing_var_type,
@@ -801,8 +628,6 @@ class Reconciler
 
             return Type::getMixed();
         }
-
-        $existing_var_atomic_types = $existing_var_type->getTypes();
 
         if (isset($existing_var_atomic_types['int'])
             && $existing_var_type->from_calculation
@@ -835,8 +660,21 @@ class Reconciler
         } elseif (substr($new_var_type, 0, 9) === 'getclass-') {
             $new_var_type = substr($new_var_type, 9);
             $new_type = Type::parseString($new_var_type);
-            $is_strict_equality = true;
         } else {
+            $bracket_pos = strpos($new_var_type, '(');
+
+            if ($bracket_pos) {
+                return self::handleLiteralEquality(
+                    $new_var_type,
+                    $bracket_pos,
+                    $existing_var_type,
+                    $old_var_type_string,
+                    $key,
+                    $code_location,
+                    $suppressed_issues
+                );
+            }
+
             $new_type = Type::parseString($new_var_type);
         }
 
@@ -894,7 +732,7 @@ class Reconciler
 
             if ($key
                 && $new_type->getId() === $existing_var_type->getId()
-                && !$is_strict_equality
+                && !$is_equality
             ) {
                 self::triggerIssueForImpossible(
                     $existing_var_type,
@@ -907,6 +745,10 @@ class Reconciler
                 );
             }
 
+            $any_scalar_type_match_found = false;
+
+            $matching_atomic_types = [];
+
             foreach ($new_type->getTypes() as $new_type_part) {
                 $has_local_match = false;
 
@@ -916,6 +758,7 @@ class Reconciler
                     if ($existing_var_type_part instanceof Type\Atomic\TFloat
                         && $new_type_part instanceof Type\Atomic\TInt
                     ) {
+                        $any_scalar_type_match_found = true;
                         continue;
                     }
 
@@ -930,7 +773,16 @@ class Reconciler
                     ) || $type_coerced
                     ) {
                         $has_local_match = true;
+                        if ($type_coerced) {
+                            $matching_atomic_types[] = $existing_var_type_part;
+                        }
                         break;
+                    }
+
+                    //echo ($new_type_part->getId() . ' ' . $existing_var_type_part->getId() . PHP_EOL);
+
+                    if ($scalar_type_match_found) {
+                        $any_scalar_type_match_found = true;
                     }
 
                     if ($new_type_part instanceof TCallable &&
@@ -956,7 +808,11 @@ class Reconciler
                 }
             }
 
-            if (!$has_match) {
+            if ($matching_atomic_types) {
+                $new_type = new Type\Union($matching_atomic_types);
+            }
+
+            if (!$has_match && (!$is_loose_equality || !$any_scalar_type_match_found)) {
                 if ($new_var_type === 'null') {
                     if ($existing_var_type->from_docblock) {
                         if (IssueBuffer::accepts(
@@ -988,7 +844,7 @@ class Reconciler
                         if (IssueBuffer::accepts(
                             new DocblockTypeContradiction(
                                 'Cannot resolve types for ' . $key . ' - docblock-defined type '
-                                    . $existing_var_type . ' does not contain ' . $new_type,
+                                    . $existing_var_type->getId() . ' does not contain ' . $new_type->getId(),
                                 $code_location
                             ),
                             $suppressed_issues
@@ -998,8 +854,8 @@ class Reconciler
                     } else {
                         if (IssueBuffer::accepts(
                             new TypeDoesNotContainType(
-                                'Cannot resolve types for ' . $key . ' - ' . $existing_var_type .
-                                ' does not contain ' . $new_type,
+                                'Cannot resolve types for ' . $key . ' - ' . $existing_var_type->getId() .
+                                ' does not contain ' . $new_type->getId(),
                                 $code_location
                             ),
                             $suppressed_issues
@@ -1024,6 +880,642 @@ class Reconciler
     }
 
     /**
+     * @param  string     $new_var_type
+     * @param  bool       $is_strict_equality
+     * @param  bool       $is_loose_equality
+     * @param  string     $old_var_type_string
+     * @param  string|null $key
+     * @param  CodeLocation|null $code_location
+     * @param  string[]   $suppressed_issues
+     * @param  bool       $failed_reconciliation
+     *
+     * @return Type\Union
+     */
+    private static function handleNegatedType(
+        StatementsChecker $statements_checker,
+        $new_var_type,
+        $is_strict_equality,
+        $is_loose_equality,
+        Type\Union $existing_var_type,
+        $old_var_type_string,
+        $key,
+        $code_location,
+        $suppressed_issues,
+        &$failed_reconciliation
+    ) {
+        $is_equality = $is_strict_equality || $is_loose_equality;
+
+        // this is a specific value comparison type that cannot be negated
+        if ($is_equality && $bracket_pos = strpos($new_var_type, '(')) {
+            return self::handleLiteralNegatedEquality(
+                $new_var_type,
+                $bracket_pos,
+                $existing_var_type,
+                $old_var_type_string,
+                $key,
+                $code_location,
+                $suppressed_issues
+            );
+        }
+
+        if (!$is_equality && ($new_var_type === 'isset' || $new_var_type === 'array-key-exists')) {
+            return Type::getNull();
+        }
+
+        $existing_var_atomic_types = $existing_var_type->getTypes();
+
+        if ($new_var_type === 'object' && !$existing_var_type->isMixed()) {
+            $non_object_types = [];
+            $did_remove_type = false;
+
+            foreach ($existing_var_atomic_types as $type) {
+                if (!$type->isObjectType()) {
+                    $non_object_types[] = $type;
+                } else {
+                    $did_remove_type = true;
+                }
+            }
+
+            if ((!$did_remove_type || !$non_object_types)) {
+                if ($key && $code_location && !$is_equality) {
+                    self::triggerIssueForImpossible(
+                        $existing_var_type,
+                        $old_var_type_string,
+                        $key,
+                        $new_var_type,
+                        !$did_remove_type,
+                        $code_location,
+                        $suppressed_issues
+                    );
+                }
+            }
+
+            if ($non_object_types) {
+                return new Type\Union($non_object_types);
+            }
+
+            $failed_reconciliation = true;
+
+            return Type::getMixed();
+        }
+
+        if ($new_var_type === 'scalar' && !$existing_var_type->isMixed()) {
+            $non_scalar_types = [];
+            $did_remove_type = false;
+
+            foreach ($existing_var_atomic_types as $type) {
+                if (!($type instanceof Scalar)) {
+                    $non_scalar_types[] = $type;
+                } else {
+                    $did_remove_type = true;
+                }
+            }
+
+            if ((!$did_remove_type || !$non_scalar_types)) {
+                if ($key && $code_location && !$is_equality) {
+                    self::triggerIssueForImpossible(
+                        $existing_var_type,
+                        $old_var_type_string,
+                        $key,
+                        $new_var_type,
+                        !$did_remove_type,
+                        $code_location,
+                        $suppressed_issues
+                    );
+                }
+            }
+
+            if ($non_scalar_types) {
+                return new Type\Union($non_scalar_types);
+            }
+
+            $failed_reconciliation = true;
+
+            return Type::getMixed();
+        }
+
+        if ($new_var_type === 'bool' && !$existing_var_type->isMixed()) {
+            $non_bool_types = [];
+            $did_remove_type = false;
+
+            foreach ($existing_var_atomic_types as $type) {
+                if (!$type instanceof TBool
+                    || ($is_equality && get_class($type) === TBool::class)
+                ) {
+                    $non_bool_types[] = $type;
+                } else {
+                    $did_remove_type = true;
+                }
+            }
+
+            if (!$did_remove_type || !$non_bool_types) {
+                if ($key && $code_location && !$is_equality) {
+                    self::triggerIssueForImpossible(
+                        $existing_var_type,
+                        $old_var_type_string,
+                        $key,
+                        $new_var_type,
+                        !$did_remove_type,
+                        $code_location,
+                        $suppressed_issues
+                    );
+                }
+            }
+
+            if ($non_bool_types) {
+                return new Type\Union($non_bool_types);
+            }
+
+            $failed_reconciliation = true;
+
+            return Type::getMixed();
+        }
+
+        if ($new_var_type === 'numeric' && !$existing_var_type->isMixed()) {
+            $non_numeric_types = [];
+            $did_remove_type = $existing_var_type->hasString();
+
+            foreach ($existing_var_atomic_types as $type) {
+                if (!$type->isNumericType()) {
+                    $non_numeric_types[] = $type;
+                } else {
+                    $did_remove_type = true;
+                }
+            }
+
+            if ((!$non_numeric_types || !$did_remove_type)) {
+                if ($key && $code_location && !$is_equality) {
+                    self::triggerIssueForImpossible(
+                        $existing_var_type,
+                        $old_var_type_string,
+                        $key,
+                        $new_var_type,
+                        $did_remove_type,
+                        $code_location,
+                        $suppressed_issues
+                    );
+                }
+            }
+
+            if ($non_numeric_types) {
+                return new Type\Union($non_numeric_types);
+            }
+
+            $failed_reconciliation = true;
+
+            return Type::getMixed();
+        }
+
+        if (($new_var_type === 'falsy' || $new_var_type === 'empty')) {
+            if ($existing_var_type->isMixed()) {
+                if ($existing_var_atomic_types['mixed'] instanceof Type\Atomic\TEmptyMixed) {
+                    if ($code_location
+                        && $key
+                        && IssueBuffer::accepts(
+                            new ParadoxicalCondition(
+                                'Found a redundant condition when evaluating ' . $key,
+                                $code_location
+                            ),
+                            $suppressed_issues
+                        )
+                    ) {
+                        // fall through
+                    }
+
+                    return Type::getMixed();
+                }
+
+                return $existing_var_type;
+            }
+
+            if ($is_strict_equality && $new_var_type === 'empty') {
+                $existing_var_type->removeType('null');
+                $existing_var_type->removeType('false');
+
+                if ($existing_var_type->hasType('array')
+                    && $existing_var_type->getTypes()['array']->getId() === 'array<empty, empty>'
+                ) {
+                    $existing_var_type->removeType('array');
+                }
+
+                $existing_var_type->possibly_undefined = false;
+
+                if ($existing_var_type->getTypes()) {
+                    return $existing_var_type;
+                }
+
+                $failed_reconciliation = true;
+
+                return Type::getMixed();
+            }
+
+            $did_remove_type = $existing_var_type->hasDefinitelyNumericType()
+                || $existing_var_type->isEmpty()
+                || $existing_var_type->hasType('bool')
+                || $existing_var_type->possibly_undefined;
+
+            if ($existing_var_type->hasType('null')) {
+                $did_remove_type = true;
+                $existing_var_type->removeType('null');
+            }
+
+            if ($existing_var_type->hasType('false')) {
+                $did_remove_type = true;
+                $existing_var_type->removeType('false');
+            }
+
+            if ($existing_var_type->hasType('bool')) {
+                $did_remove_type = true;
+                $existing_var_type->removeType('bool');
+                $existing_var_type->addType(new TTrue);
+            }
+
+            if ($existing_var_type->hasString()) {
+                $existing_string_types = $existing_var_type->getLiteralStrings();
+
+                if ($existing_string_types) {
+                    foreach ($existing_string_types as $key => $literal_type) {
+                        if (!$literal_type->value) {
+                            $existing_var_type->removeType($key);
+                            $did_remove_type = true;
+                        }
+                    }
+                } else {
+                    $did_remove_type = true;
+                }
+            }
+
+            if ($existing_var_type->hasInt()) {
+                $existing_int_types = $existing_var_type->getLiteralInts();
+
+                if ($existing_int_types) {
+                    foreach ($existing_int_types as $key => $literal_type) {
+                        if (!$literal_type->value) {
+                            $existing_var_type->removeType($key);
+                            $did_remove_type = true;
+                        }
+                    }
+                } else {
+                    $did_remove_type = true;
+                }
+            }
+
+            if ($existing_var_type->hasType('array')) {
+                $array_atomic_type = $existing_var_type->getTypes()['array'];
+
+                if (($array_atomic_type instanceof Type\Atomic\TArray && !$array_atomic_type->count)
+                    || ($array_atomic_type instanceof Type\Atomic\ObjectLike && !$array_atomic_type->sealed)
+                ) {
+                    $did_remove_type = true;
+
+                    if ($existing_var_type->getTypes()['array']->getId() === 'array<empty, empty>') {
+                        $existing_var_type->removeType('array');
+                    }
+                }
+            }
+
+            $existing_var_type->possibly_undefined = false;
+
+            if (!$did_remove_type || empty($existing_var_type->getTypes())) {
+                if ($key && $code_location && !$is_equality) {
+                    self::triggerIssueForImpossible(
+                        $existing_var_type,
+                        $old_var_type_string,
+                        $key,
+                        '!' . $new_var_type,
+                        !$did_remove_type,
+                        $code_location,
+                        $suppressed_issues
+                    );
+                }
+            }
+
+            if ($existing_var_type->getTypes()) {
+                return $existing_var_type;
+            }
+
+            $failed_reconciliation = true;
+
+            return Type::getEmpty();
+        }
+
+        if ($new_var_type === 'null' && !$existing_var_type->isMixed()) {
+            $did_remove_type = false;
+
+            if ($existing_var_type->hasType('null')) {
+                $did_remove_type = true;
+                $existing_var_type->removeType('null');
+            }
+
+            if (!$did_remove_type || empty($existing_var_type->getTypes())) {
+                if ($key && $code_location && !$is_equality) {
+                    self::triggerIssueForImpossible(
+                        $existing_var_type,
+                        $old_var_type_string,
+                        $key,
+                        $new_var_type,
+                        !$did_remove_type,
+                        $code_location,
+                        $suppressed_issues
+                    );
+                }
+            }
+
+            if ($existing_var_type->getTypes()) {
+                return $existing_var_type;
+            }
+
+            $failed_reconciliation = true;
+
+            return Type::getMixed();
+        }
+
+        if (isset($existing_var_atomic_types['int'])
+            && $existing_var_type->from_calculation
+            && ($new_var_type === 'int' || $new_var_type === 'float')
+        ) {
+            $existing_var_type->removeType($new_var_type);
+
+            if ($new_var_type === 'int') {
+                $existing_var_type->addType(new Type\Atomic\TFloat);
+            } else {
+                $existing_var_type->addType(new Type\Atomic\TInt);
+            }
+
+            $existing_var_type->from_calculation = false;
+
+            return $existing_var_type;
+        }
+
+        if ($new_var_type === 'false' && isset($existing_var_atomic_types['bool'])) {
+            $existing_var_type->removeType('bool');
+            $existing_var_type->addType(new TTrue);
+        } elseif ($new_var_type === 'true' && isset($existing_var_atomic_types['bool'])) {
+            $existing_var_type->removeType('bool');
+            $existing_var_type->addType(new TFalse);
+        } elseif (strtolower($new_var_type) === 'traversable'
+            && isset($existing_var_type->getTypes()['iterable'])
+        ) {
+            $existing_var_type->removeType('iterable');
+            $existing_var_type->addType(new TArray(
+                [
+                    new Type\Union([new TMixed]),
+                    new Type\Union([new TMixed]),
+                ]
+            ));
+        } elseif (strtolower($new_var_type) === 'array'
+            && isset($existing_var_type->getTypes()['iterable'])
+        ) {
+            $existing_var_type->removeType('iterable');
+            $existing_var_type->addType(new TNamedObject('Traversable'));
+        } elseif (substr($new_var_type, 0, 9) === 'getclass-') {
+            $new_var_type = substr($new_var_type, 9);
+        } elseif (!$is_equality) {
+            $existing_var_type->removeType($new_var_type);
+        }
+
+        if (empty($existing_var_type->getTypes())) {
+            if ($key !== '$this'
+                || !($statements_checker->getSource()->getSource() instanceof TraitChecker)
+            ) {
+                if ($key && $code_location && !$is_equality) {
+                    self::triggerIssueForImpossible(
+                        $existing_var_type,
+                        $old_var_type_string,
+                        $key,
+                        $new_var_type,
+                        true,
+                        $code_location,
+                        $suppressed_issues
+                    );
+                }
+            }
+
+            $failed_reconciliation = true;
+
+            return new Type\Union([new Type\Atomic\TEmptyMixed]);
+        }
+
+        return $existing_var_type;
+    }
+
+    /**
+     * @param  string     $new_var_type
+     * @param  int        $bracket_pos
+     * @param  string     $old_var_type_string
+     * @param  string|null $var_id
+     * @param  CodeLocation|null $code_location
+     * @param  string[]   $suppressed_issues
+     *
+     * @return Type\Union
+     */
+    private static function handleLiteralEquality(
+        $new_var_type,
+        $bracket_pos,
+        Type\Union $existing_var_type,
+        $old_var_type_string,
+        $var_id,
+        $code_location,
+        $suppressed_issues
+    ) {
+        $value = substr($new_var_type, $bracket_pos + 1, -1);
+
+        $scalar_type = substr($new_var_type, 0, $bracket_pos);
+
+        $existing_var_atomic_types = $existing_var_type->getTypes();
+
+        if ($scalar_type === 'int') {
+            $value = (int) $value;
+
+            if ($existing_var_type->hasInt()) {
+                $existing_int_types = $existing_var_type->getLiteralInts();
+
+                if ($existing_int_types) {
+                    $can_be_equal = false;
+                    $did_remove_type = false;
+
+                    foreach ($existing_var_atomic_types as $key => $_) {
+                        if ($key !== $new_var_type) {
+                            $existing_var_type->removeType($key);
+                            $did_remove_type = true;
+                        } else {
+                            $can_be_equal = true;
+                        }
+                    }
+
+                    if ($var_id
+                        && $code_location
+                        && (!$can_be_equal || (!$did_remove_type && count($existing_var_atomic_types) === 1))
+                    ) {
+                        self::triggerIssueForImpossible(
+                            $existing_var_type,
+                            $old_var_type_string,
+                            $var_id,
+                            $new_var_type,
+                            $can_be_equal,
+                            $code_location,
+                            $suppressed_issues
+                        );
+                    }
+                } else {
+                    $existing_var_type = new Type\Union([new Type\Atomic\TLiteralInt($value)]);
+                }
+            }
+        } elseif ($scalar_type === 'string') {
+            if ($existing_var_type->hasString()) {
+                $existing_string_types = $existing_var_type->getLiteralStrings();
+
+                if ($existing_string_types) {
+                    $can_be_equal = false;
+                    $did_remove_type = false;
+
+                    foreach ($existing_var_atomic_types as $key => $_) {
+                        if ($key !== $new_var_type) {
+                            $existing_var_type->removeType($key);
+                            $did_remove_type = true;
+                        } else {
+                            $can_be_equal = true;
+                        }
+                    }
+
+                    if ($var_id
+                        && $code_location
+                        && (!$can_be_equal || (!$did_remove_type && count($existing_var_atomic_types) === 1))
+                    ) {
+                        self::triggerIssueForImpossible(
+                            $existing_var_type,
+                            $old_var_type_string,
+                            $var_id,
+                            $new_var_type,
+                            $can_be_equal,
+                            $code_location,
+                            $suppressed_issues
+                        );
+                    }
+                } else {
+                    $existing_var_type = new Type\Union([new Type\Atomic\TLiteralString($value)]);
+                }
+            }
+        } elseif ($scalar_type === 'float') {
+            $value = (float) $value;
+
+            if ($existing_var_type->hasFloat()) {
+                $existing_float_types = $existing_var_type->getLiteralFloats();
+
+                if ($existing_float_types) {
+                    $can_be_equal = false;
+                    $did_remove_type = false;
+
+                    foreach ($existing_var_atomic_types as $key => $_) {
+                        if ($key !== $new_var_type) {
+                            $existing_var_type->removeType($key);
+                            $did_remove_type = true;
+                        } else {
+                            $can_be_equal = true;
+                        }
+                    }
+
+                    if ($var_id
+                        && $code_location
+                        && (!$can_be_equal || (!$did_remove_type && count($existing_var_atomic_types) === 1))
+                    ) {
+                        self::triggerIssueForImpossible(
+                            $existing_var_type,
+                            $old_var_type_string,
+                            $var_id,
+                            $new_var_type,
+                            $can_be_equal,
+                            $code_location,
+                            $suppressed_issues
+                        );
+                    }
+                } else {
+                    $existing_var_type = new Type\Union([new Type\Atomic\TLiteralFloat($value)]);
+                }
+            }
+        }
+
+        return $existing_var_type;
+    }
+
+    /**
+     * @param  string     $new_var_type
+     * @param  int        $bracket_pos
+     * @param  string     $old_var_type_string
+     * @param  string|null $key
+     * @param  CodeLocation|null $code_location
+     * @param  string[]   $suppressed_issues
+     *
+     * @return Type\Union
+     */
+    private static function handleLiteralNegatedEquality(
+        $new_var_type,
+        $bracket_pos,
+        Type\Union $existing_var_type,
+        $old_var_type_string,
+        $key,
+        $code_location,
+        $suppressed_issues
+    ) {
+        $scalar_type = substr($new_var_type, 0, $bracket_pos);
+
+        $existing_var_atomic_types = $existing_var_type->getTypes();
+
+        $did_remove_type = false;
+        $did_match_literal_type = false;
+
+        if ($scalar_type === 'int') {
+            if ($existing_var_type->hasInt() && $existing_int_types = $existing_var_type->getLiteralInts()) {
+                $did_match_literal_type = true;
+
+                if (isset($existing_int_types[$new_var_type])) {
+                    $existing_var_type->removeType($new_var_type);
+
+                    $did_remove_type = true;
+                }
+            }
+        } elseif ($scalar_type === 'string') {
+            if ($existing_var_type->hasString() && $existing_string_types = $existing_var_type->getLiteralStrings()) {
+                $did_match_literal_type = true;
+
+                if (isset($existing_string_types[$new_var_type])) {
+                    $existing_var_type->removeType($new_var_type);
+
+                    $did_remove_type = true;
+                }
+            }
+        } elseif ($scalar_type === 'float') {
+            if ($existing_var_type->hasFloat() && $existing_float_types = $existing_var_type->getLiteralFloats()) {
+                $did_match_literal_type = true;
+
+                if (isset($existing_float_types[$new_var_type])) {
+                    $existing_var_type->removeType($new_var_type);
+
+                    $did_remove_type = true;
+                }
+            }
+        }
+
+        if ($key
+            && $code_location
+            && $did_match_literal_type
+            && (!$did_remove_type || count($existing_var_atomic_types) === 1)
+        ) {
+            self::triggerIssueForImpossible(
+                $existing_var_type,
+                $old_var_type_string,
+                $key,
+                $new_var_type,
+                !$did_remove_type,
+                $code_location,
+                $suppressed_issues
+            );
+        }
+
+        return $existing_var_type;
+    }
+
+    /**
      * @param  string       $key
      * @param  string       $old_var_type_string
      * @param  string       $new_var_type
@@ -1044,11 +1536,10 @@ class Reconciler
         $reconciliation = ' and trying to reconcile type \'' . $old_var_type_string . '\' to ' . $new_var_type;
 
         $existing_var_atomic_types = $existing_var_type->getTypes();
-        $potential_key = str_replace('!', '', $new_var_type);
 
         $from_docblock = $existing_var_type->from_docblock
-            || (isset($existing_var_atomic_types[$potential_key])
-                && $existing_var_atomic_types[$potential_key]->from_docblock);
+            || (isset($existing_var_atomic_types[$new_var_type])
+                && $existing_var_atomic_types[$new_var_type]->from_docblock);
 
         if ($redundant) {
             if ($from_docblock) {
@@ -1148,6 +1639,83 @@ class Reconciler
     }
 
     /**
+     * @param  string $path
+     *
+     * @return array<int, string>
+     */
+    public static function breakUpPathIntoParts($path)
+    {
+        if (isset(self::$broken_paths[$path])) {
+            return self::$broken_paths[$path];
+        }
+
+        $chars = str_split($path);
+
+        $string_char = null;
+        $escape_char = false;
+
+        $parts = [''];
+        $parts_offset = 0;
+
+        for ($i = 0, $char_count = count($chars); $i < $char_count; ++$i) {
+            $char = $chars[$i];
+
+            if ($string_char) {
+                if ($char === $string_char && !$escape_char) {
+                    $string_char = null;
+                }
+
+                if ($char === '\\') {
+                    $escape_char = !$escape_char;
+                }
+
+                $parts[$parts_offset] .= $char;
+                continue;
+            }
+
+            switch ($char) {
+                case '[':
+                case ']':
+                    $parts_offset++;
+                    $parts[$parts_offset] = $char;
+                    $parts_offset++;
+                    continue;
+
+                case '\'':
+                case '"':
+                    if (!isset($parts[$parts_offset])) {
+                        $parts[$parts_offset] = '';
+                    }
+                    $parts[$parts_offset] .= $char;
+                    $string_char = $char;
+
+                    continue;
+
+                case '-':
+                    if ($i < $char_count - 1 && $chars[$i + 1] === '>') {
+                        ++$i;
+
+                        $parts_offset++;
+                        $parts[$parts_offset] = '->';
+                        $parts_offset++;
+                        continue;
+                    }
+                    // fall through
+
+                default:
+                    if (!isset($parts[$parts_offset])) {
+                        $parts[$parts_offset] = '';
+                    }
+                    $parts[$parts_offset] .= $char;
+            }
+        }
+
+        self::$broken_paths[$path] = $parts;
+
+        return $parts;
+    }
+
+    /**
      * Gets the type for a given (non-existent key) based on the passed keys
      *
      * @param  ProjectChecker            $project_checker
@@ -1158,7 +1726,7 @@ class Reconciler
      */
     private static function getValueForKey(ProjectChecker $project_checker, $key, array &$existing_keys)
     {
-        $key_parts = AlgebraChecker::breakUpPathIntoParts($key);
+        $key_parts = self::breakUpPathIntoParts($key);
 
         if (count($key_parts) === 1) {
             return isset($existing_keys[$key_parts[0]]) ? clone $existing_keys[$key_parts[0]] : null;
@@ -1188,7 +1756,7 @@ class Reconciler
                         if ($existing_key_type_part instanceof Type\Atomic\TArray) {
                             $new_base_type_candidate = clone $existing_key_type_part->type_params[1];
                         } elseif (!$existing_key_type_part instanceof Type\Atomic\ObjectLike) {
-                            return null;
+                            return Type::getMixed();
                         } elseif ($array_key[0] === '$') {
                             $new_base_type_candidate = $existing_key_type_part->getGenericValueType();
                         } else {

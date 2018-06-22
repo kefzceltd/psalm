@@ -6,6 +6,14 @@ use Psalm\CodeLocation;
 use Psalm\StatementsSource;
 use Psalm\Storage\FileStorage;
 use Psalm\Type;
+use Psalm\Type\Atomic\TFloat;
+use Psalm\Type\Atomic\TInt;
+use Psalm\Type\Atomic\TLiteralFloat;
+use Psalm\Type\Atomic\TLiteralInt;
+use Psalm\Type\Atomic\TLiteralString;
+use Psalm\Type\Atomic\TNamedObject;
+use Psalm\Type\Atomic\TString;
+use Psalm\Type\TypeCombination;
 
 class Union
 {
@@ -69,6 +77,21 @@ class Union
     public $possibly_undefined = false;
 
     /**
+     * @var array<string, TLiteralString>
+     */
+    private $literal_string_types = [];
+
+    /**
+     * @var array<string, TLiteralInt>
+     */
+    private $literal_int_types = [];
+
+    /**
+     * @var array<string, TLiteralFloat>
+     */
+    private $literal_float_types = [];
+
+    /**
      * Whether or not the type was passed by reference
      *
      * @var bool
@@ -85,9 +108,24 @@ class Union
      */
     public function __construct(array $types)
     {
+        $from_docblock = false;
+
         foreach ($types as $type) {
-            $this->types[$type->getKey()] = $type;
+            $key = $type->getKey();
+            $this->types[$key] = $type;
+
+            if ($type instanceof TLiteralInt) {
+                $this->literal_int_types[$key] = $type;
+            } elseif ($type instanceof TLiteralString) {
+                $this->literal_string_types[$key] = $type;
+            } elseif ($type instanceof TLiteralFloat) {
+                $this->literal_float_types[$key] = $type;
+            }
+
+            $from_docblock = $from_docblock || $type->from_docblock;
         }
+
+        $this->from_docblock = $from_docblock;
     }
 
     /**
@@ -104,13 +142,49 @@ class Union
     public function addType(Atomic $type)
     {
         $this->types[$type->getKey()] = $type;
+
+        if ($type instanceof TLiteralString) {
+            $this->literal_string_types[$type->getKey()] = $type;
+        } elseif ($type instanceof TLiteralInt) {
+            $this->literal_int_types[$type->getKey()] = $type;
+        } elseif ($type instanceof TLiteralFloat) {
+            $this->literal_float_types[$type->getKey()] = $type;
+        } elseif ($type instanceof TString && $this->literal_string_types) {
+            foreach ($this->literal_string_types as $key => $_) {
+                unset($this->literal_string_types[$key]);
+                unset($this->types[$key]);
+            }
+        } elseif ($type instanceof TInt && $this->literal_int_types) {
+            foreach ($this->literal_int_types as $key => $_) {
+                unset($this->literal_int_types[$key]);
+                unset($this->types[$key]);
+            }
+        } elseif ($type instanceof TFloat && $this->literal_float_types) {
+            foreach ($this->literal_float_types as $key => $_) {
+                unset($this->literal_float_types[$key]);
+                unset($this->types[$key]);
+            }
+        }
+
         $this->id = null;
     }
 
     public function __clone()
     {
-        foreach ($this->types as &$type) {
+        $this->literal_string_types = [];
+        $this->literal_int_types = [];
+        $this->literal_float_types = [];
+
+        foreach ($this->types as $key => &$type) {
             $type = clone $type;
+
+            if ($type instanceof TLiteralInt) {
+                $this->literal_int_types[$key] = $type;
+            } elseif ($type instanceof TLiteralString) {
+                $this->literal_string_types[$key] = $type;
+            } elseif ($type instanceof TLiteralFloat) {
+                $this->literal_float_types[$key] = $type;
+            }
         }
     }
 
@@ -120,11 +194,36 @@ class Union
             return '';
         }
         $s = '';
+
+        $printed_int = false;
+        $printed_float = false;
+        $printed_string = false;
+
         foreach ($this->types as $type) {
+            if ($type instanceof TLiteralFloat) {
+                if ($printed_float) {
+                    continue;
+                }
+
+                $printed_float = true;
+            } elseif ($type instanceof TLiteralString) {
+                if ($printed_string) {
+                    continue;
+                }
+
+                $printed_string = true;
+            } elseif ($type instanceof TLiteralInt) {
+                if ($printed_int) {
+                    continue;
+                }
+
+                $printed_int = true;
+            }
+
             $s .= $type . '|';
         }
 
-        return substr($s, 0, -1);
+        return substr($s, 0, -1) ?: '';
     }
 
     /**
@@ -158,18 +257,37 @@ class Union
      */
     public function toNamespacedString($namespace, array $aliased_classes, $this_class, $use_phpdoc_format)
     {
-        return implode(
-            '|',
-            array_map(
-                /**
-                 * @return string
-                 */
-                function (Atomic $type) use ($namespace, $aliased_classes, $this_class, $use_phpdoc_format) {
-                    return $type->toNamespacedString($namespace, $aliased_classes, $this_class, $use_phpdoc_format);
-                },
-                $this->types
-            )
-        );
+        $printed_int = false;
+        $printed_float = false;
+        $printed_string = false;
+
+        $s = '';
+
+        foreach ($this->types as $type) {
+            if ($type instanceof TLiteralFloat) {
+                if ($printed_float) {
+                    continue;
+                }
+
+                $printed_float = true;
+            } elseif ($type instanceof TLiteralString) {
+                if ($printed_string) {
+                    continue;
+                }
+
+                $printed_string = true;
+            } elseif ($type instanceof TLiteralInt) {
+                if ($printed_int) {
+                    continue;
+                }
+
+                $printed_int = true;
+            }
+
+            $s .= $type->toNamespacedString($namespace, $aliased_classes, $this_class, $use_phpdoc_format) . '|';
+        }
+
+        return substr($s, 0, -1) ?: '';
     }
 
     /**
@@ -190,13 +308,9 @@ class Union
     ) {
         $nullable = false;
 
-        if (count($this->types) > 2
-            || (
-                count($this->types) === 2
-                && (!isset($this->types['null'])
-                    || $php_major_version < 7
-                    || $php_minor_version < 1)
-            )
+        if (!$this->isSingleAndMaybeNullable()
+            || $php_major_version < 7
+            || (isset($this->types['null']) && $php_minor_version < 1)
         ) {
             return null;
         }
@@ -235,12 +349,7 @@ class Union
      */
     public function canBeFullyExpressedInPhp()
     {
-        if (count($this->types) > 2
-            || (
-                count($this->types) === 2
-                && !isset($this->types['null'])
-            )
-        ) {
+        if (!$this->isSingleAndMaybeNullable()) {
             return false;
         }
 
@@ -280,9 +389,31 @@ class Union
     {
         if (isset($this->types[$type_string])) {
             unset($this->types[$type_string]);
+
+            if (strpos($type_string, '(')) {
+                unset($this->literal_string_types[$type_string]);
+                unset($this->literal_int_types[$type_string]);
+                unset($this->literal_float_types[$type_string]);
+            }
+
             $this->id = null;
 
             return true;
+        } elseif ($type_string === 'string' && $this->literal_string_types) {
+            foreach ($this->literal_string_types as $literal_key => $_) {
+                unset($this->types[$literal_key]);
+            }
+            $this->literal_string_types = [];
+        } elseif ($type_string === 'int' && $this->literal_int_types) {
+            foreach ($this->literal_int_types as $literal_key => $_) {
+                unset($this->types[$literal_key]);
+            }
+            $this->literal_int_types = [];
+        } elseif ($type_string === 'float' && $this->literal_float_types) {
+            foreach ($this->literal_float_types as $literal_key => $_) {
+                unset($this->types[$literal_key]);
+            }
+            $this->literal_float_types = [];
         }
 
         return false;
@@ -385,7 +516,7 @@ class Union
      */
     public function hasString()
     {
-        return isset($this->types['string']) || isset($this->types['class-string']);
+        return isset($this->types['string']) || $this->literal_string_types;
     }
 
     /**
@@ -393,7 +524,7 @@ class Union
      */
     public function hasInt()
     {
-        return isset($this->types['int']);
+        return isset($this->types['int']) || $this->literal_int_types;
     }
 
     /**
@@ -401,18 +532,33 @@ class Union
      */
     public function hasFloat()
     {
-        return isset($this->types['float']);
+        return isset($this->types['float']) || $this->literal_float_types;
     }
 
     /**
      * @return bool
      */
-    public function hasNumericType()
+    public function hasDefinitelyNumericType()
+    {
+        return isset($this->types['int'])
+            || isset($this->types['float'])
+            || isset($this->types['numeric-string'])
+            || $this->literal_int_types
+            || $this->literal_float_types;
+    }
+
+    /**
+     * @return bool
+     */
+    public function hasPossiblyNumericType()
     {
         return isset($this->types['int'])
             || isset($this->types['float'])
             || isset($this->types['string'])
-            || isset($this->types['numeric-string']);
+            || isset($this->types['numeric-string'])
+            || $this->literal_int_types
+            || $this->literal_float_types
+            || $this->literal_string_types;
     }
 
     /**
@@ -428,14 +574,17 @@ class Union
      */
     public function hasScalarType()
     {
-        return isset($this->types['int']) ||
-            isset($this->types['float']) ||
-            isset($this->types['string']) ||
-            isset($this->types['bool']) ||
-            isset($this->types['false']) ||
-            isset($this->types['true']) ||
-            isset($this->types['numeric']) ||
-            isset($this->types['numeric-string']);
+        return isset($this->types['int'])
+            || isset($this->types['float'])
+            || isset($this->types['string'])
+            || isset($this->types['bool'])
+            || isset($this->types['false'])
+            || isset($this->types['true'])
+            || isset($this->types['numeric'])
+            || isset($this->types['numeric-string'])
+            || $this->literal_int_types
+            || $this->literal_float_types
+            || $this->literal_string_types;
     }
 
     /**
@@ -449,12 +598,23 @@ class Union
     /**
      * @return bool
      */
-    public function isMixedNotFromIsset()
+    public function isEmptyMixed()
+    {
+        return isset($this->types['mixed'])
+            && $this->types['mixed'] instanceof Type\Atomic\TEmptyMixed;
+    }
+
+    /**
+     * @return bool
+     */
+    public function isVanillaMixed()
     {
         /**
          * @psalm-suppress UndefinedPropertyFetch
          */
-        return isset($this->types['mixed']) && !$this->types['mixed']->from_isset;
+        return isset($this->types['mixed'])
+            && !$this->types['mixed']->from_isset
+            && !$this->types['mixed'] instanceof Type\Atomic\TEmptyMixed;
     }
 
     /**
@@ -502,7 +662,7 @@ class Union
      */
     public function substitute(Union $old_type, Union $new_type = null)
     {
-        if ($this->isMixed()) {
+        if ($this->isMixed() && !$this->isEmptyMixed()) {
             return;
         }
 
@@ -555,7 +715,7 @@ class Union
                 ) {
                     $this->types[$key] = $new_type_part;
                 } else {
-                    $combined = Type::combineTypes([$new_type_part, $this->types[$key]]);
+                    $combined = TypeCombination::combineTypes([$new_type_part, $this->types[$key]]);
                     $this->types[$key] = array_values($combined->types)[0];
                 }
             }
@@ -567,33 +727,75 @@ class Union
     }
 
     /**
-     * @param  array<string, string>     $template_types
-     * @param  array<string, Type\Union> $generic_params
-     * @param  Type\Union|null           $input_type
+     * @param  array<string, Union> $template_types
+     * @param  array<string, Union> $generic_params
+     * @param  Type\Union|null      $input_type
      *
      * @return void
      */
     public function replaceTemplateTypesWithStandins(
         array $template_types,
         array &$generic_params,
+        Codebase $codebase = null,
         Type\Union $input_type = null
     ) {
         $keys_to_unset = [];
 
         foreach ($this->types as $key => $atomic_type) {
             if (isset($template_types[$key])) {
-                $keys_to_unset[] = $key;
-                $this->types[$template_types[$key]] = Atomic::create($template_types[$key]);
+                if ($template_types[$key]->getId() !== $key) {
+                    $keys_to_unset[] = $key;
+                    $first_atomic_type = array_values($template_types[$key]->getTypes())[0];
+                    $this->types[$first_atomic_type->getKey()] = clone $first_atomic_type;
 
-                if ($input_type) {
-                    $generic_params[$key] = clone $input_type;
-                    $generic_params[$key]->setFromDocblock();
+                    if ($input_type) {
+                        $generic_params[$key] = clone $input_type;
+                        $generic_params[$key]->setFromDocblock();
+                    }
                 }
             } else {
+                $matching_atomic_type = null;
+
+                if ($input_type && $codebase) {
+                    foreach ($input_type->types as $input_key => $atomic_input_type) {
+                        if ($input_key === $key) {
+                            $matching_atomic_type = $atomic_input_type;
+                            break;
+                        }
+
+                        if ($input_key === 'Closure' && $key === 'callable') {
+                            $matching_atomic_type = $atomic_input_type;
+                            break;
+                        }
+
+                        if (strpos($input_key, $key . '&') === 0) {
+                            $matching_atomic_type = $atomic_input_type;
+                            break;
+                        }
+
+                        if ($atomic_input_type instanceof TNamedObject && $atomic_type instanceof TNamedObject) {
+                            try {
+                                $classlike_storage =
+                                    $codebase->classlike_storage_provider->get($atomic_input_type->value);
+
+                                if ($classlike_storage->template_parents
+                                    && in_array($atomic_type->value, $classlike_storage->template_parents)
+                                ) {
+                                    $matching_atomic_type = $atomic_input_type;
+                                        break;
+                                }
+                            } catch (\InvalidArgumentException $e) {
+                                // do nothing
+                            }
+                        }
+                    }
+                }
+
                 $atomic_type->replaceTemplateTypesWithStandins(
                     $template_types,
                     $generic_params,
-                    isset($input_type->types[$key]) ? $input_type->types[$key] : null
+                    $codebase,
+                    $matching_atomic_type
                 );
             }
         }
@@ -601,6 +803,8 @@ class Union
         foreach ($keys_to_unset as $key) {
             unset($this->types[$key]);
         }
+
+        //var_dump($this->types, $generic_params);
 
         $this->id = null;
     }
@@ -621,7 +825,7 @@ class Union
         foreach ($this->types as $key => $atomic_type) {
             if (isset($template_types[$key])) {
                 $keys_to_unset[] = $key;
-                $template_type = $template_types[$key];
+                $template_type = clone $template_types[$key];
 
                 foreach ($template_type->types as $template_type_part) {
                     if ($template_type_part instanceof Type\Atomic\TMixed) {
@@ -655,17 +859,133 @@ class Union
      */
     public function isSingle()
     {
-        if (count($this->types) > 1) {
+        $type_count = count($this->types);
+
+        $int_literal_count = count($this->literal_int_types);
+        $string_literal_count = count($this->literal_string_types);
+        $float_literal_count = count($this->literal_float_types);
+
+        if (($int_literal_count && $string_literal_count)
+            || ($int_literal_count && $float_literal_count)
+            || ($string_literal_count && $float_literal_count)
+        ) {
             return false;
         }
 
-        $type = array_values($this->types)[0];
-
-        if (!$type instanceof Atomic\TArray && !$type instanceof Atomic\TGenericObject) {
-            return true;
+        if ($int_literal_count || $string_literal_count || $float_literal_count) {
+            $type_count -= $int_literal_count + $string_literal_count + $float_literal_count - 1;
         }
 
-        return $type->type_params[count($type->type_params) - 1]->isSingle();
+        return $type_count === 1;
+    }
+
+    /**
+     * @return bool
+     */
+    public function isSingleAndMaybeNullable()
+    {
+        $is_nullable = isset($this->types['null']);
+
+        $type_count = count($this->types);
+
+        if ($type_count === 1 && $is_nullable) {
+            return false;
+        }
+
+        $int_literal_count = count($this->literal_int_types);
+        $string_literal_count = count($this->literal_string_types);
+        $float_literal_count = count($this->literal_float_types);
+
+        if (($int_literal_count && $string_literal_count)
+            || ($int_literal_count && $float_literal_count)
+            || ($string_literal_count && $float_literal_count)
+        ) {
+            return false;
+        }
+
+        if ($int_literal_count || $string_literal_count || $float_literal_count) {
+            $type_count -= $int_literal_count + $string_literal_count + $float_literal_count - 1;
+        }
+
+        return ($type_count - (int) $is_nullable) === 1;
+    }
+
+    /**
+     * @return bool true if this is an int
+     */
+    public function isInt()
+    {
+        if (!$this->isSingle()) {
+            return false;
+        }
+
+        return isset($this->types['float']) || $this->literal_int_types;
+    }
+
+    /**
+     * @return bool true if this is a float
+     */
+    public function isFloat()
+    {
+        if (!$this->isSingle()) {
+            return false;
+        }
+
+        return isset($this->types['float']) || $this->literal_float_types;
+    }
+
+    /**
+     * @return bool true if this is a string
+     */
+    public function isString()
+    {
+        if (!$this->isSingle()) {
+            return false;
+        }
+
+        return isset($this->types['string']) || $this->literal_string_types;
+    }
+
+    /**
+     * @return bool true if this is a string literal with only one possible value
+     */
+    public function isSingleStringLiteral()
+    {
+        return count($this->types) === 1 && count($this->literal_string_types) === 1;
+    }
+
+    /**
+     * @return string the only string literal represented by this union type
+     * @throws \InvalidArgumentException if isSingleStringLiteral is false
+     */
+    public function getSingleStringLiteral()
+    {
+        if (count($this->types) !== 1 || count($this->literal_string_types) !== 1) {
+            throw new \InvalidArgumentException("Not a string literal");
+        }
+
+        return reset($this->literal_string_types)->value;
+    }
+
+    /**
+     * @return bool true if this is a int literal with only one possible value
+     */
+    public function isSingleIntLiteral()
+    {
+        return count($this->types) === 1 && count($this->literal_int_types) === 1;
+    }
+
+    /**
+     * @return int the only int literal represented by this union type
+     * @throws \InvalidArgumentException if isSingleIntLiteral is false
+     */
+    public function getSingleIntLiteral()
+    {
+        if (count($this->types) !== 1 || count($this->literal_int_types) !== 1) {
+            throw new \InvalidArgumentException("Not an int literal");
+        }
+
+        return reset($this->literal_int_types)->value;
     }
 
     /**
@@ -712,5 +1032,73 @@ class Union
                 $phantom_classes
             );
         }
+    }
+
+    /**
+     * @return bool
+     */
+    public function equals(Union $other_type)
+    {
+        if ($other_type->id && $this->id && $other_type->id !== $this->id) {
+            return false;
+        }
+
+        if ($this->possibly_undefined !== $other_type->possibly_undefined) {
+            return false;
+        }
+
+        if ($this->from_calculation !== $other_type->from_calculation) {
+            return false;
+        }
+
+        if ($this->initialized !== $other_type->initialized) {
+            return false;
+        }
+
+        if ($this->from_docblock !== $other_type->from_docblock) {
+            return false;
+        }
+
+        if (count($this->types) !== count($other_type->types)) {
+            return false;
+        }
+
+        $other_atomic_types = $other_type->types;
+
+        foreach ($this->types as $key => $atomic_type) {
+            if (!isset($other_atomic_types[$key])) {
+                return false;
+            }
+
+            if (!$atomic_type->equals($other_atomic_types[$key])) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * @return array<string, TLiteralString>
+     */
+    public function getLiteralStrings()
+    {
+        return $this->literal_string_types;
+    }
+
+    /**
+     * @return array<string, TLiteralInt>
+     */
+    public function getLiteralInts()
+    {
+        return $this->literal_int_types;
+    }
+
+    /**
+     * @return array<string, TLiteralFloat>
+     */
+    public function getLiteralFloats()
+    {
+        return $this->literal_float_types;
     }
 }

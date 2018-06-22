@@ -1,40 +1,12 @@
 <?php
 
-use Isolated\Symfony\Component\Finder\Finder;
-
 return [
-    'finders' => [
-        Finder::create()->files()->in('src'),
-        Finder::create()->files()->in('assets'),
-        Finder::create()
-            ->files()
-            ->ignoreVCS(true)
-            ->notName('/LICENSE|.*\\.md|.*\\.dist|Makefile|composer\\.json|composer\\.lock/')
-            ->exclude([
-                'doc',
-                'test',
-                'test_old',
-                'tests',
-                'Tests',
-                'vendor-bin',
-            ])
-            ->in('vendor'),
-        Finder::create()->append([
-            'composer.json',
-            'composer.lock',
-            'config.xsd',
-            'psalm'
-        ]),
-    ],
-    'whitelist' => [
-
-    ],
     'patchers' => [
         function ($filePath, $prefix, $contents) {
             //
             // PHP-Parser patch
             //
-            if ($filePath === realpath(__DIR__ . '/vendor/nikic/php-parser/lib/PhpParser/NodeAbstract.php')) {
+            if ($filePath === 'vendor/nikic/php-parser/lib/PhpParser/NodeAbstract.php') {
                 $length = 15 + strlen($prefix) + 1;
 
                 return preg_replace(
@@ -47,7 +19,14 @@ return [
             return $contents;
         },
         function ($filePath, $prefix, $contents) {
-            if ($filePath === realpath(__DIR__ . '/src/Psalm/Config.php')) {
+            return str_replace(
+                '\\'.$prefix.'\Composer\Autoload\ClassLoader',
+                '\Composer\Autoload\ClassLoader',
+                $contents
+            );
+        },
+        function ($filePath, $prefix, $contents) {
+            if ($filePath === 'src/Psalm/Config.php') {
                 return str_replace(
                     $prefix . '\Composer\Autoload\ClassLoader',
                     'Composer\Autoload\ClassLoader',
@@ -58,7 +37,7 @@ return [
             return $contents;
         },
         function ($filePath, $prefix, $contents) {
-            if (strpos($filePath, realpath(__DIR__ . '/src/Psalm')) === 0) {
+            if (strpos($filePath, 'src/Psalm') === 0) {
                 return str_replace(
                     [' \\Psalm\\', ' \\PhpParser\\'],
                     [' \\' . $prefix . '\\Psalm\\', ' \\' . $prefix . '\\PhpParser\\'],
@@ -69,7 +48,7 @@ return [
             return $contents;
         },
         function ($filePath, $prefix, $contents) {
-            if (strpos($filePath, realpath(__DIR__ . '/vendor/openlss')) === 0) {
+            if (strpos($filePath, 'vendor/openlss') === 0) {
                 return str_replace(
                     $prefix . '\\DomDocument',
                     'DomDocument',
@@ -80,10 +59,10 @@ return [
             return $contents;
         },
         function ($filePath, $prefix, $contents) {
-            if ($filePath === realpath(__DIR__ . '/src/Psalm/PropertyMap.php')
-                || $filePath === realpath(__DIR__ . '/src/Psalm/CallMap.php')
-                || $filePath === realpath(__DIR__ . '/src/Psalm/Stubs/CoreGenericFunctions.php')
-                || $filePath === realpath(__DIR__ . '/src/Psalm/Stubs/CoreGenericClasses.php')
+            if ($filePath === 'src/Psalm/PropertyMap.php'
+                || $filePath === 'src/Psalm/CallMap.php'
+                || $filePath === 'src/Psalm/Stubs/CoreGenericFunctions.php'
+                || $filePath === 'src/Psalm/Stubs/CoreGenericClasses.php'
             ) {
                 $contents = str_replace(
                     ['namespace ' . $prefix . ';', $prefix . '\\\\', $prefix . '\\'],
@@ -103,7 +82,7 @@ return [
             return $contents;
         },
         function ($filePath, $prefix, $contents) {
-            if ($filePath === realpath(__DIR__ . '/src/Psalm/Checker/Statements/Expression/Call/MethodCallChecker.php')) {
+            if ($filePath === 'src/Psalm/Checker/Statements/Expression/Call/MethodCallChecker.php') {
                 return str_replace(
                     'case \'Psalm\\\\',
                     'case \'' . $prefix . '\\\\Psalm\\\\',
@@ -114,7 +93,7 @@ return [
             return $contents;
         },
         function ($filePath, $prefix, $contents) {
-            if ($filePath === realpath(__DIR__ . '/src/Psalm/Type.php')) {
+            if ($filePath === 'src/Psalm/Type.php') {
                 return str_replace(
                     'get_class($type) === \'Psalm\\\\',
                     'get_class($type) === \'' . $prefix . '\\\\Psalm\\\\',
@@ -125,7 +104,7 @@ return [
             return $contents;
         },
         function ($filePath, $prefix, $contents) {
-            if ($filePath === realpath(__DIR__ . '/src/psalm.php')) {
+            if ($filePath === 'src/psalm.php') {
                 return str_replace(
                     '\\' . $prefix . '\\PSALM_VERSION',
                     'PSALM_VERSION',
@@ -136,4 +115,7 @@ return [
             return $contents;
         },
     ],
+    'whitelist' => [
+        \Composer\Autoload\ClassLoader::class,
+    ]
 ];

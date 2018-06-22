@@ -2,7 +2,6 @@
 namespace Psalm\Storage;
 
 use Psalm\CodeLocation;
-use Psalm\FunctionLikeParameter;
 use Psalm\Type;
 
 class FunctionLikeStorage
@@ -78,7 +77,17 @@ class FunctionLikeStorage
     public $defined_constants = [];
 
     /**
-     * @var array<string, string>|null
+     * @var array<string, bool>
+     */
+    public $global_variables = [];
+
+    /**
+     * @var array<string, Type\Union>
+     */
+    public $global_types = [];
+
+    /**
+     * @var array<string, Type\Union>|null
      */
     public $template_types;
 
@@ -97,6 +106,28 @@ class FunctionLikeStorage
      */
     public $referencing_locations;
 
-    /** @var array<int, Assertion> */
+    /**
+     * @var array<int, Assertion>
+     */
     public $assertions = [];
+
+    /**
+     * @var array<int, Assertion>
+     */
+    public $if_true_assertions = [];
+
+    /**
+     * @var array<int, Assertion>
+     */
+    public $if_false_assertions = [];
+
+    /**
+     * @var bool
+     */
+    public $has_visitor_issues = false;
+
+    /**
+     * @var array<string, bool>
+     */
+    public $throws = [];
 }

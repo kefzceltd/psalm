@@ -1,6 +1,7 @@
 <?php
 namespace Psalm\Type\Atomic;
 
+use Psalm\Codebase;
 use Psalm\Type\Atomic;
 use Psalm\Type\Union;
 
@@ -16,6 +17,22 @@ trait GenericTrait
         $s = '';
         foreach ($this->type_params as $type_param) {
             $s .= $type_param . ', ';
+        }
+
+        $extra_types = '';
+
+        if ($this instanceof TNamedObject && $this->extra_types) {
+            $extra_types = '&' . implode('&', $this->extra_types);
+        }
+
+        return $this->value . '<' . substr($s, 0, -2) . '>' . $extra_types;
+    }
+
+    public function getId()
+    {
+        $s = '';
+        foreach ($this->type_params as $type_param) {
+            $s .= $type_param->getId() . ', ';
         }
 
         $extra_types = '';
@@ -54,7 +71,7 @@ trait GenericTrait
 
             $value_type_string = $value_type->toNamespacedString($namespace, $aliased_classes, $this_class, true);
 
-            if (count($value_type->getTypes()) > 1) {
+            if (!$value_type->isSingle()) {
                 return '(' . $value_type_string . ')[]';
             }
 
@@ -115,7 +132,7 @@ trait GenericTrait
     }
 
     /**
-     * @param  array<string, string>    $template_types
+     * @param  array<string, Union>     $template_types
      * @param  array<string, Union>     $generic_params
      * @param  Atomic|null              $input_type
      *
@@ -124,6 +141,7 @@ trait GenericTrait
     public function replaceTemplateTypesWithStandins(
         array $template_types,
         array &$generic_params,
+        Codebase $codebase = null,
         Atomic $input_type = null
     ) {
         foreach ($this->type_params as $offset => $type_param) {
@@ -146,6 +164,7 @@ trait GenericTrait
             $type_param->replaceTemplateTypesWithStandins(
                 $template_types,
                 $generic_params,
+                $codebase,
                 $input_type_param
             );
         }

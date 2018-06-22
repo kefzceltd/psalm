@@ -47,6 +47,18 @@ class ArgTest extends TestCase
                     shuffle($a);
                     $a = [0, 1];',
             ],
+            'correctOrderValidation' => [
+                '<?php
+                    function getString(int $i) : string {
+                        return rand(0, 1) ? "hello" : "";
+                    }
+
+                    function takesInt(int $i) : void {}
+
+                    $i = rand(0, 10);
+
+                    if (!($i = getString($i))) {}',
+            ],
         ];
     }
 
@@ -69,6 +81,20 @@ class ArgTest extends TestCase
                         },
                         $foo[rand(0, 1)]
                     );',
+                'error_message' => 'PossiblyInvalidArgument',
+            ],
+            'possiblyInvalidArgumentWithOverlap' => [
+                '<?php
+                    class A {}
+                    class B {}
+                    class C {}
+
+                    $foo = rand(0, 1) ? new A : new B;
+
+                    /** @param B|C $b */
+                    function bar($b) : void {}
+
+                    bar($foo);',
                 'error_message' => 'PossiblyInvalidArgument',
             ],
         ];

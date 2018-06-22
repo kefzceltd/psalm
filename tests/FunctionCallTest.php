@@ -23,7 +23,7 @@ class FunctionCallTest extends TestCase
                     );',
                 'assertions' => [
                     '$d' => 'array<string, int>',
-                    '$e' => 'array<string, null|int>',
+                    '$e' => 'array<string, int|null>',
                 ],
             ],
             'arrayFilterAdvanced' => [
@@ -51,9 +51,31 @@ class FunctionCallTest extends TestCase
                         ARRAY_FILTER_USE_KEY
                     );',
                 'assertions' => [
-                    '$f' => 'array<string, null|int>',
-                    '$g' => 'array<string, null|int>',
+                    '$f' => 'array<string, int|null>',
+                    '$g' => 'array<string, int|null>',
                 ],
+            ],
+            'arrayFilterIgnoreNullable' => [
+                '<?php
+                    class A {
+                        /**
+                         * @return array<int, self|null>
+                         */
+                        public function getRows() : array {
+                            return [new self, null];
+                        }
+
+                        public function filter() : void {
+                            $arr = array_filter(
+                                static::getRows(),
+                                function (self $row) : bool {
+                                    return is_a($row, static::class);
+                                }
+                            );
+                        }
+                    }',
+                'assertions' => [],
+                'error_levels' => ['PossiblyInvalidArgument'],
             ],
             'typedArrayWithDefault' => [
                 '<?php
@@ -162,14 +184,14 @@ class FunctionCallTest extends TestCase
                 '<?php
                     $d = array_reverse(["a", "b", 1]);',
                 'assertions' => [
-                    '$d' => 'array<int, int|string>',
+                    '$d' => 'array<int, string|int>',
                 ],
             ],
             'arrayReversePreserveKey' => [
                 '<?php
                     $d = array_reverse(["a", "b", 1], true);',
                 'assertions' => [
-                    '$d' => 'array<int, int|string>',
+                    '$d' => 'array<int, string|int>',
                 ],
             ],
             'arrayDiff' => [
@@ -619,6 +641,78 @@ class FunctionCallTest extends TestCase
                 '<?php
                     if (class_exists(Foo::class)) {}'
             ],
+            'next' => [
+                '<?php
+                    $arr = ["one", "two", "three"];
+                    $n = next($arr);',
+                'assertions' => [
+                    '$n' => 'false|string',
+                ],
+            ],
+            'iteratorToArray' => [
+                '<?php
+                    /**
+                     * @return Generator<stdClass>
+                     */
+                    function generator(): Generator {
+                        yield new stdClass;
+                    }
+
+                    /**
+                     * @return array<stdClass>
+                     */
+                    function foo(callable $filter): array {
+                        return array_filter(iterator_to_array(generator()), $filter);
+                    }'
+            ],
+            'arrayColumnInference' => [
+                '<?php
+                    function makeMixedArray(): array { return []; }
+                    /** @return array<array<int,bool>> */
+                    function makeGenericArray(): array { return []; }
+                    /** @return array<array{0:string}> */
+                    function makeShapeArray(): array { return []; }
+                    /** @return array<array{0:string}|int> */
+                    function makeUnionArray(): array { return []; }
+                    $a = array_column([[1], [2], [3]], 0);
+                    $b = array_column([["a" => 1], ["a" => 2], ["a" => 3]], "a");
+                    $c = array_column([["k" => "a", "v" => 1], ["k" => "b", "v" => 2]], "v", "k");
+                    $d = array_column([], 0);
+                    $e = array_column(makeMixedArray(), 0);
+                    $f = array_column(makeGenericArray(), 0);
+                    $g = array_column(makeShapeArray(), 0);
+                    $h = array_column(makeUnionArray(), 0);
+                ',
+                'assertions' => [
+                    '$a' => 'array<mixed, int>',
+                    '$b' => 'array<mixed, int>',
+                    '$c' => 'array<string, int>',
+                    '$d' => 'array<mixed, mixed>',
+                    '$e' => 'array<mixed, mixed>',
+                    '$f' => 'array<mixed, mixed>',
+                    '$g' => 'array<mixed, string>',
+                    '$h' => 'array<mixed, mixed>',
+                ],
+            ],
+            'strstrWithPossiblyFalseFirstArg' => [
+                '<?php
+                    strtr(
+                        file_get_contents("foobar.txt"),
+                        ["foo" => "bar"]
+                    );'
+            ],
+            'splatArrayIntersect' => [
+                '<?php
+                    $foo = [
+                        [1, 2, 3],
+                        [1, 2],
+                    ];
+
+                    $bar = array_intersect(... $foo);',
+                'assertions' => [
+                    '$bar' => 'array<int, int>',
+                ],
+            ],
         ];
     }
 
@@ -857,6 +951,36 @@ class FunctionCallTest extends TestCase
                         return explode("", $s);
                     }',
                 'error_message' => 'FalsableReturnStatement',
+            ],
+            'complainAboutArrayToIterable' => [
+                '<?php
+                    class A {}
+                    class B {}
+                    /**
+                     * @param iterable<mixed,A> $p
+                     */
+                    function takesIterableOfA(iterable $p): void {}
+
+                    takesIterableOfA([new B]); // should complain',
+                'error_message' => 'InvalidArgument',
+            ],
+            'complainAboutArrayToIterableSingleParam' => [
+                '<?php
+                    class A {}
+                    class B {}
+                    /**
+                     * @param iterable<A> $p
+                     */
+                    function takesIterableOfA(iterable $p): void {}
+
+                    takesIterableOfA([new B]); // should complain',
+                'error_message' => 'InvalidArgument',
+            ],
+            'putInvalidTypeMessagesFirst' => [
+                '<?php
+                    $q = rand(0,1) ? new stdClass : false;
+                    strlen($q);',
+                'error_message' => 'InvalidArgument',
             ],
         ];
     }

@@ -54,6 +54,8 @@ class ArrayAssignmentChecker
      * @param  Context                           $context
      *
      * @return false|null
+     *
+     * @psalm-suppress UnusedVariable due to Psalm bug
      */
     public static function updateArrayType(
         StatementsChecker $statements_checker,
@@ -131,10 +133,31 @@ class ArrayAssignmentChecker
                     return null;
                 }
 
-                if ($child_stmt->dim instanceof PhpParser\Node\Scalar\String_) {
-                    $var_id_additions[] = '[\'' . $child_stmt->dim->value . '\']';
-                } elseif ($child_stmt->dim instanceof PhpParser\Node\Scalar\LNumber) {
-                    $var_id_additions[] = '[' . $child_stmt->dim->value . ']';
+                if ($child_stmt->dim instanceof PhpParser\Node\Scalar\String_
+                    || ($child_stmt->dim instanceof PhpParser\Node\Expr\ConstFetch
+                       && $child_stmt->dim->inferredType->isSingleStringLiteral())
+                ) {
+                    if ($child_stmt->dim instanceof PhpParser\Node\Scalar\String_) {
+                        $value = $child_stmt->dim->value;
+                    } else {
+                        $value = $child_stmt->dim->inferredType->getSingleStringLiteral();
+                    }
+
+                    if (preg_match('/^(0|[1-9][0-9]*)$/', $value)) {
+                        $var_id_additions[] = '[' . $value . ']';
+                    }
+                    $var_id_additions[] = '[\'' . $value . '\']';
+                } elseif ($child_stmt->dim instanceof PhpParser\Node\Scalar\LNumber
+                    || ($child_stmt->dim instanceof PhpParser\Node\Expr\ConstFetch
+                        && $child_stmt->dim->inferredType->isSingleIntLiteral())
+                ) {
+                    if ($child_stmt->dim instanceof PhpParser\Node\Scalar\LNumber) {
+                        $value = $child_stmt->dim->value;
+                    } else {
+                        $value = $child_stmt->dim->inferredType->getSingleIntLiteral();
+                    }
+
+                    $var_id_additions[] = '[' . $value . ']';
                 } elseif ($child_stmt->dim instanceof PhpParser\Node\Expr\Variable
                     && is_string($child_stmt->dim->name)
                 ) {
@@ -196,10 +219,24 @@ class ArrayAssignmentChecker
                 throw new \InvalidArgumentException('Should never get here');
             }
 
+            $is_single_string_literal = false;
+
             if ($current_dim instanceof PhpParser\Node\Scalar\String_
                 || $current_dim instanceof PhpParser\Node\Scalar\LNumber
+                || ($current_dim instanceof PhpParser\Node\Expr\ConstFetch
+                    && isset($current_dim->inferredType)
+                    && (($is_single_string_literal = $current_dim->inferredType->isSingleStringLiteral())
+                        || $current_dim->inferredType->isSingleIntLiteral()))
             ) {
-                $key_value = $current_dim->value;
+                if ($current_dim instanceof PhpParser\Node\Scalar\String_
+                    || $current_dim instanceof PhpParser\Node\Scalar\LNumber
+                ) {
+                    $key_value = $current_dim->value;
+                } elseif ($is_single_string_literal) {
+                    $key_value = $current_dim->inferredType->getSingleStringLiteral();
+                } else {
+                    $key_value = $current_dim->inferredType->getSingleIntLiteral();
+                }
 
                 $has_matching_objectlike_property = false;
 
@@ -257,14 +294,27 @@ class ArrayAssignmentChecker
             }
         }
 
-        $root_is_string = array_keys($root_type->getTypes()) === ['string'];
+        $root_is_string = $root_type->isString();
+        $is_single_string_literal = false;
 
         if (($current_dim instanceof PhpParser\Node\Scalar\String_
-                || $current_dim instanceof PhpParser\Node\Scalar\LNumber)
+                || $current_dim instanceof PhpParser\Node\Scalar\LNumber
+                || ($current_dim instanceof PhpParser\Node\Expr\ConstFetch
+                    && isset($current_dim->inferredType)
+                    && (($is_single_string_literal = $current_dim->inferredType->isSingleStringLiteral())
+                        || $current_dim->inferredType->isSingleIntLiteral())))
             && ($current_dim instanceof PhpParser\Node\Scalar\String_
                 || !$root_is_string)
         ) {
-            $key_value = $current_dim->value;
+            if ($current_dim instanceof PhpParser\Node\Scalar\String_
+                || $current_dim instanceof PhpParser\Node\Scalar\LNumber
+            ) {
+                $key_value = $current_dim->value;
+            } elseif ($is_single_string_literal) {
+                $key_value = $current_dim->inferredType->getSingleStringLiteral();
+            } else {
+                $key_value = $current_dim->inferredType->getSingleIntLiteral();
+            }
 
             $has_matching_objectlike_property = false;
 
@@ -291,17 +341,60 @@ class ArrayAssignmentChecker
                 $new_child_type = $root_type; // noop
             }
         } elseif (!$root_is_string) {
+            if ($current_dim) {
+                if (isset($current_dim->inferredType)) {
+                    $array_atomic_key_type = ArrayFetchChecker::replaceOffsetTypeWithInts(
+                        $current_dim->inferredType
+                    );
+                } else {
+                    $array_atomic_key_type = Type::getMixed();
+                }
+            } else {
+                // todo: this can be improved I think
+                $array_atomic_key_type = Type::getInt();
+            }
+
+            $array_atomic_type = new TArray([
+                $array_atomic_key_type,
+                $current_type,
+            ]);
+
+            $from_countable_object_like = false;
+
+            if (!$current_dim && !$context->inside_loop) {
+                $atomic_root_types = $root_type->getTypes();
+
+                if (isset($atomic_root_types['array'])) {
+                    if ($atomic_root_types['array'] instanceof TArray) {
+                        $array_atomic_type->count = $atomic_root_types['array']->count;
+                    } elseif ($atomic_root_types['array'] instanceof ObjectLike
+                        && $atomic_root_types['array']->sealed
+                    ) {
+                        $array_atomic_type->count = count($atomic_root_types['array']->properties);
+                        $from_countable_object_like = true;
+                    }
+                }
+            }
+
             $array_assignment_type = new Type\Union([
-                new TArray([
-                    isset($current_dim->inferredType) ? $current_dim->inferredType : Type::getInt(),
-                    $current_type,
-                ]),
+                $array_atomic_type,
             ]);
 
             $new_child_type = Type::combineUnionTypes(
                 $root_type,
                 $array_assignment_type
             );
+
+            if ($from_countable_object_like) {
+                $atomic_root_types = $new_child_type->getTypes();
+
+                if (isset($atomic_root_types['array'])
+                    && $atomic_root_types['array'] instanceof TArray
+                    && $atomic_root_types['array']->count !== null
+                ) {
+                    $atomic_root_types['array']->count++;
+                }
+            }
         } else {
             $new_child_type = $root_type;
         }

@@ -1,7 +1,11 @@
-vendor/
+/build/
+/vendor/
 .DS_Store
-phpunit.xml
-composer.lock
-.php_cs.cache
-.php_cs
-/build/logs/
+/.php_cs.cache
+/.php_cs
+/.*.swp
+/.*.swo
+/composer.lock
+/phpunit.xml
+/vendor-bin/*/composer.lock
+/vendor-bin/*/vendor/

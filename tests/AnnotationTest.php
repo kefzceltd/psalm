@@ -208,6 +208,68 @@ class AnnotationTest extends TestCase
     }
 
     /**
+     * @expectedException        \Psalm\Exception\CodeException
+     * @expectedExceptionMessage InvalidParamDefault
+     *
+     * @return                   void
+     */
+    public function testInvalidParamDefault()
+    {
+        $this->addFile(
+            'somefile.php',
+            '<?php
+                /**
+                 * @param array $arr
+                 * @return void
+                 */
+                function foo($arr = false) {}'
+        );
+
+        $this->analyzeFile('somefile.php', new Context());
+    }
+
+    /**
+     * @return void
+     */
+    public function testInvalidParamDefaultButAllowedInConfig()
+    {
+        Config::getInstance()->add_param_default_to_docblock_type = true;
+
+        $this->addFile(
+            'somefile.php',
+            '<?php
+                /**
+                 * @param array $arr
+                 * @return void
+                 */
+                function foo($arr = false) {}
+                foo(false);
+                foo(["hello"]);'
+        );
+
+        $this->analyzeFile('somefile.php', new Context());
+    }
+
+    /**
+     * @expectedException        \Psalm\Exception\CodeException
+     * @expectedExceptionMessage InvalidParamDefault
+     *
+     * @return                   void
+     */
+    public function testInvalidTypehintParamDefaultButAllowedInConfig()
+    {
+        Config::getInstance()->add_param_default_to_docblock_type = true;
+
+        $this->addFile(
+            'somefile.php',
+            '<?php
+                function foo(array $arr = false) : void {}'
+        );
+
+        $this->analyzeFile('somefile.php', new Context());
+    }
+
+    /**
      * @return void
      */
     public function testPhpDocMethodWhenUndefined()
@@ -301,6 +363,269 @@ class AnnotationTest extends TestCase
         $this->analyzeFile('somefile.php', $context);
 
         $this->assertSame('Child', (string) $context->vars_in_scope['$child']);
+    }
+
+    /**
+     * @expectedException        \Psalm\Exception\CodeException
+     * @expectedExceptionMessage MissingThrowsDocblock
+     *
+     * @return                   void
+     */
+    public function testUndocumentedThrow()
+    {
+        Config::getInstance()->check_for_throws_docblock = true;
+
+        $this->addFile(
+            'somefile.php',
+            '<?php
+                function foo(int $x, int $y) : int {
+                    if ($y === 0) {
+                        throw new \RangeException("Cannot divide by zero");
+                    }
+
+                    if ($y < 0) {
+                        throw new \InvalidArgumentException("This is also bad");
+                    }
+
+                    return intdiv($x, $y);
+                }'
+        );
+
+        $context = new Context();
+
+        $this->analyzeFile('somefile.php', $context);
+    }
+
+    /**
+     * @return void
+     */
+    public function testDocumentedThrow()
+    {
+        Config::getInstance()->check_for_throws_docblock = true;
+
+        $this->addFile(
+            'somefile.php',
+            '<?php
+                /**
+                 * @throws RangeException
+                 * @throws InvalidArgumentException
+                 */
+                function foo(int $x, int $y) : int {
+                    if ($y === 0) {
+                        throw new \RangeException("Cannot divide by zero");
+                    }
+
+                    if ($y < 0) {
+                        throw new \InvalidArgumentException("This is also bad");
+                    }
+
+                    return intdiv($x, $y);
+                }'
+        );
+
+        $context = new Context();
+
+        $this->analyzeFile('somefile.php', $context);
+    }
+
+    /**
+     * @expectedException        \Psalm\Exception\CodeException
+     * @expectedExceptionMessage MissingThrowsDocblock
+     *
+     * @return                   void
+     */
+    public function testUndocumentedThrowInFunctionCall()
+    {
+        Config::getInstance()->check_for_throws_docblock = true;
+
+        $this->addFile(
+            'somefile.php',
+            '<?php
+                /**
+                 * @throws RangeException
+                 * @throws InvalidArgumentException
+                 */
+                function foo(int $x, int $y) : int {
+                    if ($y === 0) {
+                        throw new \RangeException("Cannot divide by zero");
+                    }
+
+                    if ($y < 0) {
+                        throw new \InvalidArgumentException("This is also bad");
+                    }
+
+                    return intdiv($x, $y);
+                }
+
+                function bar(int $x, int $y) : void {
+                    foo($x, $y);
+                }'
+        );
+
+        $context = new Context();
+
+        $this->analyzeFile('somefile.php', $context);
+    }
+
+    /**
+     * @return                   void
+     */
+    public function testDocumentedThrowInFunctionCall()
+    {
+        Config::getInstance()->check_for_throws_docblock = true;
+
+        $this->addFile(
+            'somefile.php',
+            '<?php
+                /**
+                 * @throws RangeException
+                 * @throws InvalidArgumentException
+                 */
+                function foo(int $x, int $y) : int {
+                    if ($y === 0) {
+                        throw new \RangeException("Cannot divide by zero");
+                    }
+
+                    if ($y < 0) {
+                        throw new \InvalidArgumentException("This is also bad");
+                    }
+
+                    return intdiv($x, $y);
+                }
+
+                /**
+                 * @throws RangeException
+                 * @throws InvalidArgumentException
+                 */
+                function bar(int $x, int $y) : void {
+                    foo($x, $y);
+                }'
+        );
+
+        $context = new Context();
+
+        $this->analyzeFile('somefile.php', $context);
+    }
+
+    /**
+     * @return void
+     */
+    public function testCaughtThrowInFunctionCall()
+    {
+        Config::getInstance()->check_for_throws_docblock = true;
+
+        $this->addFile(
+            'somefile.php',
+            '<?php
+                /**
+                 * @throws RangeException
+                 * @throws InvalidArgumentException
+                 */
+                function foo(int $x, int $y) : int {
+                    if ($y === 0) {
+                        throw new \RangeException("Cannot divide by zero");
+                    }
+
+                    if ($y < 0) {
+                        throw new \InvalidArgumentException("This is also bad");
+                    }
+
+                    return intdiv($x, $y);
+                }
+
+                function bar(int $x, int $y) : void {
+                    try {
+                        foo($x, $y);
+                    } catch (RangeException $e) {
+
+                    } catch (InvalidArgumentException $e) {}
+                }'
+        );
+
+        $context = new Context();
+
+        $this->analyzeFile('somefile.php', $context);
+    }
+
+    /**
+     * @expectedException        \Psalm\Exception\CodeException
+     * @expectedExceptionMessage MissingThrowsDocblock
+     *
+     * @return                   void
+     */
+    public function testUncaughtThrowInFunctionCall()
+    {
+        Config::getInstance()->check_for_throws_docblock = true;
+
+        $this->addFile(
+            'somefile.php',
+            '<?php
+                /**
+                 * @throws RangeException
+                 * @throws InvalidArgumentException
+                 */
+                function foo(int $x, int $y) : int {
+                    if ($y === 0) {
+                        throw new \RangeException("Cannot divide by zero");
+                    }
+
+                    if ($y < 0) {
+                        throw new \InvalidArgumentException("This is also bad");
+                    }
+
+                    return intdiv($x, $y);
+                }
+
+                function bar(int $x, int $y) : void {
+                    try {
+                        foo($x, $y);
+                    } catch (\RangeException $e) {
+
+                    }
+                }'
+        );
+
+        $context = new Context();
+
+        $this->analyzeFile('somefile.php', $context);
+    }
+
+    /**
+     * @return void
+     */
+    public function testCaughtAllThrowInFunctionCall()
+    {
+        Config::getInstance()->check_for_throws_docblock = true;
+
+        $this->addFile(
+            'somefile.php',
+            '<?php
+                /**
+                 * @throws RangeException
+                 * @throws InvalidArgumentException
+                 */
+                function foo(int $x, int $y) : int {
+                    if ($y === 0) {
+                        throw new \RangeException("Cannot divide by zero");
+                    }
+
+                    if ($y < 0) {
+                        throw new \InvalidArgumentException("This is also bad");
+                    }
+
+                    return intdiv($x, $y);
+                }
+
+                function bar(int $x, int $y) : void {
+                    try {
+                        foo($x, $y);
+                    } catch (Exception $e) {}
+                }'
+        );
+
+        $context = new Context();
+
+        $this->analyzeFile('somefile.php', $context);
     }
 
     /**
@@ -414,83 +739,7 @@ class AnnotationTest extends TestCase
                         }
                     }',
             ],
-            'propertyDocblock' => [
-                '<?php
-                    namespace Bar;
 
-                    /**
-                     * @property string $foo
-                     */
-                    class A {
-                        /** @param string $name */
-                        public function __get($name): ?string {
-                            if ($name === "foo") {
-                                return "hello";
-                            }
-                        }
-
-                        /**
-                         * @param string $name
-                         * @param mixed $value
-                         */
-                        public function __set($name, $value): void {
-                        }
-                    }
-
-                    $a = new A();
-                    $a->foo = "hello";
-                    $a->bar = "hello"; // not a property',
-            ],
-            'propertyOfTypeClassDocblock' => [
-                '<?php
-                    namespace Bar;
-
-                    class PropertyType {}
-
-                    /**
-                     * @property PropertyType $foo
-                     */
-                    class A {
-                        /** @param string $name */
-                        public function __get($name): ?string {
-                            if ($name === "foo") {
-                                return "hello";
-                            }
-                        }
-
-                        /**
-                         * @param string $name
-                         * @param mixed $value
-                         */
-                        public function __set($name, $value): void {
-                        }
-                    }
-
-                    $a = new A();
-                    $a->foo = new PropertyType();',
-            ],
-            'propertySealedDocblockDefinedPropertyFetch' => [
-                '<?php
-                    namespace Bar;
-                    /**
-                     * @property string $foo
-                     * @psalm-seal-properties
-                     */
-                    class A {
-                         public function __get(string $name): ?string {
-                              if ($name === "foo") {
-                                   return "hello";
-                              }
-                         }
-
-                         /** @param mixed $value */
-                         public function __set(string $name, $value): void {
-                         }
-                    }
-
-                    $a = new A();
-                    echo $a->foo;',
-            ],
             'ignoreNullableReturn' => [
                 '<?php
                     class A {
@@ -526,6 +775,7 @@ class AnnotationTest extends TestCase
             'differentDocblockParamClassSuppress' => [
                 '<?php
                     class A {}
+                    class B {}
 
                     /**
                      * @param B $bar
@@ -631,102 +881,6 @@ class AnnotationTest extends TestCase
                     '$b' => 'null|stdClass',
                 ],
             ],
-            /**
-             * With a magic setter and no annotations specifying properties or types, we can
-             * set anything we want on any variable name. The magic setter is trusted to figure
-             * it out.
-             */
-            'magicSetterUndefinedPropertyNoAnnotation' => [
-                '<?php
-                    class A {
-                        public function __get(string $name): ?string {
-                            if ($name === "foo") {
-                                return "hello";
-                            }
-                        }
-
-                        /** @param mixed $value */
-                        public function __set(string $name, $value): void {
-                        }
-
-                        public function goodSet(): void {
-                            $this->__set("foo", new stdClass());
-                        }
-                    }',
-            ],
-            /**
-             * With a magic getter and no annotations specifying properties or types, we can
-             * get anything we want with any variable name. The magic getter is trusted to figure
-             * it out.
-             */
-            'magicGetterUndefinedPropertyNoAnnotation' => [
-                '<?php
-                    class A {
-                        public function __get(string $name): ?string {
-                            if ($name === "foo") {
-                                return "hello";
-                            }
-                        }
-
-                        /** @param mixed $value */
-                        public function __set(string $name, $value): void {
-                        }
-
-                        public function goodGet(): void {
-                            echo $this->__get("foo");
-                        }
-                    }',
-            ],
-            /**
-             * The property $foo is defined as a string with the `@property` annotation. We
-             * use the magic setter to set it to a string, so everything is cool.
-             */
-            'magicSetterValidAssignmentType' => [
-                '<?php
-                    /**
-                     * @property string $foo
-                     */
-                    class A {
-                        public function __get(string $name): ?string {
-                            if ($name === "foo") {
-                                return "hello";
-                            }
-                        }
-
-                        /** @param mixed $value */
-                        public function __set(string $name, $value): void {
-                        }
-
-                        public function goodSet(): void {
-                            $this->__set("foo", "value");
-                        }
-                    }',
-            ],
-            'propertyDocblockAssignmentToMixed' => [
-                '<?php
-                    /**
-                     * @property string $foo
-                     */
-                    class A {
-                         public function __get(string $name): ?string {
-                              if ($name === "foo") {
-                                   return "hello";
-                              }
-                         }
-
-                         /** @param mixed $value */
-                         public function __set(string $name, $value): void {
-                         }
-                    }
-
-                    /** @param mixed $b */
-                    function foo($b) : void {
-                        $a = new A();
-                        $a->__set("foo", $b);
-                    }',
-                'assertions' => [],
-                'error_level' => ['MixedAssignment', 'MixedTypeCoercion'],
-            ],
             'arrayOfClassConstants' => [
                 '<?php
                     /**
@@ -753,7 +907,7 @@ class AnnotationTest extends TestCase
                 'annotations' => [],
                 'error_levels' => ['TypeCoercion'],
             ],
-            'singleClassConstant' => [
+            'singleClassConstantAsConstant' => [
                 '<?php
                     /**
                      * @param class-string $s
@@ -827,6 +981,17 @@ class AnnotationTest extends TestCase
                 'annotations' => [],
                 'error_levels' => ['LessSpecificReturnStatement', 'MoreSpecificReturnType'],
             ],
+            'ifClassStringEquals' => [
+                '<?php
+                    class A {}
+                    class B {}
+
+                    /** @param class-string $class */
+                    function foo(string $class) : void {
+                        if ($class === A::class) {}
+                        if ($class === A::class || $class === B::class) {}
+                    }',
+            ],
             'allowOptionalParamsToBeEmptyArray' => [
                 '<?php
                     /** @param array{b?: int, c?: string} $a */
@@ -894,7 +1059,7 @@ class AnnotationTest extends TestCase
 
                     $arr["a"]()',
             ],
-            'magicMethodAnnotation' => [
+            'magicMethodValidAnnotations' => [
                 '<?php
                     class Parent {
                         public function __call() {}
@@ -905,6 +1070,7 @@ class AnnotationTest extends TestCase
                      * @method  void setInteger(int $integer)
                      * @method setString(int $integer)
                      * @method  getBool(string $foo)  :   bool
+                     * @method setBool(string $foo, string|bool $bar)  :   bool
                      * @method (string|int)[] getArray() : array with some text
                      * @method void setArray(array $arr = array(), int $foo = 5) with some more text
                      * @method (callable() : string) getCallable() : callable
@@ -915,8 +1081,11 @@ class AnnotationTest extends TestCase
 
                     $a = $child->getString();
                     $child->setInteger(4);
+                    /** @psalm-suppress MixedAssignment */
                     $b = $child->setString(5);
                     $c = $child->getBool("hello");
+                    $c = $child->setBool("hello", true);
+                    $c = $child->setBool("hello", "true");
                     $d = $child->getArray();
                     $child->setArray(["boo"])
                     $e = $child->getCallable();',
@@ -927,7 +1096,69 @@ class AnnotationTest extends TestCase
                     '$d' => 'array<mixed, string|int>',
                     '$e' => 'callable():string',
                 ],
-                'error_levels' => ['MixedAssignment'],
+            ],
+            'namespacedMagicMethodValidAnnotations' => [
+                '<?php
+                    namespace Foo;
+
+                    class Parent {
+                        public function __call() {}
+                    }
+
+                    /**
+                     * @method setBool(string $foo, string|bool $bar)  :   bool
+                     */
+                    class Child extends Parent {}
+
+                    $child = new Child();
+
+                    $c = $child->setBool("hello", true);
+                    $c = $child->setBool("hello", "true");',
+            ],
+            'slashAfter?' => [
+                '<?php
+                    namespace ns;
+
+                    /** @param ?\stdClass $s */
+                    function foo($s) : void {
+                    }
+
+                    foo(null);
+                    foo(new \stdClass);',
+            ],
+            'generatorReturnType' => [
+                '<?php
+                    /** @return Generator<int, stdClass> */
+                    function g():Generator { yield new stdClass; }
+
+                    $g = g();',
+                'assertions' => [
+                    '$g' => 'Generator<int, stdClass>',
+                ],
+            ],
+            'returnTypeShouldBeNullable' => [
+                '<?php
+                    /**
+                     * @return stdClass
+                     */
+                    function foo() : ?stdClass {
+                        return rand(0, 1) ? new stdClass : null;
+                    }
+
+                    $f = foo();
+                    if ($f) {}'
+            ],
+            'spreadOperatorArrayAnnotation' => [
+                '<?php
+                    /** @param string[] $s */
+                    function foo(string ...$s) : void {}',
+            ],
+            'globalMethod' => [
+                '<?php
+                    /** @method void global() */
+                    class A {
+                        public function __call(string $s) {}
+                    }',
             ],
         ];
     }
@@ -1109,163 +1340,6 @@ class AnnotationTest extends TestCase
                         return 5;
                     }',
                 'error_message' => 'MismatchingDocblockReturnType',
-            ],
-            'propertyDocblockInvalidAssignment' => [
-                '<?php
-                    /**
-                     * @property string $foo
-                     */
-                    class A {
-                         public function __get(string $name): ?string {
-                              if ($name === "foo") {
-                                   return "hello";
-                              }
-                         }
-
-                         /** @param mixed $value */
-                         public function __set(string $name, $value): void {
-                         }
-                    }
-
-                    $a = new A();
-                    $a->foo = 5;',
-                'error_message' => 'InvalidPropertyAssignmentValue',
-            ],
-            'propertyInvalidClassAssignment' => [
-                '<?php
-                    namespace Bar;
-
-                    class PropertyType {}
-                    class SomeOtherPropertyType {}
-
-                    /**
-                     * @property PropertyType $foo
-                     */
-                    class A {
-                        /** @param string $name */
-                        public function __get($name): ?string {
-                            if ($name === "foo") {
-                                return "hello";
-                            }
-                        }
-
-                        /**
-                         * @param string $name
-                         * @param mixed $value
-                         */
-                        public function __set($name, $value): void {
-                        }
-                    }
-
-                    $a = new A();
-                    $a->foo = new SomeOtherPropertyType();',
-                'error_message' => 'InvalidPropertyAssignmentValue - src' . DIRECTORY_SEPARATOR . 'somefile.php:27 - $a->foo with declared type'
-                    . ' \'Bar\PropertyType\' cannot',
-            ],
-            'propertyWriteDocblockInvalidAssignment' => [
-                '<?php
-                    /**
-                     * @property-write string $foo
-                     */
-                    class A {
-                         public function __get(string $name): ?string {
-                              if ($name === "foo") {
-                                   return "hello";
-                              }
-                         }
-
-                         /** @param mixed $value */
-                         public function __set(string $name, $value): void {
-                         }
-                    }
-
-                    $a = new A();
-                    $a->foo = 5;',
-                'error_message' => 'InvalidPropertyAssignmentValue',
-            ],
-            'propertySealedDocblockUndefinedPropertyAssignment' => [
-                '<?php
-                    /**
-                     * @property string $foo
-                     * @psalm-seal-properties
-                     */
-                    class A {
-                         public function __get(string $name): ?string {
-                              if ($name === "foo") {
-                                   return "hello";
-                              }
-                         }
-
-                         /** @param mixed $value */
-                         public function __set(string $name, $value): void {
-                         }
-                    }
-
-                    $a = new A();
-                    $a->bar = 5;',
-                'error_message' => 'UndefinedPropertyAssignment',
-            ],
-            'propertySealedDocblockDefinedPropertyAssignment' => [
-                '<?php
-                    /**
-                     * @property string $foo
-                     * @psalm-seal-properties
-                     */
-                    class A {
-                         public function __get(string $name): ?string {
-                              if ($name === "foo") {
-                                   return "hello";
-                              }
-                         }
-
-                         /** @param mixed $value */
-                         public function __set(string $name, $value): void {
-                         }
-                    }
-
-                    $a = new A();
-                    $a->foo = 5;',
-                'error_message' => 'InvalidPropertyAssignmentValue',
-            ],
-            'propertyReadInvalidFetch' => [
-                '<?php
-                    /**
-                     * @property-read string $foo
-                     */
-                    class A {
-                         /** @return mixed */
-                         public function __get(string $name) {
-                              if ($name === "foo") {
-                                   return "hello";
-                              }
-                         }
-                    }
-
-                    $a = new A();
-                    echo count($a->foo);',
-                'error_message' => 'InvalidArgument',
-            ],
-            'propertySealedDocblockUndefinedPropertyFetch' => [
-                '<?php
-                    /**
-                     * @property string $foo
-                     * @psalm-seal-properties
-                     */
-                    class A {
-                         public function __get(string $name): ?string {
-                              if ($name === "foo") {
-                                   return "hello";
-                              }
-                         }
-
-                         /** @param mixed $value */
-                         public function __set(string $name, $value): void {
-                         }
-                    }
-
-                    $a = new A();
-                    echo $a->bar;',
-                'error_message' => 'UndefinedPropertyFetch',
             ],
             'noStringParamType' => [
                 '<?php
@@ -1461,109 +1535,6 @@ class AnnotationTest extends TestCase
                     }',
                 'error_message' => 'PossiblyInvalidMethodCall',
             ],
-            /**
-             * The property $foo is not defined on the object, but accessed with the magic setter.
-             * This is an error because `@psalm-seal-properties` is specified on the class block.
-             */
-            'magicSetterUndefinedProperty' => [
-                '<?php
-                    /**
-                     * @psalm-seal-properties
-                     */
-                    class A {
-                        public function __get(string $name): ?string {
-                            if ($name === "foo") {
-                                return "hello";
-                            }
-                        }
-
-                        /** @param mixed $value */
-                        public function __set(string $name, $value): void {
-                        }
-
-                        public function badSet(): void {
-                            $this->__set("foo", "value");
-                        }
-                    }',
-                'error_message' => 'UndefinedThisPropertyAssignment',
-            ],
-            /**
-             * The property $foo is not defined on the object, but accessed with the magic getter.
-             * This is an error because `@psalm-seal-properties` is specified on the class block.
-             */
-            'magicGetterUndefinedProperty' => [
-                '<?php
-                    /**
-                     * @psalm-seal-properties
-                     */
-                    class A {
-                        public function __get(string $name): ?string {
-                            if ($name === "foo") {
-                                return "hello";
-                            }
-                        }
-
-                        /** @param mixed $value */
-                        public function __set(string $name, $value): void {
-                        }
-
-                        public function badGet(): void {
-                            $this->__get("foo");
-                        }
-                    }',
-                'error_message' => 'UndefinedThisPropertyFetch',
-            ],
-            /**
-             * The property $foo is defined as a string with the `@property` annotation, but
-             * the magic setter is used to set it to an object.
-             */
-            'magicSetterInvalidAssignmentType' => [
-                '<?php
-                    /**
-                     * @property string $foo
-                     */
-                    class A {
-                        public function __get(string $name): ?string {
-                            if ($name === "foo") {
-                                return "hello";
-                            }
-                        }
-
-                        /** @param mixed $value */
-                        public function __set(string $name, $value): void {
-                        }
-
-                        public function badSet(): void {
-                            $this->__set("foo", new stdClass());
-                        }
-                    }',
-                'error_message' => 'InvalidPropertyAssignmentValue',
-            ],
-            'propertyDocblockAssignmentToMixed' => [
-                '<?php
-                    /**
-                     * @property string $foo
-                     */
-                    class A {
-                         public function __get(string $name): ?string {
-                              if ($name === "foo") {
-                                   return "hello";
-                              }
-                         }
-
-                         /** @param mixed $value */
-                         public function __set(string $name, $value): void {
-                         }
-                    }
-
-                    /** @param mixed $b */
-                    function foo($b) : void {
-                        $a = new A();
-                        $a->__set("foo", $b);
-                    }',
-                'error_message' => 'MixedTypeCoercion',
-                'error_levels' => ['MixedAssignment'],
-            ],
             'arrayOfStringClasses' => [
                 '<?php
                     /**
@@ -1682,18 +1653,6 @@ class AnnotationTest extends TestCase
                     class Child extends Parent {}',
                 'error_message' => 'InvalidDocblock',
             ],
-            'magicMethodAnnotationWithUnionTypeInDocblock' => [
-                '<?php
-                    class Parent {
-                        public function __call() {}
-                    }
-
-                    /**
-                     * @method string getString(string|int $x)
-                     */
-                    class Child extends Parent {}',
-                'error_message' => 'InvalidDocblock',
-            ],
             'magicMethodAnnotationWithSealed' => [
                 '<?php
                     class Parent {
@@ -1734,6 +1693,14 @@ class AnnotationTest extends TestCase
                      */
                     function example() {
                         return "placeholder";
+                    }',
+                'error_message' => 'InvalidDocblock',
+            ],
+            'badAmpersand' => [
+                '<?php
+                    /** @return &array */
+                    function foo() : array {
+                        return [];
                     }',
                 'error_message' => 'InvalidDocblock',
             ],

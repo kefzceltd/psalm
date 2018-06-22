@@ -201,9 +201,14 @@ class ClassLikeStorage
     public $overridden_property_ids = [];
 
     /**
-     * @var array<string, string>|null
+     * @var array<string, Type\Union>|null
      */
     public $template_types;
+
+    /**
+     * @var array<string, string>|null
+     */
+    public $template_parents;
 
     /**
      * @var array<string, array<int, CodeLocation>>|null
@@ -226,4 +231,17 @@ class ClassLikeStorage
      * @var string
      */
     public $hash = '';
+
+    /**
+     * @var bool
+     */
+    public $has_visitor_issues = false;
+
+    /**
+     * @param string $name
+     */
+    public function __construct($name)
+    {
+        $this->name = $name;
+    }
 }

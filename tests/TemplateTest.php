@@ -471,6 +471,243 @@ class TemplateTest extends TestCase
                 ],
                 'error_levels' => ['MixedAssignment', 'MixedArgument'],
             ],
+            'intersectionTemplatedTypes' => [
+                '<?php
+                    namespace NS;
+                    use Countable;
+
+                    /** @template T */
+                    class Collection
+                    {
+                        /** @psalm-var iterable<T> */
+                        private $data;
+
+                        /** @psalm-param iterable<T> $data */
+                        public function __construct(iterable $data) {
+                            $this->data = $data;
+                        }
+                    }
+
+                    class Item {}
+                    /** @psalm-param Collection<Item> $c */
+                    function takesCollectionOfItems(Collection $c): void {}
+
+                    /** @psalm-var iterable<Item> $data2 */
+                    $data2 = [];
+                    takesCollectionOfItems(new Collection($data2));
+
+                    /** @psalm-var iterable<Item>&Countable $data */
+                    $data = [];
+                    takesCollectionOfItems(new Collection($data));',
+            ],
+            'templateCallableReturnType' => [
+                '<?php
+                    namespace NS;
+
+                    /**
+                     * @template T
+                     * @psalm-param callable():T $action
+                     * @psalm-return T
+                     */
+                    function retry(int $maxRetries, callable $action) {
+                        return $action();
+                    }
+
+                    function takesInt(int $p): void{};
+
+                    takesInt(retry(1, function(): int { return 1; }));',
+            ],
+            'templateClosureReturnType' => [
+                '<?php
+                    namespace NS;
+
+                    /**
+                     * @template T
+                     * @psalm-param \Closure():T $action
+                     * @psalm-return T
+                     */
+                    function retry(int $maxRetries, callable $action) {
+                        return $action();
+                    }
+
+                    function takesInt(int $p): void{};
+
+                    takesInt(retry(1, function(): int { return 1; }));',
+            ],
+            'repeatedCall' => [
+                '<?php
+                    namespace NS;
+
+                    use Closure;
+
+                    /**
+                     * @template TKey
+                     * @template TValue
+                     */
+                    class ArrayCollection {
+                        /** @var array<TKey,TValue> */
+                        private $data;
+
+                        /** @param array<TKey,TValue> $data */
+                        public function __construct(array $data) {
+                            $this->data = $data;
+                        }
+
+                        /**
+                         * @template T
+                         * @param Closure(TValue):T $func
+                         * @return ArrayCollection<TKey,T>
+                         */
+                        public function map(Closure $func) {
+                          return new static(array_map($func, $this->data));
+                        }
+                    }
+
+                    class Item {}
+                    /**
+                     * @param ArrayCollection<mixed,Item> $i
+                     */
+                    function takesCollectionOfItems(ArrayCollection $i): void {}
+
+                    $c = new ArrayCollection([ new Item ]);
+                    takesCollectionOfItems($c);
+                    takesCollectionOfItems($c->map(function(Item $i): Item { return $i;}));
+                    takesCollectionOfItems($c->map(function(Item $i): Item { return $i;}));'
+            ],
+            'replaceChildType' => [
+                '<?php
+                    /**
+                     * @template TKey
+                     * @template TValue
+                     * @param Traversable<TKey, TValue> $t
+                     * @return array<TKey, TValue>
+                     */
+                    function f(Traversable $t): array {
+                        $ret = [];
+                        foreach ($t as $k => $v) $ret[$k] = $v;
+                        return $ret;
+                    }
+
+                    /** @return Generator<int, stdClass> */
+                    function g():Generator { yield new stdClass; }
+
+                    takesArrayOfStdClass(f(g()));
+
+                    /** @param array<stdClass> $p */
+                    function takesArrayOfStdClass(array $p): void {}',
+            ],
+            'noRepeatedTypeException' => [
+                '<?php
+                    /** @template T */
+                    class Foo
+                    {
+                        /**
+                         * @psalm-var class-string
+                         */
+                        private $type;
+
+                        /** @var array<T> */
+                        private $items;
+
+                        /**
+                         * @param class-string $type
+                         * @template-typeof T $type
+                         */
+                        public function __construct(string $type)
+                        {
+                            if (!in_array($type, [A::class, B::class], true)) {
+                                throw new \InvalidArgumentException;
+                            }
+                            $this->type = $type;
+                            $this->items = [];
+                        }
+
+                        /** @param T $item */
+                        public function add($item): void
+                        {
+                            $this->items[] = $item;
+                        }
+                    }
+
+                    class FooFacade
+                    {
+                        /**
+                         * @template T
+                         * @param  T $item
+                         */
+                        public function add($item): void
+                        {
+                            $foo = $this->ensureFoo([$item]);
+                            $foo->add($item);
+                        }
+
+                        /**
+                         * @template T
+                         * @param  array<mixed,T> $items
+                         * @return Foo<T>
+                         */
+                        private function ensureFoo(array $items): EntitySeries
+                        {
+                            $type = $items[0] instanceof A ? A::class : B::class;
+                            return new Foo($type);
+                        }
+                    }
+
+                    class A {}
+                    class B {}'
+            ],
+            'collectionOfClosure' => [
+                '<?php
+                    /**
+                     * @template TKey
+                     * @template TValue
+                     */
+                    class Collection {
+                        /**
+                         * @param Closure(TValue):bool $p
+                         * @return Collection<TKey,TValue>
+                         */
+                        public function filter(Closure $p);
+                    }
+                    class I {}
+
+                    /** @var Collection<mixed,Collection<mixed,I>> $c */
+                    $c = new Collection;
+
+                    $c->filter(
+                      /** @param Collection<mixed,I> $elt */
+                      function(Collection $elt): bool { return (bool) rand(0,1); }
+                    );
+
+                    $c->filter(
+                      /** @param Collection<mixed,I> $elt */
+                      function(Collection $elt): bool { return true; }
+                    );',
+            ],
+            'splatTemplateParam' => [
+                '<?php
+                    /**
+                     * @template TKey
+                     * @template TValue
+                     *
+                     * @param array<TKey, TValue> $arr
+                     * @param array $arr2
+                     * @return array<TKey, TValue>
+                     */
+                    function splat_proof(array $arr, array $arr2) {
+                        return $arr;
+                    }
+
+                    $foo = [
+                        [1, 2, 3],
+                        [1, 2],
+                    ];
+
+                    $a = splat_proof(... $foo);',
+                'assertions' => [
+                    '$a' => 'array<int, int>',
+                ],
+            ],
         ];
     }
 
@@ -537,6 +774,69 @@ class TemplateTest extends TestCase
 
                     bar((new A())->foo(4));',
                 'error_message' => 'InvalidScalarArgument',
+            ],
+            'replaceChildTypeNoHint' => [
+                '<?php
+                    /**
+                     * @template TKey
+                     * @template TValue
+                     * @param Traversable<TKey, TValue> $t
+                     * @return array<TKey, TValue>
+                     */
+                    function f(Traversable $t): array {
+                        $ret = [];
+                        foreach ($t as $k => $v) $ret[$k] = $v;
+                        return $ret;
+                    }
+
+                    function g():Generator { yield new stdClass; }
+
+                    takesArrayOfStdClass(f(g()));
+
+                    /** @param array<stdClass> $p */
+                    function takesArrayOfStdClass(array $p): void {}',
+                'error_message' => 'MixedTypeCoercion',
+            ],
+            'restrictTemplateInput' => [
+                '<?php
+                    /** @template T */
+                    class Foo
+                    {
+                        /**
+                         * @psalm-var class-string
+                         */
+                        private $type;
+
+                        /** @var array<T> */
+                        private $items;
+
+                        /**
+                         * @param class-string $type
+                         * @template-typeof T $type
+                         */
+                        public function __construct(string $type)
+                        {
+                            if (!in_array($type, [A::class, B::class], true)) {
+                                throw new \InvalidArgumentException;
+                            }
+                            $this->type = $type;
+                            $this->items = [];
+                        }
+
+                        /** @param T $item */
+                        public function add($item): void
+                        {
+                            $this->items[] = $item;
+                        }
+                    }
+
+                    class A {}
+                    class B {}
+
+
+                    $foo = new Foo(A::class);
+                    $foo->add(new B);',
+                'error_message' => 'InvalidArgument',
             ],
         ];
     }

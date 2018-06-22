@@ -6,21 +6,22 @@ use PhpParser\Node\Expr\Closure;
 use PhpParser\Node\Stmt\ClassMethod;
 use PhpParser\Node\Stmt\Function_;
 use Psalm\Checker\FunctionLike\ReturnTypeChecker;
+use Psalm\Checker\FunctionLike\ReturnTypeCollector;
 use Psalm\Checker\Statements\ExpressionChecker;
 use Psalm\Codebase\CallMap;
 use Psalm\CodeLocation;
 use Psalm\Context;
-use Psalm\EffectsAnalyser;
 use Psalm\FileManipulation\FunctionDocblockManipulator;
-use Psalm\FunctionLikeParameter;
 use Psalm\Issue\InvalidParamDefault;
 use Psalm\Issue\MismatchingDocblockParamType;
 use Psalm\Issue\MissingClosureParamType;
 use Psalm\Issue\MissingParamType;
+use Psalm\Issue\MissingThrowsDocblock;
 use Psalm\Issue\ReservedWord;
 use Psalm\Issue\UnusedParam;
 use Psalm\IssueBuffer;
 use Psalm\StatementsSource;
+use Psalm\Storage\FunctionLikeParameter;
 use Psalm\Storage\FunctionLikeStorage;
 use Psalm\Storage\MethodStorage;
 use Psalm\Type;
@@ -267,6 +268,16 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
             $signature_type = $function_param->signature_type;
 
             if ($function_param->type) {
+                if ($function_param->type_location) {
+                    $function_param->type->check(
+                        $this,
+                        $function_param->type_location,
+                        $storage->suppressed_issues,
+                        [],
+                        false
+                    );
+                }
+
                 $param_type = clone $function_param->type;
 
                 $param_type = ExpressionChecker::fleshOutType(
@@ -283,7 +294,9 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
             $context->vars_possibly_in_scope['$' . $function_param->name] = true;
 
             if ($context->collect_references && $function_param->location) {
-                $context->unreferenced_vars['$' . $function_param->name] = $function_param->location;
+                $context->unreferenced_vars['$' . $function_param->name] = [
+                    $function_param->location->getHash() => $function_param->location
+                ];
             }
 
             if (!$function_param->type_location || !$function_param->location) {
@@ -301,8 +314,13 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
                 if (!TypeChecker::isContainedBy(
                     $codebase,
                     $param_type,
-                    $signature_type
-                )
+                    $signature_type,
+                    false,
+                    false,
+                    $has_scalar_match,
+                    $type_coerced,
+                    $type_coerced_from_mixed
+                ) && !$type_coerced_from_mixed
                 ) {
                     if ($project_checker->alter_code
                         && isset($project_checker->getIssuesToFix()['MismatchingDocblockParamType'])
@@ -366,7 +384,7 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
             if ($template_types) {
                 $substituted_type = clone $param_type;
                 $generic_types = [];
-                $substituted_type->replaceTemplateTypesWithStandins($template_types, $generic_types, null);
+                $substituted_type->replaceTemplateTypesWithStandins($template_types, $generic_types);
                 $substituted_type->check(
                     $this->source,
                     $function_param->type_location,
@@ -441,7 +459,7 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
             return false;
         }
 
-        $statements_checker->analyze($function_stmts, $context, null, $global_context, true);
+        $statements_checker->analyze($function_stmts, $context, $global_context, true);
 
         foreach ($storage->params as $offset => $function_param) {
             // only complain if there's no type defined by a parent type
@@ -488,7 +506,7 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
 
             $closure_yield_types = [];
 
-            $closure_return_types = EffectsAnalyser::getReturnTypes(
+            $closure_return_types = ReturnTypeCollector::getReturnTypes(
                 $this->function->stmts,
                 $closure_yield_types,
                 $ignore_nullable_issues,
@@ -597,6 +615,35 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
 
                             $parent_method_storage->used_params[$i] = true;
                         }
+                    }
+                }
+            }
+        }
+
+        if ($context->collect_exceptions) {
+            if ($context->possibly_thrown_exceptions) {
+                $ignored_exceptions = array_change_key_case($codebase->config->ignored_exceptions);
+
+                $undocumented_throws = array_diff_key($context->possibly_thrown_exceptions, $storage->throws);
+
+                foreach ($undocumented_throws as $possibly_thrown_exception => $_) {
+                    if (isset($ignored_exceptions[strtolower($possibly_thrown_exception)])) {
+                        continue;
+                    }
+
+                    if (IssueBuffer::accepts(
+                        new MissingThrowsDocblock(
+                            $possibly_thrown_exception . ' is thrown but not caught - please either catch'
+                                . ' or add a @throws annotation',
+                            new CodeLocation(
+                                $this,
+                                $this->function,
+                                null,
+                                true
+                            )
+                        )
+                    )) {
+                        // fall through
                     }
                 }
             }
@@ -771,7 +818,10 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
             return ($namespace ? strtolower($namespace) . '\\' : '') . strtolower($this->function->name->name);
         }
 
-        return $this->getFilePath() . ':' . $this->function->getLine() . ':-:closure';
+        return $this->getFilePath()
+            . ':' . $this->function->getLine()
+            . ':' . (int)$this->function->getAttribute('startFilePos')
+            . ':-:closure';
     }
 
     /**
@@ -793,7 +843,7 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
             return ($namespace ? $namespace . '\\' : '') . $this->function->name;
         }
 
-        return $this->getFilePath() . ':' . $this->function->getLine() . ':-:closure';
+        return $this->getMethodId();
     }
 
     /**
@@ -996,7 +1046,13 @@ abstract class FunctionLikeChecker extends SourceChecker implements StatementsSo
                     continue;
                 }
 
-                if (TypeChecker::isContainedBy($project_checker->codebase, $arg->value->inferredType, $param_type)) {
+                if (TypeChecker::isContainedBy(
+                    $project_checker->codebase,
+                    $arg->value->inferredType,
+                    $param_type,
+                    $arg->value->inferredType->ignore_nullable_issues,
+                    $arg->value->inferredType->ignore_falsable_issues
+                )) {
                     continue;
                 }
 

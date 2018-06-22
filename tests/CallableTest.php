@@ -162,6 +162,14 @@ class CallableTest extends TestCase
                     '$f' => 'array{0:string, 1:string}',
                 ],
             ],
+            'arrayMapClosureVar' => [
+                '<?php
+                    $mirror = function(int $i) : int { return $i; };
+                    $a = array_map($mirror, [1, 2, 3]);',
+                'assertions' => [
+                    '$a' => 'array{0:int, 1:int, 2:int}',
+                ],
+            ],
             'arrayCallableMethod' => [
                 '<?php
                     class A {
@@ -485,6 +493,85 @@ class CallableTest extends TestCase
                     function doSomething($p): void {}
                     doSomething(function(): bool { return false; });',
             ],
+            'callableProperties' => [
+                '<?php
+                    class C {
+                        /** @psalm-var callable():bool */
+                        private $callable;
+
+                        /**
+                         * @psalm-param callable():bool $callable
+                         */
+                        public function __construct(callable $callable) {
+                            $this->callable = $callable;
+                        }
+
+                        public function callTheCallableDirectly(): bool {
+                            return ($this->callable)();
+                        }
+
+                        public function callTheCallableIndirectly(): bool {
+                            $r = $this->callable;
+                            return $r();
+                        }
+                    }',
+            ],
+            'invokableProperties' => [
+                '<?php
+                    class A {
+                        public function __invoke(): bool { return true; }
+                    }
+
+                    class C {
+                        /** @var A $invokable */
+                        private $invokable;
+
+                        public function __construct(A $invokable) {
+                            $this->invokable = $invokable;
+                        }
+
+                        public function callTheInvokableDirectly(): bool {
+                            return ($this->invokable)();
+                        }
+
+                        public function callTheInvokableIndirectly(): bool {
+                            $r = $this->invokable;
+                            return $r();
+                        }
+                    }',
+            ],
+            'PHP71-mirrorCallableParams' => [
+                '<?php
+                    namespace NS;
+                    use Closure;
+                    /** @param Closure(int):bool $c */
+                    function acceptsIntToBool(Closure $c): void {}
+
+                    acceptsIntToBool(Closure::fromCallable(function(int $n): bool { return $n > 0 }));',
+            ],
+            'singleLineClosures' => [
+                '<?php
+                    $a = function() : Closure { return function() : string { return "hello"; }};
+                    $b = $a()();',
+                'assertions' => [
+                    '$a' => 'Closure():Closure():string',
+                    '$b' => 'string',
+                ],
+            ],
+            'nullableReturnTypeShorthand' => [
+                '<?php
+                    /** @param callable(mixed):?A $a */
+                    function foo(callable $a): void {}',
+            ],
+            'voidReturningArrayMap' => [
+                '<?php
+                    array_map(
+                        function(int $i) : void {
+                            echo $i;
+                        },
+                        [1, 2, 3]
+                    );',
+            ],
         ];
     }
 
@@ -774,6 +861,25 @@ class CallableTest extends TestCase
                         return foo($f, $g);
                     }',
                 'error_message' => 'LessSpecificReturnStatement',
+            ],
+            'undefinedVariable' => [
+                '<?php
+                    $a = function() use ($i) {};',
+                'error_message' => 'UndefinedVariable',
+            ],
+            'voidReturningArrayMap' => [
+                '<?php
+                    $arr = array_map(
+                        function(int $i) : void {
+                            echo $i;
+                        },
+                        [1, 2, 3]
+                    );
+
+                    foreach ($arr as $a) {
+                        if ($a) {}
+                    }',
+                'error_message' => 'TypeDoesNotContainType',
             ],
         ];
     }

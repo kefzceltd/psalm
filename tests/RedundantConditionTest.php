@@ -343,7 +343,7 @@ class RedundantConditionTest extends TestCase
 
                     if ($option) {}',
                 'assignments' => [],
-                'error_levels' => ['MixedAssignment'],
+                'error_levels' => ['MixedAssignment', 'MixedArrayAccess'],
             ],
             'allowIntValueCheckAfterComparisonDueToOverflow' => [
                 '<?php
@@ -401,6 +401,71 @@ class RedundantConditionTest extends TestCase
                         } else {
                             echo "Is an int.";
                         }
+                    }',
+            ],
+            'changeStringValue' => [
+                '<?php
+                    $concat = "";
+                    foreach (["x", "y"] as $v) {
+                        if ($concat != "") {
+                            $concat .= ", ";
+                        }
+                        $concat .= "($v)";
+                    }',
+            ],
+            'arrayCanBeEmpty' => [
+                '<?php
+                    $x = ["key" => "value"];
+                    if (rand(0, 1)) {
+                        $x = [];
+                    }
+                    if ($x) {
+                        var_export($x);
+                    }',
+            ],
+            'arrayKeyExistsAccess' => [
+                '<?php
+                    /** @param array<int, string> $arr */
+                    function foo(array $arr) : void {
+                        if (array_key_exists(1, $arr)) {
+                            $a = ($arr[1] === "b") ? true : false;
+                        }
+                    }',
+            ],
+            'noRedundantConditionStringNotFalse' => [
+                '<?php
+                    function foo(string $s) : void {
+                        if ($s != false ) {}
+                    }',
+            ],
+            'noRedundantConditionStringNotTrue' => [
+                '<?php
+                    function foo(string $s) : void {
+                        if ($s != true ) {}
+                    }',
+            ],
+            'noRedundantConditionBoolNotFalse' => [
+                '<?php
+                    function foo(bool $s) : void {
+                        if ($s !== false ) {}
+                    }',
+            ],
+            'noRedundantConditionBoolNotTrue' => [
+                '<?php
+                    function foo(bool $s) : void {
+                        if ($s !== true ) {}
+                    }',
+            ],
+            'noRedundantConditionNullableBoolIsFalseOrTrue' => [
+                '<?php
+                    function foo(?bool $s) : void {
+                        if ($s === false ) {} elseif ($s === true) {}
+                    }',
+            ],
+            'noRedundantConditionNullableBoolIsTrueOrFalse' => [
+                '<?php
+                    function foo(?bool $s) : void {
+                        if ($s === true ) {} elseif ($s === false) {}
                     }',
             ],
         ];
@@ -500,6 +565,19 @@ class RedundantConditionTest extends TestCase
                     if ($a && $b && $a) {}',
                 'error_message' => 'RedundantCondition',
             ],
+            'typeResolutionRepeatingOredConditionWithSingleVar' => [
+                '<?php
+                    $a = rand(0, 10) > 5;
+                    if ($a || $a) {}',
+                'error_message' => 'ParadoxicalCondition',
+            ],
+            'typeResolutionRepeatingOredConditionWithVarInMiddle' => [
+                '<?php
+                    $a = rand(0, 10) > 5;
+                    $b = rand(0, 10) > 5;
+                    if ($a || $b || $a) {}',
+                'error_message' => 'ParadoxicalCondition',
+            ],
             'typeResolutionIsIntAndIsNumeric' => [
                 '<?php
                     $c = rand(0, 10) > 5 ? "hello" : 3;
@@ -531,7 +609,7 @@ class RedundantConditionTest extends TestCase
                     }',
                 'error_message' => 'TypeDoesNotContainType',
             ],
-            'SKIPPED-twoVarLogicNotNestedWithElseifNegatedInIf' => [
+            'twoVarLogicNotNestedWithElseifNegatedInIf' => [
                 '<?php
                     function foo(?string $a, ?string $b): ?string {
                         if ($a) {
@@ -587,7 +665,7 @@ class RedundantConditionTest extends TestCase
                     }',
                 'error_message' => 'TypeDoesNotContainType - src' . DIRECTORY_SEPARATOR . 'somefile.php:7',
             ],
-            'allowIntValueCheckAfterComparisonDueToConditionalOverflow' => [
+            'disallowFloatCheckAfterSettingToVar' => [
                 '<?php
                     function foo(int $x) : void {
                         if (rand(0, 1)) {
@@ -611,6 +689,46 @@ class RedundantConditionTest extends TestCase
                         } elseif (is_int($x)) {}
                     }',
                 'error_message' => 'TypeDoesNotContainType - src' . DIRECTORY_SEPARATOR . 'somefile.php:6',
+            ],
+            'redundantEmptyArray' => [
+                '<?php
+                    $x = ["key" => "value"];
+                    if ($x) {
+                        var_export($x);
+                    }',
+                'error_message' => 'RedundantCondition',
+            ],
+            'redundantConditionStringNotFalse' => [
+                '<?php
+                    function foo(string $s) : void {
+                        if ($s !== false ) {}
+                    }',
+                'error_message' => 'RedundantCondition',
+            ],
+            'redundantConditionStringNotTrue' => [
+                '<?php
+                    function foo(string $s) : void {
+                        if ($s !== true ) {}
+                    }',
+                'error_message' => 'RedundantCondition',
+            ],
+            'redundantConditionAfterRemovingFalse' => [
+                '<?php
+                    $s = rand(0, 1) ? rand(0, 5) : false;
+
+                    if ($s !== false) {
+                        if (is_int($s)) {}
+                    }',
+                'error_message' => 'RedundantCondition',
+            ],
+            'redundantConditionAfterRemovingTrue' => [
+                '<?php
+                    $s = rand(0, 1) ? rand(0, 5) : true;
+
+                    if ($s !== true) {
+                        if (is_int($s)) {}
+                    }',
+                'error_message' => 'RedundantCondition',
             ],
         ];
     }

@@ -4,8 +4,8 @@ namespace Psalm\Codebase;
 use Psalm\Checker\ClassLikeChecker;
 use Psalm\Checker\CommentChecker;
 use Psalm\Codebase;
-use Psalm\FunctionLikeParameter;
 use Psalm\Provider\ClassLikeStorageProvider;
+use Psalm\Storage\FunctionLikeParameter;
 use Psalm\Storage\FunctionLikeStorage;
 use Psalm\Storage\MethodStorage;
 use Psalm\Storage\PropertyStorage;
@@ -159,7 +159,7 @@ class Reflection
         );
 
         if ($class_name_lower === 'generator') {
-            $storage->template_types = ['TKey' => 'mixed', 'TValue' => 'mixed'];
+            $storage->template_types = ['TKey' => Type::getMixed(), 'TValue' => Type::getMixed()];
         }
 
         $interfaces = $reflected_class->getInterfaces();
@@ -366,8 +366,6 @@ class Reflection
             }
 
             $storage->cased_name = $reflection_function->getName();
-
-            $config = \Psalm\Config::getInstance();
 
             if (version_compare(PHP_VERSION, '7.0.0dev', '>=')
                 && $reflection_return_type = $reflection_function->getReturnType()

@@ -1,5 +1,8 @@
 <?php
-namespace Psalm;
+namespace Psalm\Storage;
+
+use Psalm\CodeLocation;
+use Psalm\Type;
 
 class FunctionLikeParameter
 {
@@ -34,6 +37,11 @@ class FunctionLikeParameter
     public $is_nullable;
 
     /**
+     * @var Type\Union|null
+     */
+    public $default_type;
+
+    /**
      * @var CodeLocation|null
      */
     public $location;
@@ -61,6 +69,7 @@ class FunctionLikeParameter
      * @param bool       $is_optional
      * @param bool       $is_nullable
      * @param bool       $is_variadic
+     * @param Type\Union|null    $default_type
      */
     public function __construct(
         $name,
@@ -70,7 +79,8 @@ class FunctionLikeParameter
         CodeLocation $type_location = null,
         $is_optional = true,
         $is_nullable = false,
-        $is_variadic = false
+        $is_variadic = false,
+        $default_type = null
     ) {
         $this->name = $name;
         $this->by_ref = $by_ref;
@@ -82,6 +92,7 @@ class FunctionLikeParameter
         $this->location = $location;
         $this->type_location = $type_location;
         $this->signature_type_location = $type_location;
+        $this->default_type = $default_type;
     }
 
     public function __toString()
@@ -89,5 +100,12 @@ class FunctionLikeParameter
         return ($this->type ?: 'mixed')
             . ($this->is_variadic ? '...' : '')
             . ($this->is_optional ? '=' : '');
+    }
+
+    public function __clone()
+    {
+        if ($this->type) {
+            $this->type = clone $this->type;
+        }
     }
 }

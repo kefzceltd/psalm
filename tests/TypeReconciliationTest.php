@@ -1,13 +1,13 @@
 <?php
 namespace Psalm\Tests;
 
-use Psalm\Checker\AlgebraChecker;
 use Psalm\Checker\FileChecker;
 use Psalm\Checker\StatementsChecker;
 use Psalm\Checker\TypeChecker;
 use Psalm\Clause;
 use Psalm\Context;
 use Psalm\Type;
+use Psalm\Type\Algebra;
 use Psalm\Type\Reconciler;
 
 class TypeReconciliationTest extends TestCase
@@ -91,7 +91,7 @@ class TypeReconciliationTest extends TestCase
             new Clause(['$a' => ['!falsy']]),
         ];
 
-        $negated_formula = AlgebraChecker::negateFormula($formula);
+        $negated_formula = Algebra::negateFormula($formula);
 
         $this->assertSame(1, count($negated_formula));
         $this->assertSame(['$a' => ['falsy']], $negated_formula[0]->possibilities);
@@ -100,7 +100,7 @@ class TypeReconciliationTest extends TestCase
             new Clause(['$a' => ['!falsy'], '$b' => ['!falsy']]),
         ];
 
-        $negated_formula = AlgebraChecker::negateFormula($formula);
+        $negated_formula = Algebra::negateFormula($formula);
 
         $this->assertSame(2, count($negated_formula));
         $this->assertSame(['$a' => ['falsy']], $negated_formula[0]->possibilities);
@@ -111,7 +111,7 @@ class TypeReconciliationTest extends TestCase
             new Clause(['$b' => ['!falsy']]),
         ];
 
-        $negated_formula = AlgebraChecker::negateFormula($formula);
+        $negated_formula = Algebra::negateFormula($formula);
 
         $this->assertSame(1, count($negated_formula));
         $this->assertSame(['$a' => ['falsy'], '$b' => ['falsy']], $negated_formula[0]->possibilities);
@@ -120,7 +120,7 @@ class TypeReconciliationTest extends TestCase
             new Clause(['$a' => ['int', 'string'], '$b' => ['!falsy']]),
         ];
 
-        $negated_formula = AlgebraChecker::negateFormula($formula);
+        $negated_formula = Algebra::negateFormula($formula);
 
         $this->assertSame(3, count($negated_formula));
         $this->assertSame(['$a' => ['!int']], $negated_formula[0]->possibilities);
@@ -174,7 +174,7 @@ class TypeReconciliationTest extends TestCase
             new Clause(['$a' => ['falsy'], '$b' => ['falsy']]),
         ];
 
-        $simplified_formula = AlgebraChecker::simplifyCNF($formula);
+        $simplified_formula = Algebra::simplifyCNF($formula);
 
         $this->assertSame(2, count($simplified_formula));
         $this->assertSame(['$a' => ['!falsy']], $simplified_formula[0]->possibilities);
@@ -207,7 +207,7 @@ class TypeReconciliationTest extends TestCase
             'falsyWithMyObjectPipeBool' => ['false', 'falsy', 'MyObject|bool'],
             'falsyWithMixed' => ['mixed', 'falsy', 'mixed'],
             'falsyWithBool' => ['false', 'falsy', 'bool'],
-            'falsyWithStringOrNull' => ['string|null', 'falsy', 'string|null'],
+            'falsyWithStringOrNull' => ['null|string', 'falsy', 'string|null'],
             'falsyWithScalarOrNull' => ['scalar', 'falsy', 'scalar'],
 
             'notMyObjectWithMyObjectPipeBool' => ['bool', '!MyObject', 'MyObject|bool'],
@@ -528,7 +528,7 @@ class TypeReconciliationTest extends TestCase
                     if ($a !== null) { }
                     $b = $a;',
                 'assertions' => [
-                    '$b' => 'null|int',
+                    '$b' => 'int|null',
                 ],
             ],
             'ternaryByRefVar' => [
@@ -775,6 +775,133 @@ class TypeReconciliationTest extends TestCase
                       return false;
                     }',
             ],
+            'numericStringAssertion' => [
+                '<?php
+                    /**
+                     * @param mixed $a
+                     */
+                    function foo($a, string $b) : void {
+                        if (is_numeric($b) && $a === $b) {
+                            echo $a;
+                        }
+                    }'
+            ],
+            'reconcileNullableStringWithWeakEquality' => [
+                '<?php
+                    function foo(?string $s) : void {
+                        if ($s == "hello" || $s == "goodbye") {
+                            if ($s == "hello") {
+                                echo "cool";
+                            }
+                            echo "cooler";
+                        }
+                    }',
+            ],
+            'reconcileNullableStringWithStrictEqualityStrings' => [
+                '<?php
+                    function foo(?string $s, string $a, string $b) : void {
+                        if ($s === $a || $s === $b) {
+                            if ($s === $a) {
+                                echo "cool";
+                            }
+                            echo "cooler";
+                        }
+                    }',
+            ],
+            'reconcileNullableStringWithWeakEqualityStrings' => [
+                '<?php
+                    function foo(?string $s, string $a, string $b) : void {
+                        if ($s == $a || $s == $b) {
+                            if ($s == $a) {
+                                echo "cool";
+                            }
+                            echo "cooler";
+                        }
+                    }',
+            ],
+            'allowWeakEqualityScalarType' => [
+                '<?php
+                    function foo(int $i) : void {
+                        if ($i == "5") {}
+                    }
+                    function bar(float $f) : void {
+                      if ($f == 0) {}
+                    }',
+            ],
+            'filterSubclassBasedOnParentInstanceof' => [
+                '<?php
+                    class A {}
+                    class B extends A {
+                       public function foo() : void {}
+                    }
+
+                    class C {}
+                    class D extends C {}
+
+                    $b_or_d = rand(0, 1) ? new B : new D;
+
+                    if ($b_or_d instanceof A) {
+                        $b_or_d->foo();
+                    }',
+            ],
+            'SKIPPED-isArrayOnArrayKeyOffset' => [
+                '<?php
+                    /** @var array{s:array<mixed, array<int, string>|string>} */
+                    $doc = [];
+
+                    if (!is_array($doc["s"]["t"])) {
+                        $doc["s"]["t"] = [$doc["s"]["t"]];
+                    }',
+                'assertions' => [
+                    '$doc[\'s\'][\'t\']' => 'array<int, string>',
+                ],
+            ],
+            'removeTrue' => [
+                '<?php
+                    $a = rand(0, 1) ? new stdClass : true;
+
+                    if ($a === true) {
+                      exit;
+                    }
+
+                    function takesStdClass(stdClass $s) : void {}
+                    takesStdClass($a);',
+            ],
+            'noReconciliationInElseIf' => [
+                '<?php
+                    class A {}
+                    $a = rand(0, 1) ? new A : null;
+
+                    if (rand(0, 1)) {
+                        // do nothing
+                    } elseif (!$a) {
+                        $a = new A();
+                    }
+
+                    if ($a) {}',
+            ],
+            'removeStringWithIsScalar' => [
+                '<?php
+                    $a = rand(0, 1) ? "hello" : null;
+
+                    if (is_scalar($a)) {
+                        exit;
+                    }',
+                'assertions' => [
+                    '$a' => 'null',
+                ],
+            ],
+            'removeNullWithIsScalar' => [
+                '<?php
+                    $a = rand(0, 1) ? "hello" : null;
+
+                    if (!is_scalar($a)) {
+                        exit;
+                    }',
+                'assertions' => [
+                    '$a' => 'string',
+                ],
+            ],
         ];
     }
 
@@ -869,13 +996,8 @@ class TypeReconciliationTest extends TestCase
                         echo $array["field"] . " " . $array["otherField"];
                     }
 
-                    /**
-                     * @param array{field:string} $array
-                     */
-                    function has_mix_of_fields($array) : void {
-                        print_field($array);
-                    }',
-                'error_message' => 'PossiblyInvalidArgument',
+                    print_field(["field" => "name"]);',
+                'error_message' => 'InvalidArgument',
             ],
             'intersectionIncorrect' => [
                 '<?php
@@ -908,6 +1030,45 @@ class TypeReconciliationTest extends TestCase
 
                     if (is_bool($a[0]) && $a[0]) {}',
                 'error_message' => 'DocblockTypeContradiction',
+            ],
+            'preventWeakEqualityToObject' => [
+                '<?php
+                    function foo(int $i, stdClass $s) : void {
+                        if ($i == $s) {}
+                    }',
+                'error_message' => 'TypeDoesNotContainType',
+            ],
+            'properReconciliationInElseIf' => [
+                '<?php
+                    class A {}
+                    $a = rand(0, 1) ? new A : null;
+
+                    if (rand(0, 1)) {
+                        $a = new A();
+                    } elseif (!$a) {
+                        $a = new A();
+                    }
+
+                    if ($a) {}',
+                'error_message' => 'RedundantCondition',
+            ],
+            'allRemovalOfStringWithIsScalar' => [
+                '<?php
+                    $a = rand(0, 1) ? "hello" : "goodbye";
+
+                    if (is_scalar($a)) {
+                        exit;
+                    }',
+                'error_message' => 'RedundantCondition',
+            ],
+            'noRemovalOfStringWithIsScalar' => [
+                '<?php
+                    $a = rand(0, 1) ? "hello" : "goodbye";
+
+                    if (!is_scalar($a)) {
+                        exit;
+                    }',
+                'error_message' => 'TypeDoesNotContainType',
             ],
         ];
     }

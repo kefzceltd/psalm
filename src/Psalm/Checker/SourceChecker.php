@@ -103,25 +103,80 @@ abstract class SourceChecker implements StatementsSource
     /**
      * @return string
      */
-    public function getCheckedFileName()
+    public function getRootFileName()
     {
         if ($this->source === null) {
             throw new \UnexpectedValueException('$source cannot be null');
         }
 
-        return $this->source->getCheckedFileName();
+        return $this->source->getRootFileName();
     }
 
     /**
      * @return string
      */
-    public function getCheckedFilePath()
+    public function getRootFilePath()
     {
         if ($this->source === null) {
             throw new \UnexpectedValueException('$source cannot be null');
         }
 
-        return $this->source->getCheckedFilePath();
+        return $this->source->getRootFilePath();
+    }
+
+    /**
+     * @param string $file_path
+     * @param string $file_name
+     *
+     * @return void
+     */
+    public function setRootFilePath($file_path, $file_name)
+    {
+        if ($this->source === null) {
+            throw new \UnexpectedValueException('$source cannot be null');
+        }
+
+        $this->source->setRootFilePath($file_path, $file_name);
+    }
+
+    /**
+     * @param string $file_path
+     *
+     * @return bool
+     */
+    public function hasParentFilePath($file_path)
+    {
+        if ($this->source === null) {
+            throw new \UnexpectedValueException('$source cannot be null');
+        }
+
+        return $this->source->hasParentFilePath($file_path);
+    }
+
+    /**
+     * @param string $file_path
+     *
+     * @return bool
+     */
+    public function hasAlreadyRequiredFilePath($file_path)
+    {
+        if ($this->source === null) {
+            throw new \UnexpectedValueException('$source cannot be null');
+        }
+
+        return $this->source->hasAlreadyRequiredFilePath($file_path);
+    }
+
+    /**
+     * @return int
+     */
+    public function getRequireNesting()
+    {
+        if ($this->source === null) {
+            throw new \UnexpectedValueException('$source cannot be null');
+        }
+
+        return $this->source->getRequireNesting();
     }
 
     /**

@@ -114,6 +114,47 @@ class MethodCallTest extends TestCase
                     $q = new A;
                     $q("asda");',
             ],
+            'domDocumentAppendChild' => [
+                '<?php
+                    $doc = new DOMDocument("1.0");
+                    $node = $doc->createElement("foo");
+                    $newnode = $doc->appendChild($node);
+                    $newnode->setAttribute("bar", "baz");',
+            ],
+            'nonStaticSelfCall' => [
+                '<?php
+                    class A11 {
+                        public function call() : self {
+                            $result = self::method();
+                            return $result;
+                        }
+
+                        public function method() : self {
+                            return $this;
+                        }
+                    }
+                    $x = new A11();
+                    var_export($x->call());',
+            ],
+            'simpleXml' => [
+                '<?php
+                    $xml = new SimpleXMLElement("<a><b></b></a>");
+                    $a = $xml->asXML();
+                    $b = $xml->asXML("foo.xml");',
+                'assertions' => [
+                    '$a' => 'string|false',
+                    '$b' => 'string|bool',
+                ],
+            ],
+            'datetimeformatNotFalse' => [
+                '<?php
+                    $format = random_bytes(10);
+                    $dt = new DateTime;
+                    $formatted = $dt->format($format);
+                    if (false !== $formatted) {}
+                    function takesString(string $s) : void {}
+                    takesString($formatted);'
+            ],
         ];
     }
 
@@ -176,7 +217,7 @@ class MethodCallTest extends TestCase
                     }
 
                     /** @param A1|string $x */
-                    function example($x, bool $isObject) {
+                    function example($x, bool $isObject) : void {
                         if ($isObject) {
                             $x->methodOfA();
                         }
@@ -188,7 +229,7 @@ class MethodCallTest extends TestCase
                     class A {
                         public function fooFoo(): void {}
 
-                        public function barBar(): void {
+                        public static function barBar(): void {
                             self::fooFoo();
                         }
                     }',

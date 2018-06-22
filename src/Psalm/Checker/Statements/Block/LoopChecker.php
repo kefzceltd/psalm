@@ -2,7 +2,6 @@
 namespace Psalm\Checker\Statements\Block;
 
 use PhpParser;
-use Psalm\Checker\AlgebraChecker;
 use Psalm\Checker\ScopeChecker;
 use Psalm\Checker\Statements\ExpressionChecker;
 use Psalm\Checker\StatementsChecker;
@@ -12,6 +11,7 @@ use Psalm\Context;
 use Psalm\IssueBuffer;
 use Psalm\Scope\LoopScope;
 use Psalm\Type;
+use Psalm\Type\Algebra;
 use Psalm\Type\Reconciler;
 
 class LoopChecker
@@ -58,7 +58,7 @@ class LoopChecker
             foreach ($pre_conditions as $pre_condition) {
                 $pre_condition_clauses = array_merge(
                     $pre_condition_clauses,
-                    AlgebraChecker::getFormula(
+                    Algebra::getFormula(
                         $pre_condition,
                         $loop_scope->loop_context->self,
                         $statements_checker
@@ -85,8 +85,11 @@ class LoopChecker
 
         if ($assignment_depth === 0 || $has_break_statement) {
             $inner_context = clone $loop_scope->loop_context;
+            $inner_context->loop_scope = $loop_scope;
 
             $inner_context->parent_context = $loop_scope->loop_context;
+            $old_referenced_var_ids = $inner_context->referenced_var_ids;
+            $inner_context->referenced_var_ids = [];
 
             if (!$is_do) {
                 foreach ($pre_conditions as $pre_condition) {
@@ -102,7 +105,7 @@ class LoopChecker
 
             $inner_context->protected_var_ids = $loop_scope->protected_var_ids;
 
-            $statements_checker->analyze($stmts, $inner_context, $loop_scope);
+            $statements_checker->analyze($stmts, $inner_context);
             self::updateLoopScopeContexts($loop_scope, $loop_scope->loop_parent_context);
 
             foreach ($post_expressions as $post_expression) {
@@ -115,6 +118,9 @@ class LoopChecker
                     return false;
                 }
             }
+
+            $new_referenced_var_ids = $inner_context->referenced_var_ids;
+            $inner_context->referenced_var_ids = $old_referenced_var_ids + $inner_context->referenced_var_ids;
 
             $loop_scope->loop_parent_context->vars_possibly_in_scope = array_merge(
                 $inner_context->vars_possibly_in_scope,
@@ -149,12 +155,17 @@ class LoopChecker
 
             $inner_context = clone $loop_scope->loop_context;
             $inner_context->parent_context = $loop_scope->loop_context;
+            $inner_context->loop_scope = $loop_scope;
+
+            $old_referenced_var_ids = $inner_context->referenced_var_ids;
+            $inner_context->referenced_var_ids = [];
 
             $asserted_var_ids = array_unique($asserted_var_ids);
 
             $inner_context->protected_var_ids = $loop_scope->protected_var_ids;
 
-            $statements_checker->analyze($stmts, $inner_context, $loop_scope);
+            $statements_checker->analyze($stmts, $inner_context);
+
             self::updateLoopScopeContexts($loop_scope, $pre_outer_context);
 
             $inner_context->protected_var_ids = $original_protected_var_ids;
@@ -164,6 +175,12 @@ class LoopChecker
                     return false;
                 }
             }
+
+            /**
+             * @var array<string, bool>
+             */
+            $new_referenced_var_ids = $inner_context->referenced_var_ids;
+            $inner_context->referenced_var_ids = $old_referenced_var_ids + $inner_context->referenced_var_ids;
 
             $recorded_issues = IssueBuffer::clearRecordingLevel();
             IssueBuffer::stopRecording();
@@ -180,15 +197,12 @@ class LoopChecker
                     if (in_array($var_id, $asserted_var_ids, true)) {
                         // set the vars to whatever the while/foreach loop expects them to be
                         if (!isset($pre_loop_context->vars_in_scope[$var_id])
-                            || $type->getId() !== $pre_loop_context->vars_in_scope[$var_id]->getId()
-                            || $type->from_docblock !== $pre_loop_context->vars_in_scope[$var_id]->from_docblock
+                            || !$type->equals($pre_loop_context->vars_in_scope[$var_id])
                         ) {
                             $has_changes = true;
                         }
                     } elseif (isset($pre_outer_context->vars_in_scope[$var_id])) {
-                        $str_type = $type->getId();
-
-                        if ($str_type !== $pre_outer_context->vars_in_scope[$var_id]->getId()) {
+                        if (!$type->equals($pre_outer_context->vars_in_scope[$var_id])) {
                             $has_changes = true;
 
                             // widen the foreach context type with the initial context type
@@ -201,7 +215,7 @@ class LoopChecker
                             $pre_loop_context->removeVarFromConflictingClauses($var_id);
                         }
 
-                        if ($str_type !== $loop_scope->loop_context->vars_in_scope[$var_id]->getId()) {
+                        if (!$type->equals($loop_scope->loop_context->vars_in_scope[$var_id])) {
                             $has_changes = true;
 
                             // widen the foreach context type with the initial context type
@@ -214,6 +228,10 @@ class LoopChecker
                             $pre_loop_context->removeVarFromConflictingClauses($var_id);
                         }
                     } else {
+                        // give an opportunity to redeemed UndefinedVariable issues
+                        if ($recorded_issues) {
+                            $has_changes = true;
+                        }
                         $vars_to_remove[] = $var_id;
                     }
                 }
@@ -229,15 +247,30 @@ class LoopChecker
                 }
 
                 if ($inner_context->collect_references) {
-                    foreach ($inner_context->unreferenced_vars as $var_id => $location) {
-                        if (isset($loop_scope->loop_parent_context->vars_in_scope[$var_id])
-                            && (!isset($loop_scope->loop_parent_context->unreferenced_vars[$var_id])
-                                || $loop_scope->loop_parent_context->unreferenced_vars[$var_id] !== $location)
-                        ) {
-                            $statements_checker->registerVariableUse($location);
+                    foreach ($loop_scope->possibly_unreferenced_vars as $var_id => $locations) {
+                        if (isset($inner_context->unreferenced_vars[$var_id])) {
+                            $inner_context->unreferenced_vars[$var_id] += $locations;
+                        } else {
+                            $inner_context->unreferenced_vars[$var_id] = $locations;
                         }
                     }
                 }
+
+                /*if ($inner_context->collect_references) {
+                    foreach ($inner_context->unreferenced_vars as $var_id => $locations) {
+                        if (isset($loop_scope->loop_parent_context->vars_in_scope[$var_id])
+                            && !isset($new_referenced_var_ids[$var_id])
+                        ) {
+                            if (!isset($loop_scope->loop_parent_context->unreferenced_vars[$var_id])) {
+                                $loop_scope->loop_parent_context->unreferenced_vars[$var_id] = $locations;
+                            } else {
+                                $loop_scope->loop_parent_context->unreferenced_vars[$var_id] += $locations;
+                            }
+                        } else {
+                            $statements_checker->registerVariableUses($locations);
+                        }
+                    }
+                }*/
 
                 // remove vars that were defined in the foreach
                 foreach ($vars_to_remove as $var_id) {
@@ -272,7 +305,7 @@ class LoopChecker
 
                 $inner_context->protected_var_ids = $loop_scope->protected_var_ids;
 
-                $statements_checker->analyze($stmts, $inner_context, $loop_scope);
+                $statements_checker->analyze($stmts, $inner_context);
 
                 self::updateLoopScopeContexts($loop_scope, $pre_outer_context);
 
@@ -358,8 +391,8 @@ class LoopChecker
         if ($pre_conditions && $pre_condition_clauses && !ScopeChecker::doesEverBreak($stmts)) {
             // if the loop contains an assertion and there are no break statements, we can negate that assertion
             // and apply it to the current context
-            $negated_pre_condition_types = AlgebraChecker::getTruthsFromFormula(
-                AlgebraChecker::negateFormula($pre_condition_clauses)
+            $negated_pre_condition_types = Algebra::getTruthsFromFormula(
+                Algebra::negateFormula($pre_condition_clauses)
             );
 
             if ($negated_pre_condition_types) {
@@ -393,11 +426,31 @@ class LoopChecker
         );
 
         if ($inner_context->collect_references) {
-            foreach ($inner_context->unreferenced_vars as $var_id => $location) {
+            foreach ($loop_scope->possibly_unreferenced_vars as $var_id => $locations) {
+                if (isset($inner_context->unreferenced_vars[$var_id])) {
+                    $inner_context->unreferenced_vars[$var_id] += $locations;
+                } else {
+                    $inner_context->unreferenced_vars[$var_id] = $locations;
+                }
+            }
+
+            foreach ($inner_context->unreferenced_vars as $var_id => $locations) {
+                if (!isset($new_referenced_var_ids[$var_id]) || $has_break_statement) {
+                    if (!isset($loop_scope->loop_context->unreferenced_vars[$var_id])) {
+                        $loop_scope->loop_context->unreferenced_vars[$var_id] = $locations;
+                    } else {
+                        $loop_scope->loop_context->unreferenced_vars[$var_id] += $locations;
+                    }
+                } else {
+                    $statements_checker->registerVariableUses($locations);
+                }
+            }
+
+            foreach ($loop_scope->unreferenced_vars as $var_id => $locations) {
                 if (!isset($loop_scope->loop_context->unreferenced_vars[$var_id])) {
-                    $loop_scope->loop_context->unreferenced_vars[$var_id] = $location;
-                } elseif ($loop_scope->loop_context->unreferenced_vars[$var_id] !== $location) {
-                    $statements_checker->registerVariableUse($location);
+                    $loop_scope->loop_context->unreferenced_vars[$var_id] = $locations;
+                } else {
+                    $loop_scope->loop_context->unreferenced_vars[$var_id] += $locations;
                 }
             }
         }
@@ -477,11 +530,11 @@ class LoopChecker
 
         $asserted_var_ids = Context::getNewOrUpdatedVarIds($outer_context, $loop_context);
 
-        $loop_context->clauses = AlgebraChecker::simplifyCNF(
+        $loop_context->clauses = Algebra::simplifyCNF(
             array_merge($outer_context->clauses, $pre_condition_clauses)
         );
 
-        $reconcilable_while_types = AlgebraChecker::getTruthsFromFormula($loop_context->clauses);
+        $reconcilable_while_types = Algebra::getTruthsFromFormula($loop_context->clauses);
 
         // if the while has an or as the main component, we cannot safely reason about it
         if ($pre_condition instanceof PhpParser\Node\Expr\BinaryOp &&

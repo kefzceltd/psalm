@@ -44,6 +44,8 @@ class ForChecker
 
         $for_context = clone $context;
 
+        $for_context->inside_loop = true;
+
         $project_checker = $statements_checker->getFileChecker()->project_checker;
 
         if ($project_checker->alter_code) {
@@ -88,21 +90,33 @@ class ForChecker
                 $context->vars_possibly_in_scope,
                 $for_context->vars_possibly_in_scope
             );
+
+            $context->possibly_assigned_var_ids =
+                $for_context->possibly_assigned_var_ids + $context->possibly_assigned_var_ids;
         } else {
             $context->vars_in_scope = $pre_context->vars_in_scope;
             $context->vars_possibly_in_scope = $pre_context->vars_possibly_in_scope;
         }
 
-        $context->referenced_var_ids = array_merge(
-            $for_context->referenced_var_ids,
-            $context->referenced_var_ids
-        );
+        $context->referenced_var_ids =
+            $for_context->referenced_var_ids + $context->referenced_var_ids;
 
         if ($context->collect_references) {
             $context->unreferenced_vars = array_intersect_key(
                 $for_context->unreferenced_vars,
                 $context->unreferenced_vars
             );
+        }
+
+        if ($context->collect_references) {
+            $context->unreferenced_vars = array_intersect_key(
+                $for_context->unreferenced_vars,
+                $context->unreferenced_vars
+            );
+        }
+
+        if ($context->collect_exceptions) {
+            $context->possibly_thrown_exceptions += $for_context->possibly_thrown_exceptions;
         }
 
         return null;

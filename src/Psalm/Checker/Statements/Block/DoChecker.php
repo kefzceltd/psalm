@@ -37,7 +37,7 @@ class DoChecker
             $statements_checker->addSuppressedIssues(['RedundantCondition']);
         }
 
-        $statements_checker->analyze($stmt->stmts, $do_context, $loop_scope);
+        $statements_checker->analyze($stmt->stmts, $do_context);
 
         if (!in_array('RedundantCondition', $suppressed_issues, true)) {
             $statements_checker->removeSuppressedIssues(['RedundantCondition']);
@@ -73,7 +73,7 @@ class DoChecker
             }
         }
 
-        $while_clauses = AlgebraChecker::getFormula(
+        $while_clauses = \Psalm\Type\Algebra::getFormula(
             $stmt->cond,
             $context->self,
             $statements_checker
@@ -103,7 +103,7 @@ class DoChecker
             $while_clauses = [new Clause([], true)];
         }
 
-        $reconcilable_while_types = AlgebraChecker::getTruthsFromFormula($while_clauses);
+        $reconcilable_while_types = \Psalm\Type\Algebra::getTruthsFromFormula($while_clauses);
 
         if ($reconcilable_while_types) {
             $changed_var_ids = [];
@@ -160,6 +160,10 @@ class DoChecker
 
         if ($context->collect_references) {
             $context->unreferenced_vars = $do_context->unreferenced_vars;
+        }
+
+        if ($context->collect_exceptions) {
+            $context->possibly_thrown_exceptions += $do_context->possibly_thrown_exceptions;
         }
 
         ExpressionChecker::analyze($statements_checker, $stmt->cond, $inner_loop_context);

@@ -28,6 +28,11 @@ class FileFilter
     /**
      * @var array<string>
      */
+    protected $property_ids = [];
+
+    /**
+     * @var array<string>
+     */
     protected $files_lowercase = [];
 
     /**
@@ -75,6 +80,13 @@ class FileFilter
                             'is_dir'
                         )
                     );
+
+                    if (empty($globs)) {
+                        echo 'Could not resolve config path to ' . $base_dir . DIRECTORY_SEPARATOR .
+                            (string)$directory['name'] . PHP_EOL;
+                        exit(1);
+                    }
+
                     foreach ($globs as $glob_index => $directory_path) {
                         if (!$directory_path) {
                             echo 'Could not resolve config path to ' . $base_dir . DIRECTORY_SEPARATOR .
@@ -85,6 +97,7 @@ class FileFilter
                     }
                     continue;
                 }
+
                 $directory_path = realpath($prospective_directory_path);
 
                 if (!$directory_path) {
@@ -100,7 +113,35 @@ class FileFilter
         if ($e->file) {
             /** @var \SimpleXMLElement $file */
             foreach ($e->file as $file) {
-                $file_path = realpath($base_dir . DIRECTORY_SEPARATOR . (string)$file['name']);
+                $prospective_file_path = $base_dir . DIRECTORY_SEPARATOR . (string)$file['name'];
+
+                if (strpos($prospective_file_path, '*') !== false) {
+                    $globs = array_map(
+                        'realpath',
+                        array_filter(
+                            glob($prospective_file_path),
+                            'file_exists'
+                        )
+                    );
+
+                    if (empty($globs)) {
+                        echo 'Could not resolve config path to ' . $base_dir . DIRECTORY_SEPARATOR .
+                            (string)$file['name'] . PHP_EOL;
+                        exit(1);
+                    }
+
+                    foreach ($globs as $glob_index => $file_path) {
+                        if (!$file_path) {
+                            echo 'Could not resolve config path to ' . $base_dir . DIRECTORY_SEPARATOR .
+                                (string)$file['name'] . ':' . $glob_index . PHP_EOL;
+                            exit(1);
+                        }
+                        $filter->addFile($file_path);
+                    }
+                    continue;
+                }
+
+                $file_path = realpath($prospective_file_path);
 
                 if (!$file_path) {
                     echo 'Could not resolve config path to ' . $base_dir . DIRECTORY_SEPARATOR .
@@ -123,6 +164,13 @@ class FileFilter
             /** @var \SimpleXMLElement $referenced_method */
             foreach ($e->referencedMethod as $referenced_method) {
                 $filter->method_ids[] = strtolower((string)$referenced_method['name']);
+            }
+        }
+
+        if ($e->referencedProperty) {
+            /** @var \SimpleXMLElement $referenced_property */
+            foreach ($e->referencedProperty as $referenced_property) {
+                $filter->property_ids[] = strtolower((string)$referenced_property['name']);
             }
         }
 
@@ -220,11 +268,29 @@ class FileFilter
     }
 
     /**
+     * @param  string  $property_id
+     *
+     * @return bool
+     */
+    public function allowsProperty($property_id)
+    {
+        return in_array(strtolower($property_id), $this->property_ids);
+    }
+
+    /**
      * @return array<string>
      */
     public function getDirectories()
     {
         return $this->directories;
+    }
+
+    /**
+     * @return array<string>
+     */
+    public function getFiles()
+    {
+        return $this->files;
     }
 
     /**

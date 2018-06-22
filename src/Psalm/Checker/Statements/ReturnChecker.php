@@ -136,7 +136,7 @@ class ReturnChecker
                             }
                         }
 
-                        $codebase->analyzer->incrementMixedCount($statements_checker->getCheckedFilePath());
+                        $codebase->analyzer->incrementMixedCount($statements_checker->getFilePath());
 
                         if (IssueBuffer::accepts(
                             new MixedReturnStatement(
@@ -151,7 +151,7 @@ class ReturnChecker
                         return null;
                     }
 
-                    $codebase->analyzer->incrementNonMixedCount($statements_checker->getCheckedFilePath());
+                    $codebase->analyzer->incrementNonMixedCount($statements_checker->getFilePath());
 
                     if ($local_return_type->isVoid()) {
                         if (IssueBuffer::accepts(
@@ -175,7 +175,9 @@ class ReturnChecker
                         true,
                         $has_scalar_match,
                         $type_coerced,
-                        $type_coerced_from_mixed
+                        $type_coerced_from_mixed,
+                        $to_string_cast,
+                        $type_coerced_from_scalar
                     )
                     ) {
                         // is the declared return type more specific than the inferred one?
@@ -205,19 +207,22 @@ class ReturnChecker
                                         return false;
                                     }
                                 } elseif ($local_type_part instanceof Type\Atomic\TArray
-                                    && isset($local_type_part->type_params[1]->getTypes()['class-string'])
                                     && $stmt->expr instanceof PhpParser\Node\Expr\Array_
                                 ) {
-                                    foreach ($stmt->expr->items as $item) {
-                                        if ($item && $item->value instanceof PhpParser\Node\Scalar\String_) {
-                                            if (ClassLikeChecker::checkFullyQualifiedClassLikeName(
-                                                $statements_checker,
-                                                $item->value->value,
-                                                new CodeLocation($source, $item->value),
-                                                $statements_checker->getSuppressedIssues()
-                                            ) === false
-                                            ) {
-                                                return false;
+                                    foreach ($local_type_part->type_params[1]->getTypes() as $local_array_type_part) {
+                                        if ($local_array_type_part instanceof Type\Atomic\TClassString) {
+                                            foreach ($stmt->expr->items as $item) {
+                                                if ($item && $item->value instanceof PhpParser\Node\Scalar\String_) {
+                                                    if (ClassLikeChecker::checkFullyQualifiedClassLikeName(
+                                                        $statements_checker,
+                                                        $item->value->value,
+                                                        new CodeLocation($source, $item->value),
+                                                        $statements_checker->getSuppressedIssues()
+                                                    ) === false
+                                                    ) {
+                                                        return false;
+                                                    }
+                                                }
                                             }
                                         }
                                     }

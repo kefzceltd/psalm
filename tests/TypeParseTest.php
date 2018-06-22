@@ -64,6 +64,22 @@ class TypeParseTest extends TestCase
     /**
      * @return void
      */
+    public function testNullableFullyQualified()
+    {
+        $this->assertSame('null|stdClass', (string) Type::parseString('?\\stdClass'));
+    }
+
+    /**
+     * @return void
+     */
+    public function testNullableOrNullable()
+    {
+        $this->assertSame('string|int|null', (string) Type::parseString('?string|?int'));
+    }
+
+    /**
+     * @return void
+     */
     public function testArray()
     {
         $this->assertSame('array<int, int>', (string) Type::parseString('array<int, int>'));
@@ -442,6 +458,56 @@ class TypeParseTest extends TestCase
      *
      * @return void
      */
+    public function testBadAmpersand()
+    {
+        Type::parseString('&array');
+    }
+
+    /**
+     * @expectedException \Psalm\Exception\TypeParseTreeException
+     *
+     * @return void
+     */
+    public function testBadColon()
+    {
+        Type::parseString(':array');
+    }
+
+    /**
+     * @expectedException \Psalm\Exception\TypeParseTreeException
+     *
+     * @return void
+     */
+    public function testBadEquals()
+    {
+        Type::parseString('=array');
+    }
+
+    /**
+     * @expectedException \Psalm\Exception\TypeParseTreeException
+     *
+     * @return void
+     */
+    public function testBadBar()
+    {
+        Type::parseString('|array');
+    }
+
+    /**
+     * @expectedException \Psalm\Exception\TypeParseTreeException
+     *
+     * @return void
+     */
+    public function testBadColonDash()
+    {
+        Type::parseString('array|string:-');
+    }
+
+    /**
+     * @expectedException \Psalm\Exception\TypeParseTreeException
+     *
+     * @return void
+     */
     public function testDoubleBar()
     {
         Type::parseString('PDO||Closure|numeric');
@@ -480,6 +546,65 @@ class TypeParseTest extends TestCase
             $very_large_type,
             (string) Type::parseString($very_large_type)
         );
+    }
+
+    /**
+     * @return void
+     */
+    public function testEnum()
+    {
+        $docblock_type = Type::parseString('( \'foo\\\'with\' | "bar\"bar" | "baz" | "bat\\\\" | \'bang bang\' | 1 | 2 | 3)');
+
+        $resolved_type = new Type\Union([
+            new Type\Atomic\TLiteralString('foo\'with'),
+            new Type\Atomic\TLiteralString('bar"bar'),
+            new Type\Atomic\TLiteralString('baz'),
+            new Type\Atomic\TLiteralString('bat\\'),
+            new Type\Atomic\TLiteralString('bang bang'),
+            new Type\Atomic\TLiteralInt(1),
+            new Type\Atomic\TLiteralInt(2),
+            new Type\Atomic\TLiteralInt(3)
+        ]);
+
+        $this->assertSame($resolved_type->getId(), $docblock_type->getId());
+    }
+
+    /**
+     * @return void
+     */
+    public function testEnumWithoutSpaces()
+    {
+        $docblock_type = Type::parseString('\'foo\\\'with\'|"bar\"bar"|"baz"|"bat\\\\"|\'bang bang\'|1|2|3');
+
+        $resolved_type = new Type\Union([
+            new Type\Atomic\TLiteralString('foo\'with'),
+            new Type\Atomic\TLiteralString('bar"bar'),
+            new Type\Atomic\TLiteralString('baz'),
+            new Type\Atomic\TLiteralString('bat\\'),
+            new Type\Atomic\TLiteralString('bang bang'),
+            new Type\Atomic\TLiteralInt(1),
+            new Type\Atomic\TLiteralInt(2),
+            new Type\Atomic\TLiteralInt(3)
+        ]);
+
+        $this->assertSame($resolved_type->getId(), $docblock_type->getId());
+    }
+
+    /**
+     * @return void
+     */
+    public function testEnumWithClassConstants()
+    {
+        $docblock_type = Type::parseString('("baz" | One2::TWO_THREE | Foo::BAR_BAR | Bat\Bar::BAZ_BAM)');
+
+        $resolved_type = new Type\Union([
+            new Type\Atomic\TLiteralString('baz'),
+            new Type\Atomic\TScalarClassConstant('One2', 'TWO_THREE'),
+            new Type\Atomic\TScalarClassConstant('Foo', 'BAR_BAR'),
+            new Type\Atomic\TScalarClassConstant('Bat\\Bar', 'BAZ_BAM'),
+        ]);
+
+        $this->assertSame($resolved_type->getId(), $docblock_type->getId());
     }
 
     /**

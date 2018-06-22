@@ -148,6 +148,13 @@ class Context
     public $collect_references = false;
 
     /**
+     * Whether or not to track exceptions
+     *
+     * @var bool
+     */
+    public $collect_exceptions = false;
+
+    /**
      * A list of variables that have been referenced
      *
      * @var array<string, bool>
@@ -157,7 +164,7 @@ class Context
     /**
      * A list of variables that have never been referenced
      *
-     * @var array<string, CodeLocation>
+     * @var array<string, array<string, CodeLocation>>
      */
     public $unreferenced_vars = [];
 
@@ -188,6 +195,20 @@ class Context
     public $assigned_var_ids = [];
 
     /**
+     * A list of vars that have been may have been assigned to
+     *
+     * @var array<string, bool>
+     */
+    public $possibly_assigned_var_ids = [];
+
+    /**
+     * A list of classes or interfaces that may have been thrown
+     *
+     * @var array<string, bool>
+     */
+    public $possibly_thrown_exceptions = [];
+
+    /**
      * @var bool
      */
     public $is_global = false;
@@ -210,6 +231,21 @@ class Context
      * @var bool
      */
     public $inside_case = false;
+
+    /**
+     * @var bool
+     */
+    public $inside_loop = false;
+
+    /**
+     * @var Scope\LoopScope|null
+     */
+    public $loop_scope = null;
+
+    /**
+     * @var Scope\SwitchScope|null
+     */
+    public $switch_scope = null;
 
     /**
      * @param string|null $self
@@ -278,7 +314,7 @@ class Context
 
                 // if the type changed within the block of statements, process the replacement
                 // also never allow ourselves to remove all types from a union
-                if ((!$new_type || $old_type->getId() !== $new_type->getId())
+                if ((!$new_type || !$old_type->equals($new_type))
                     && ($new_type || count($existing_type->getTypes()) > 1)
                 ) {
                     $existing_type->substitute($old_type, $new_type);
@@ -316,9 +352,7 @@ class Context
             if (!$this_type->failed_reconciliation
                 && !$this_type->isEmpty()
                 && !$new_type->isEmpty()
-                && ($this_type->getId() !== $new_type->getId()
-                    || $this_type->initialized !== $new_type->initialized
-                    || $this_type->from_calculation !== $new_type->from_calculation)
+                && !$this_type->equals($new_type)
             ) {
                 $redefined_vars[$var_id] = $this_type;
             }
@@ -372,8 +406,7 @@ class Context
 
         foreach ($new_context->vars_in_scope as $var_id => $context_type) {
             if (!isset($original_context->vars_in_scope[$var_id])
-                || $original_context->vars_in_scope[$var_id]->getId() !== $context_type->getId()
-                || $original_context->vars_in_scope[$var_id]->possibly_undefined !== $context_type->possibly_undefined
+                || !$original_context->vars_in_scope[$var_id]->equals($context_type)
             ) {
                 $redefined_var_ids[] = $var_id;
             }
@@ -414,6 +447,7 @@ class Context
             /** @return bool */
             function (Clause $c) use ($changed_var_ids) {
                 return count($c->possibilities) > 1
+                    || $c->wedge
                     || !in_array(array_keys($c->possibilities)[0], $changed_var_ids, true);
             }
         );
@@ -438,7 +472,7 @@ class Context
         $clauses_to_keep = [];
 
         foreach ($clauses as $clause) {
-            \Psalm\Checker\AlgebraChecker::calculateNegation($clause);
+            \Psalm\Type\Algebra::calculateNegation($clause);
 
             $quoted_remove_var_id = preg_quote($remove_var_id);
 
@@ -463,7 +497,7 @@ class Context
                 foreach ($clause->possibilities[$remove_var_id] as $type) {
                     // empty and !empty are not definitive for arrays and scalar types
                     if (($type === '!falsy' || $type === 'falsy') &&
-                        ($new_type->hasArray() || $new_type->hasNumericType())
+                        ($new_type->hasArray() || $new_type->hasPossiblyNumericType())
                     ) {
                         $type_changed = true;
                         break;
@@ -663,7 +697,7 @@ class Context
 
             if ($this->collect_references && $statements_checker) {
                 if (isset($this->unreferenced_vars[$var_name])) {
-                    $statements_checker->registerVariableUse($this->unreferenced_vars[$var_name]);
+                    $statements_checker->registerVariableUses($this->unreferenced_vars[$var_name]);
                 }
 
                 unset($this->unreferenced_vars[$var_name]);

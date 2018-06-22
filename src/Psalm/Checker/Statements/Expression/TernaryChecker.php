@@ -2,12 +2,12 @@
 namespace Psalm\Checker\Statements\Expression;
 
 use PhpParser;
-use Psalm\Checker\AlgebraChecker;
 use Psalm\Checker\Statements\ExpressionChecker;
 use Psalm\Checker\StatementsChecker;
 use Psalm\CodeLocation;
 use Psalm\Context;
 use Psalm\Type;
+use Psalm\Type\Algebra;
 use Psalm\Type\Reconciler;
 
 class TernaryChecker
@@ -39,19 +39,60 @@ class TernaryChecker
 
         $t_if_context = clone $context;
 
-        $if_clauses = AlgebraChecker::getFormula(
+        $if_clauses = \Psalm\Type\Algebra::getFormula(
             $stmt->cond,
             $statements_checker->getFQCLN(),
             $statements_checker
         );
 
-        $ternary_clauses = AlgebraChecker::simplifyCNF(array_merge($context->clauses, $if_clauses));
+        $mixed_var_ids = ['$_GET', '$_POST', '$_SERVER'];
 
-        $negated_clauses = AlgebraChecker::negateFormula($if_clauses);
+        foreach ($context->vars_in_scope as $var_id => $type) {
+            if ($type->isMixed()) {
+                $mixed_var_ids[] = $var_id;
+            }
+        }
 
-        $negated_if_types = AlgebraChecker::getTruthsFromFormula($negated_clauses);
+        foreach ($context->vars_possibly_in_scope as $var_id => $_) {
+            if (!isset($context->vars_in_scope[$var_id])) {
+                $mixed_var_ids[] = $var_id;
+            }
+        }
 
-        $reconcilable_if_types = AlgebraChecker::getTruthsFromFormula($ternary_clauses);
+
+        $if_clauses = array_values(
+            array_map(
+                /**
+                 * @return \Psalm\Clause
+                 */
+                function (\Psalm\Clause $c) use ($mixed_var_ids) {
+                    $keys = array_keys($c->possibilities);
+
+                    foreach ($keys as $key) {
+                        foreach ($mixed_var_ids as $mixed_var_id) {
+                            if (preg_match('/^' . preg_quote($mixed_var_id, '/') . '(\[|-)/', $key)) {
+                                return new \Psalm\Clause([], true);
+                            }
+                        }
+                    }
+
+                    return $c;
+                },
+                $if_clauses
+            )
+        );
+
+        $ternary_clauses = Algebra::simplifyCNF(array_merge($context->clauses, $if_clauses));
+
+        $negated_clauses = Algebra::negateFormula($if_clauses);
+
+        $negated_if_types = Algebra::getTruthsFromFormula(
+            Algebra::simplifyCNF(
+                array_merge($context->clauses, $negated_clauses)
+            )
+        );
+
+        $reconcilable_if_types = Algebra::getTruthsFromFormula($ternary_clauses, $new_referenced_var_ids);
 
         $changed_var_ids = [];
 
@@ -110,9 +151,23 @@ class TernaryChecker
 
         foreach ($t_else_context->vars_in_scope as $var_id => $type) {
             if (isset($context->vars_in_scope[$var_id])) {
-                $context->vars_in_scope[$var_id] = Type::combineUnionTypes($context->vars_in_scope[$var_id], $type);
+                $context->vars_in_scope[$var_id] = Type::combineUnionTypes(
+                    $context->vars_in_scope[$var_id],
+                    $type
+                );
+            } elseif (isset($t_if_context->vars_in_scope[$var_id])) {
+                $context->vars_in_scope[$var_id] = Type::combineUnionTypes(
+                    $t_if_context->vars_in_scope[$var_id],
+                    $type
+                );
             }
         }
+
+        $context->vars_possibly_in_scope = array_merge(
+            $context->vars_possibly_in_scope,
+            $t_if_context->vars_possibly_in_scope,
+            $t_else_context->vars_possibly_in_scope
+        );
 
         $context->referenced_var_ids = array_merge(
             $context->referenced_var_ids,

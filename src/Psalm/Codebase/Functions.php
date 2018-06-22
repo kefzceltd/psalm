@@ -52,7 +52,8 @@ class Functions
             throw new \UnexpectedValueException('$statements_checker must not be null here');
         }
 
-        $file_path = $statements_checker->getFilePath();
+        $file_path = $statements_checker->getRootFilePath();
+        $checked_file_path = $statements_checker->getFilePath();
         $file_storage = $this->file_storage_provider->get($file_path);
 
         $function_checkers = $statements_checker->getFunctionCheckers();
@@ -60,13 +61,9 @@ class Functions
         if (isset($function_checkers[$function_id])) {
             $function_id = $function_checkers[$function_id]->getMethodId();
 
-            if (!isset($file_storage->functions[$function_id])) {
-                throw new \UnexpectedValueException(
-                    'Expecting ' . $function_id . ' to have storage in ' . $file_path
-                );
+            if (isset($file_storage->functions[$function_id])) {
+                return $file_storage->functions[$function_id];
             }
-
-            return $file_storage->functions[$function_id];
         }
 
         // closures can be returned here
@@ -75,6 +72,14 @@ class Functions
         }
 
         if (!isset($file_storage->declaring_function_ids[$function_id])) {
+            if ($checked_file_path !== $file_path) {
+                $file_storage = $this->file_storage_provider->get($checked_file_path);
+
+                if (isset($file_storage->functions[$function_id])) {
+                    return $file_storage->functions[$function_id];
+                }
+            }
+
             throw new \UnexpectedValueException(
                 'Expecting ' . $function_id . ' to have storage in ' . $file_path
             );
@@ -121,7 +126,7 @@ class Functions
      */
     public function functionExists(StatementsChecker $statements_checker, $function_id)
     {
-        $file_storage = $this->file_storage_provider->get($statements_checker->getFilePath());
+        $file_storage = $this->file_storage_provider->get($statements_checker->getRootFilePath());
 
         if (isset($file_storage->declaring_function_ids[$function_id])) {
             return true;

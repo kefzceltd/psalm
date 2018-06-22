@@ -36,6 +36,15 @@ class ArrayAssignmentTest extends TestCase
     public function providerFileCheckerValidCodeParse()
     {
         return [
+            'genericArrayCreationWithSingleIntValue' => [
+                '<?php
+                    $out = [];
+
+                    $out[] = 4;',
+                'assertions' => [
+                    '$out' => 'array<int, int>',
+                ],
+            ],
             'genericArrayCreationWithInt' => [
                 '<?php
                     $out = [];
@@ -123,7 +132,7 @@ class ArrayAssignmentTest extends TestCase
                             break;
                     }',
                 'assertions' => [
-                    '$out' => 'array<int, int|string>',
+                    '$out' => 'array<int, string|int>',
                 ],
             ],
             'genericArrayCreationWithElementsAddedInSwitchWithNothing' => [
@@ -143,7 +152,7 @@ class ArrayAssignmentTest extends TestCase
                             // do nothing
                     }',
                 'assertions' => [
-                    '$out' => 'array<int, int|string>',
+                    '$out' => 'array<int, string|int>',
                 ],
             ],
             'implicitIntArrayCreation' => [
@@ -481,9 +490,9 @@ class ArrayAssignmentTest extends TestCase
                 'assertions' => [
                     '$a' => 'array{a:int, 0:int}',
                     '$b' => 'array<string|int, int>',
-                    '$c' => 'array<string|int, int>',
+                    '$c' => 'array<int|string, int>',
                     '$d' => 'array<int|string, int>',
-                    '$e' => 'array<int|string, int>',
+                    '$e' => 'array<string|int, int>',
                 ],
             ],
             'updateStringIntKeyWithIntRootAndNumberOffset' => [
@@ -525,9 +534,9 @@ class ArrayAssignmentTest extends TestCase
                     $e[0][$string] = 5;',
                 'assertions' => [
                     '$b' => 'array{0:array<string|int, int>}',
-                    '$c' => 'array{0:array<string|int, int>}',
+                    '$c' => 'array{0:array<int|string, int>}',
                     '$d' => 'array{0:array<int|string, int>}',
-                    '$e' => 'array{0:array<int|string, int>}',
+                    '$e' => 'array{0:array<string|int, int>}',
                 ],
             ],
             'updateStringIntKeyWithObjectLikeRootAndNumberOffset' => [
@@ -569,9 +578,9 @@ class ArrayAssignmentTest extends TestCase
                     $e["root"][$string] = 5;',
                 'assertions' => [
                     '$b' => 'array{root:array<string|int, int>}',
-                    '$c' => 'array{root:array<string|int, int>}',
+                    '$c' => 'array{root:array<int|string, int>}',
                     '$d' => 'array{root:array<int|string, int>}',
-                    '$e' => 'array{root:array<int|string, int>}',
+                    '$e' => 'array{root:array<string|int, int>}',
                 ],
             ],
             'mixedArrayAssignmentWithStringKeys' => [
@@ -714,6 +723,7 @@ class ArrayAssignmentTest extends TestCase
                         /**
                          * @psalm-suppress InvalidArrayOffset
                          * @psalm-suppress MixedOperand
+                         * @psalm-suppress PossiblyUndefinedArrayOffset
                          */
                         $a["b"]["d"] += $a["b"][$i];
                     }',
@@ -726,7 +736,7 @@ class ArrayAssignmentTest extends TestCase
                     $a_keys = array_keys($a);',
                 'assertions' => [
                     '$a' => 'array{0:string, 1:int}',
-                    '$a_values' => 'array<int, int|string>',
+                    '$a_values' => 'array<int, string|int>',
                     '$a_keys' => 'array<int, int>',
                 ],
             ],
@@ -894,6 +904,34 @@ class ArrayAssignmentTest extends TestCase
                     'MixedArgument', 'LessSpecificReturnStatement', 'MoreSpecificReturnType',
                 ],
             ],
+            'accessArrayAfterSuppressingBugs' => [
+                '<?php
+                    $a = [];
+
+                    foreach (["one", "two", "three"] as $key) {
+                      /**
+                       * @psalm-suppress EmptyArrayAccess
+                       * @psalm-suppress InvalidOperand
+                       */
+                      $a[$key] += 5;
+                    }
+
+                    $a["four"] = true;
+
+                    if ($a["one"]) {}',
+            ],
+            'noDuplicateImplicitIntArrayKey' => [
+                '<?php
+                    $arr = [1 => 0, 1, 2, 3];
+                    $arr = [1 => "one", 2 => "two", "three")',
+            ],
+            'constArrayAssignment' => [
+                '<?php
+                    const BAR = 2;
+                    $arr = [1 => 2];
+                    $arr[BAR] = [6];
+                    $bar = $arr[BAR][0];',
+            ],
         ];
     }
 
@@ -998,6 +1036,36 @@ class ArrayAssignmentTest extends TestCase
                         echo $a[0];
                     }',
                 'error_message' => 'PossiblyUndefinedArrayOffset',
+            ],
+            'duplicateStringArrayKey' => [
+                '<?php
+                    $arr = [
+                        "a" => 1,
+                        "b" => 2,
+                        "c" => 3,
+                        "c" => 4,
+                    ];',
+                'error_message' => 'DuplicateArrayKey',
+            ],
+            'duplicateIntArrayKey' => [
+                '<?php
+                    $arr = [
+                        0 => 1,
+                        1 => 2,
+                        2 => 3,
+                        2 => 4,
+                    ];',
+                'error_message' => 'DuplicateArrayKey',
+            ],
+            'duplicateImplicitIntArrayKey' => [
+                '<?php
+                    $arr = [
+                        1,
+                        2,
+                        3,
+                        2 => 4,
+                    ];',
+                'error_message' => 'DuplicateArrayKey',
             ],
         ];
     }

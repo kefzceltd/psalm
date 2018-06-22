@@ -152,7 +152,7 @@ class Codebase
             $debug_output
         );
 
-        $this->analyzer = new Codebase\Analyzer($config, $file_provider, $debug_output);
+        $this->analyzer = new Codebase\Analyzer($config, $file_provider, $file_storage_provider, $debug_output);
 
         $this->functions = new Codebase\Functions($file_storage_provider, $this->reflection);
         $this->methods = new Codebase\Methods($config, $classlike_storage_provider);
@@ -571,7 +571,7 @@ class Codebase
     /**
      * @param  string $method_id
      *
-     * @return array<int, \Psalm\FunctionLikeParameter>
+     * @return array<int, \Psalm\Storage\FunctionLikeParameter>
      */
     public function getMethodParams($method_id)
     {
