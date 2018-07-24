@@ -380,6 +380,14 @@ class TypeChecker
             return false;
         }
 
+        if ($input_type_part instanceof TNull && $container_type_part instanceof TNull) {
+            return true;
+        }
+
+        if ($input_type_part instanceof TNull || $container_type_part instanceof TNull) {
+            return false;
+        }
+
         if ($input_type_part->shallowEquals($container_type_part) ||
             (
                 $input_type_part instanceof TNamedObject
@@ -579,17 +587,7 @@ class TypeChecker
                 return false;
             }
 
-            if ($input_type_part instanceof TNamedObject
-                && (strtolower($input_type_part->value) === 'traversable'
-                    || $codebase->classExtendsOrImplements(
-                        $input_type_part->value,
-                        'Traversable'
-                    ) || $codebase->interfaceExtends(
-                        $input_type_part->value,
-                        'Traversable'
-                    )
-                )
-            ) {
+            if ($input_type_part->isTraversable($codebase)) {
                 return true;
             }
         }
@@ -799,10 +797,6 @@ class TypeChecker
 
             foreach ($input_type_part->type_params as $i => $input_param) {
                 if (!isset($container_type_part->type_params[$i])) {
-                    $type_coerced = true;
-                    $type_coerced_from_mixed = true;
-
-                    $all_types_contain = false;
                     break;
                 }
 

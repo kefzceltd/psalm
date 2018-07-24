@@ -7,20 +7,80 @@ use Psalm\IssueBuffer;
 
 // show all errors
 error_reporting(-1);
-ini_set('display_errors', 1);
-ini_set('display_startup_errors', 1);
-ini_set('memory_limit', '4096M');
+
+$valid_short_options = [
+    'f:',
+    'm',
+    'h',
+    'v',
+    'c:',
+    'i',
+    'r:',
+];
+
+$valid_long_options = [
+    'clear-cache',
+    'config:',
+    'debug',
+    'debug-by-line',
+    'diff',
+    'disable-extension:',
+    'find-dead-code',
+    'find-references-to:',
+    'help',
+    'init',
+    'monochrome',
+    'no-cache',
+    'output-format:',
+    'plugin:',
+    'report:',
+    'root:',
+    'show-info:',
+    'show-snippet:',
+    'stats',
+    'threads:',
+    'use-ini-defaults',
+    'version',
+];
+
+$args = array_slice($argv, 1);
+
+array_map(
+    /**
+     * @param string $arg
+     *
+     * @return void
+     */
+    function ($arg) use ($valid_long_options, $valid_short_options) {
+        if (substr($arg, 0, 2) === '--' && $arg !== '--') {
+            $arg_name = preg_replace('/=.*$/', '', substr($arg, 2));
+
+            if (!in_array($arg_name, $valid_long_options) && !in_array($arg_name . ':', $valid_long_options)) {
+                echo 'Unrecognised argument "--' . $arg_name . '"' . PHP_EOL
+                    . 'Type --help to see a list of supported arguments'. PHP_EOL;
+                exit(1);
+            }
+        } elseif (substr($arg, 0, 2) === '-' && $arg !== '-' && $arg !== '--') {
+            $arg_name = preg_replace('/=.*$/', '', substr($arg, 1));
+
+            if (!in_array($arg_name, $valid_short_options) && !in_array($arg_name . ':', $valid_short_options)) {
+                echo 'Unrecognised argument "-' . $arg_name . '"' . PHP_EOL
+                    . 'Type --help to see a list of supported arguments'. PHP_EOL;
+                exit(1);
+            }
+        }
+    },
+    $args
+);
 
 // get options from command line
-$options = getopt(
-    'f:mhvc:ir:',
-    [
-        'help', 'debug', 'debug-by-line', 'config:', 'monochrome', 'show-info:', 'diff',
-        'output-format:', 'report:', 'find-dead-code', 'init',
-        'find-references-to:', 'root:', 'threads:', 'clear-cache', 'no-cache',
-        'version', 'plugin:', 'stats', 'show-snippet:',
-    ]
-);
+$options = getopt(implode('', $valid_short_options), $valid_long_options);
+
+if (!array_key_exists('use-ini-defaults', $options)) {
+    ini_set('display_errors', 1);
+    ini_set('display_startup_errors', 1);
+    ini_set('memory_limit', 4 * 1024 * 1024 * 1024);
+}
 
 if (array_key_exists('help', $options)) {
     $options['h'] = false;
@@ -116,6 +176,12 @@ Options:
     --stats
         Shows a breakdown of Psalm's ability to infer types in the codebase
 
+    --use-ini-defaults
+        Use PHP-provided ini defaults for memory and error display
+
+    --disable-extension=[extension]
+        Used to disable certain extensions while Psalm is running.
+
 HELP;
 
     exit;
@@ -152,8 +218,29 @@ if (array_key_exists('v', $options)) {
     exit;
 }
 
+$threads = isset($options['threads']) ? (int)$options['threads'] : 1;
+
+$ini_handler = new \Psalm\Fork\PsalmRestarter('PSALM');
+
+if (isset($options['disable-extension'])) {
+    if (is_array($options['disable-extension'])) {
+        /** @psalm-suppress MixedAssignment */
+        foreach ($options['disable-extension'] as $extension) {
+            if (is_string($extension)) {
+                $ini_handler->disableExtension($extension);
+            }
+        }
+    } elseif (is_string($options['disable-extension'])) {
+        $ini_handler->disableExtension($options['disable-extension']);
+    }
+}
+
+if ($threads > 1) {
+    $ini_handler->disableExtension('grpc');
+}
+
 // If XDebug is enabled, restart without it
-(new \Composer\XdebugHandler\XdebugHandler('PSALM'))->check();
+$ini_handler->check();
 
 setlocale(LC_CTYPE, 'C');
 
@@ -163,7 +250,7 @@ if (isset($options['i'])) {
     }
 
     $args = array_values(array_filter(
-        array_slice($argv, 1),
+        $args,
         /**
          * @param string $arg
          *
@@ -273,8 +360,6 @@ $find_references_to = isset($options['find-references-to']) && is_string($option
     ? $options['find-references-to']
     : null;
 
-$threads = isset($options['threads']) ? (int)$options['threads'] : 1;
-
 $cache_provider = isset($options['no-cache'])
     ? new Psalm\Provider\NoCache\NoParserCacheProvider()
     : new Psalm\Provider\ParserCacheProvider();
@@ -309,6 +394,8 @@ if (isset($options['clear-cache'])) {
     exit;
 }
 
+$debug = array_key_exists('debug', $options) || array_key_exists('debug-by-line', $options);
+
 $project_checker = new ProjectChecker(
     $config,
     new Psalm\Provider\FileProvider(),
@@ -319,12 +406,12 @@ $project_checker = new ProjectChecker(
     $show_info,
     $output_format,
     $threads,
-    array_key_exists('debug', $options) || array_key_exists('debug-by-line', $options),
+    $debug,
     isset($options['report']) && is_string($options['report']) ? $options['report'] : null,
     !isset($options['show-snippet']) || $options['show-snippet'] !== "false"
 );
 
-$config->visitComposerAutoloadFiles($project_checker);
+$config->visitComposerAutoloadFiles($project_checker, $debug);
 
 if (array_key_exists('debug-by-line', $options)) {
     $project_checker->debug_lines = true;

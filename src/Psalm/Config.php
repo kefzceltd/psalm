@@ -277,6 +277,13 @@ class Config
     /** @var ClassLoader|null */
     private $composer_class_loader;
 
+    /**
+     * Custom functions that always exit
+     *
+     * @var array<string, bool>
+     */
+    public $exit_functions = [];
+
     protected function __construct()
     {
         self::$instance = $this;
@@ -564,7 +571,14 @@ class Config
         if (isset($config_xml->ignoreExceptions) && isset($config_xml->ignoreExceptions->class)) {
             /** @var \SimpleXMLElement $exception_class */
             foreach ($config_xml->ignoreExceptions->class as $exception_class) {
-                $config->ignored_exceptions[(string)$exception_class ['name']] = true;
+                $config->ignored_exceptions[(string) $exception_class['name']] = true;
+            }
+        }
+
+        if (isset($config_xml->exitFunctions) && isset($config_xml->exitFunctions->function)) {
+            /** @var \SimpleXMLElement $exit_function */
+            foreach ($config_xml->exitFunctions->function as $exit_function) {
+                $config->exit_functions[strtolower((string) $exit_function['name'])] = true;
             }
         }
 
@@ -602,14 +616,6 @@ class Config
                 $config->issue_handlers[$key] = IssueHandler::loadFromXMLElement($issue_handler, $base_dir);
             }
         }
-
-        if ($config->autoloader) {
-            // do this in a separate method so scope does not leak
-            $config->requireAutoloader($base_dir . DIRECTORY_SEPARATOR . $config->autoloader);
-        }
-
-        $config->collectPredefinedConstants();
-        $config->collectPredefinedFunctions();
 
         return $config;
     }
@@ -819,7 +825,7 @@ class Config
      */
     public function shortenFileName($file_name)
     {
-        return preg_replace('/^' . preg_quote($this->base_dir, DIRECTORY_SEPARATOR) . '/', '', $file_name);
+        return preg_replace('/^' . preg_quote($this->base_dir, '/') . '/', '', $file_name);
     }
 
     /**
@@ -1010,11 +1016,13 @@ class Config
     }
 
     /**
+     * @param bool $debug
+     *
      * @return void
      */
-    public function visitStubFiles(Codebase $codebase)
+    public function visitStubFiles(Codebase $codebase, $debug = false)
     {
-        $codebase->register_global_functions = true;
+        $codebase->register_stub_files = true;
 
         // note: don't realpath $generic_stubs_path, or phar version will fail
         $generic_stubs_path = __DIR__ . '/Stubs/CoreGenericFunctions.php';
@@ -1032,16 +1040,21 @@ class Config
 
         $stub_files = array_merge([$generic_stubs_path, $generic_classes_path], $this->stub_files);
 
-        foreach ($stub_files as $stub_file_path) {
-            $file_storage = $codebase->createFileStorageForPath($stub_file_path);
-            $file_to_scan = new FileScanner($stub_file_path, $this->shortenFileName($stub_file_path), false);
-            $file_to_scan->scan(
-                $codebase,
-                $file_storage
-            );
+        foreach ($stub_files as $file_path) {
+            $codebase->scanner->addFileToShallowScan($file_path);
         }
 
-        $codebase->register_global_functions = false;
+        if ($debug) {
+            echo 'Registering stub files' . "\n";
+        }
+
+        $codebase->scanFiles();
+
+        if ($debug) {
+            echo 'Finished registering stub files' . "\n";
+        }
+
+        $codebase->register_stub_files = false;
     }
 
     /**
@@ -1101,67 +1114,89 @@ class Config
     }
 
     /**
+     * @param bool $debug
+     *
      * @return void
      *
      * @psalm-suppress MixedAssignment
      * @psalm-suppress MixedArrayAccess
      */
-    public function visitComposerAutoloadFiles(ProjectChecker $project_checker)
+    public function visitComposerAutoloadFiles(ProjectChecker $project_checker, $debug = false)
     {
+        $this->collectPredefinedConstants();
+        $this->collectPredefinedFunctions();
+
         $composer_json_path = $this->base_dir . 'composer.json'; // this should ideally not be hardcoded
-
-        if (!file_exists($composer_json_path)) {
-            return;
-        }
-
-        /** @psalm-suppress PossiblyFalseArgument */
-        if (!$composer_json = json_decode(file_get_contents($composer_json_path), true)) {
-            throw new \UnexpectedValueException('Invalid composer.json at ' . $composer_json_path);
-        }
 
         $autoload_files_files = [];
 
-        if (isset($composer_json['autoload']['files'])) {
-            /** @var string[] */
-            $composer_autoload_files = $composer_json['autoload']['files'];
+        if ($this->autoloader) {
+            $autoload_files_files[] = $this->autoloader;
+        }
 
-            foreach ($composer_autoload_files as $file) {
-                $file_path = realpath($this->base_dir . $file);
+        if (file_exists($composer_json_path)) {
+            /** @psalm-suppress PossiblyFalseArgument */
+            if (!$composer_json = json_decode(file_get_contents($composer_json_path), true)) {
+                throw new \UnexpectedValueException('Invalid composer.json at ' . $composer_json_path);
+            }
 
-                if ($file_path && file_exists($file_path)) {
-                    $autoload_files_files[] = $file_path;
+            if (isset($composer_json['autoload']['files'])) {
+                /** @var string[] */
+                $composer_autoload_files = $composer_json['autoload']['files'];
+
+                foreach ($composer_autoload_files as $file) {
+                    $file_path = realpath($this->base_dir . $file);
+
+                    if ($file_path && file_exists($file_path)) {
+                        $autoload_files_files[] = $file_path;
+                    }
                 }
+            }
+
+            $vendor_autoload_files_path
+                = $this->base_dir . DIRECTORY_SEPARATOR . 'vendor'
+                    . DIRECTORY_SEPARATOR . 'composer' . DIRECTORY_SEPARATOR . 'autoload_files.php';
+
+            if (file_exists($vendor_autoload_files_path)) {
+                /**
+                 * @var string[]
+                 * @psalm-suppress UnresolvableInclude
+                 */
+                $vendor_autoload_files = require $vendor_autoload_files_path;
+
+                $autoload_files_files = array_merge($autoload_files_files, $vendor_autoload_files);
             }
         }
 
-        $vendor_autoload_files_path
-            = $this->base_dir . DIRECTORY_SEPARATOR . 'vendor'
-                . DIRECTORY_SEPARATOR . 'composer' . DIRECTORY_SEPARATOR . 'autoload_files.php';
-
-        if (file_exists($vendor_autoload_files_path)) {
-            /**
-             * @var string[]
-             * @psalm-suppress UnresolvableInclude
-             */
-            $vendor_autoload_files = require $vendor_autoload_files_path;
-
-            $autoload_files_files = array_merge($autoload_files_files, $vendor_autoload_files);
-        }
+        $autoload_files_files = array_unique($autoload_files_files);
 
         if ($autoload_files_files) {
             $codebase = $project_checker->codebase;
-            $codebase->register_global_functions = true;
+            $codebase->register_autoload_files = true;
 
             foreach ($autoload_files_files as $file_path) {
-                $file_storage = $codebase->createFileStorageForPath($file_path);
-                $file_to_scan = new \Psalm\Scanner\FileScanner($file_path, $this->shortenFileName($file_path), false);
-                $file_to_scan->scan(
-                    $codebase,
-                    $file_storage
-                );
+                $codebase->scanner->addFileToDeepScan($file_path);
             }
 
-            $project_checker->codebase->register_global_functions = false;
+            if ($debug) {
+                echo 'Registering autoloaded files' . "\n";
+            }
+
+            $codebase->scanner->scanFiles($codebase->classlikes);
+
+            if ($debug) {
+                echo 'Finished registering autoloaded files' . "\n";
+            }
+
+            $project_checker->codebase->register_autoload_files = false;
+        }
+
+        if ($this->autoloader) {
+            // do this in a separate method so scope does not leak
+            $this->requireAutoloader($this->base_dir . DIRECTORY_SEPARATOR . $this->autoloader);
+
+            $this->collectPredefinedConstants();
+            $this->collectPredefinedFunctions();
         }
     }
 

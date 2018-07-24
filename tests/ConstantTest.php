@@ -191,6 +191,36 @@ class ConstantTest extends TestCase
                 'assertions' => [],
                 'error_levels' => ['MixedArgument', 'MixedArrayOffset', 'MixedAssignment'],
             ],
+            'lateConstantResolution' => [
+                '<?php
+                    class A {
+                        const FOO = "foo";
+                    }
+
+                    class B {
+                        const BAR = [
+                            A::FOO
+                        ];
+                        const BAR2 = A::FOO;
+                    }
+
+                    $a = B::BAR[0];
+                    $b = B::BAR2;',
+                'assertions' => [
+                    '$a' => 'string',
+                    '$b' => 'string',
+                ],
+            ],
+            'allowConstCheckForDifferentPlatforms' => [
+                '<?php
+                    if ("phpdbg" === \PHP_SAPI) {}',
+            ],
+            'stdinout' => [
+                '<?php
+                    echo fread(STDIN, 100);
+                    fwrite(STDOUT, "asd");
+                    fwrite(STDERR, "zcx");'
+            ],
         ];
     }
 
@@ -255,6 +285,14 @@ class ConstantTest extends TestCase
 
                     if (C::ARR[C::A] === "two") {}',
                 'error_message' => 'TypeDoesNotContainType',
+            ],
+            'missingClassConstInArray' => [
+                '<?php
+                    class A {
+                        const B = 1;
+                        const C = [B];
+                    }',
+                'error_message' => 'UndefinedConstant',
             ],
         ];
     }

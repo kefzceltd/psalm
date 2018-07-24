@@ -495,13 +495,13 @@ class ClassLikes
             return true;
         }
 
-        return in_array($possible_parent, $this->getParentInterfaces($interface_name), true);
+        return isset($this->getParentInterfaces($interface_name)[strtolower($possible_parent)]);
     }
 
     /**
      * @param  string         $fq_interface_name
      *
-     * @return array<string>   all interfaces extended by $interface_name
+     * @return array<string, string>   all interfaces extended by $interface_name
      */
     public function getParentInterfaces($fq_interface_name)
     {
@@ -629,7 +629,6 @@ class ClassLikes
             }
 
             if ($classlike_storage->location
-                && $this->config
                 && $this->config->isInProjectDirs($classlike_storage->location->file_path)
                 && !$classlike_storage->is_trait
             ) {
@@ -791,7 +790,8 @@ class ClassLikes
                             'Method ' . $method_id . ' is never used',
                             $method_location,
                             $method_id
-                        )
+                        ),
+                        $method_storage->suppressed_issues
                     )) {
                         // fall through
                     }

@@ -11,6 +11,7 @@ use Psalm\Checker\InterfaceChecker;
 use Psalm\Checker\ProjectChecker;
 use Psalm\Checker\ScopeChecker;
 use Psalm\Checker\Statements\ExpressionChecker;
+use Psalm\Checker\StatementsChecker;
 use Psalm\Checker\TypeChecker;
 use Psalm\CodeLocation;
 use Psalm\Context;
@@ -24,10 +25,12 @@ use Psalm\Issue\MismatchingDocblockReturnType;
 use Psalm\Issue\MissingClosureReturnType;
 use Psalm\Issue\MissingReturnType;
 use Psalm\Issue\MixedInferredReturnType;
+use Psalm\Issue\MixedTypeCoercion;
 use Psalm\Issue\MoreSpecificReturnType;
 use Psalm\IssueBuffer;
 use Psalm\StatementsSource;
 use Psalm\Storage\FunctionLikeStorage;
+use Psalm\Storage\MethodStorage;
 use Psalm\Type;
 use Psalm\Type\TypeCombination;
 
@@ -66,9 +69,10 @@ class ReturnTypeChecker
 
         $is_to_string = $function instanceof ClassMethod && strtolower($function->name->name) === '__tostring';
 
-        if ($function instanceof ClassMethod &&
-            substr($function->name->name, 0, 2) === '__' &&
-            !$is_to_string
+        if ($function instanceof ClassMethod
+            && substr($function->name->name, 0, 2) === '__'
+            && !$is_to_string
+            && !$return_type
         ) {
             // do not check __construct, __set, __get, __call etc.
             return null;
@@ -97,7 +101,10 @@ class ReturnTypeChecker
         );
 
         if ((!$return_type || $return_type->from_docblock)
-            && ScopeChecker::getFinalControlActions($function_stmts) !== [ScopeChecker::ACTION_END]
+            && ScopeChecker::getFinalControlActions(
+                $function_stmts,
+                $project_checker->config->exit_functions
+            ) !== [ScopeChecker::ACTION_END]
             && !$inferred_yield_types
             && count($inferred_return_type_parts)
         ) {
@@ -116,7 +123,10 @@ class ReturnTypeChecker
             && !$return_type->from_docblock
             && !$return_type->isVoid()
             && !$inferred_yield_types
-            && ScopeChecker::getFinalControlActions($function_stmts) !== [ScopeChecker::ACTION_END]
+            && ScopeChecker::getFinalControlActions(
+                $function_stmts,
+                $project_checker->config->exit_functions
+            ) !== [ScopeChecker::ACTION_END]
         ) {
             if (IssueBuffer::accepts(
                 new InvalidReturnType(
@@ -349,15 +359,28 @@ class ReturnTypeChecker
             )) {
                 // is the declared return type more specific than the inferred one?
                 if ($type_coerced) {
-                    if (IssueBuffer::accepts(
-                        new MoreSpecificReturnType(
-                            'The declared return type \'' . $declared_return_type . '\' for ' . $cased_method_id .
-                                ' is more specific than the inferred return type \'' . $inferred_return_type . '\'',
-                            $return_type_location
-                        ),
-                        $suppressed_issues
-                    )) {
-                        return false;
+                    if ($type_coerced_from_mixed) {
+                        if (IssueBuffer::accepts(
+                            new MixedTypeCoercion(
+                                'The declared return type \'' . $declared_return_type . '\' for ' . $cased_method_id .
+                                    ' is more specific than the inferred return type \'' . $inferred_return_type . '\'',
+                                $return_type_location
+                            ),
+                            $suppressed_issues
+                        )) {
+                            return false;
+                        }
+                    } else {
+                        if (IssueBuffer::accepts(
+                            new MoreSpecificReturnType(
+                                'The declared return type \'' . $declared_return_type . '\' for ' . $cased_method_id .
+                                    ' is more specific than the inferred return type \'' . $inferred_return_type . '\'',
+                                $return_type_location
+                            ),
+                            $suppressed_issues
+                        )) {
+                            return false;
+                        }
                     }
                 } else {
                     if ($project_checker->alter_code
@@ -415,15 +438,34 @@ class ReturnTypeChecker
             } elseif ((!$inferred_return_type->isNullable() && $declared_return_type->isNullable())
                 || (!$inferred_return_type->isFalsable() && $declared_return_type->isFalsable())
             ) {
-                if (IssueBuffer::accepts(
-                    new LessSpecificReturnType(
-                        'The inferred return type \'' . $inferred_return_type . '\' for ' . $cased_method_id .
-                            ' is more specific than the declared return type \'' . $declared_return_type . '\'',
-                        $return_type_location
-                    ),
-                    $suppressed_issues
-                )) {
-                    return false;
+                if ($function instanceof Function_
+                    || $function instanceof Closure
+                    || $function->isPrivate()
+                ) {
+                    $check_for_less_specific_type = true;
+                } elseif ($source instanceof StatementsChecker) {
+                    $method_storage = $function_like_checker->getFunctionLikeStorage($source);
+
+                    if ($method_storage instanceof MethodStorage) {
+                        $check_for_less_specific_type = !$method_storage->overridden_somewhere;
+                    } else {
+                        $check_for_less_specific_type = false;
+                    }
+                } else {
+                    $check_for_less_specific_type = false;
+                }
+
+                if ($check_for_less_specific_type) {
+                    if (IssueBuffer::accepts(
+                        new LessSpecificReturnType(
+                            'The inferred return type \'' . $inferred_return_type . '\' for ' . $cased_method_id .
+                                ' is more specific than the declared return type \'' . $declared_return_type . '\'',
+                            $return_type_location
+                        ),
+                        $suppressed_issues
+                    )) {
+                        return false;
+                    }
                 }
             }
 

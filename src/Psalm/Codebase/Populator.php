@@ -64,7 +64,7 @@ class Populator
     /**
      * @return void
      */
-    public function populateCodebase()
+    public function populateCodebase(\Psalm\Codebase $codebase)
     {
         if ($this->debug_output) {
             echo 'ClassLikeStorage is populating' . "\n";
@@ -92,8 +92,9 @@ class Populator
             $this->populateFileStorage($file_storage);
         }
 
-        if ($this->config->allow_phpstorm_generics) {
-            foreach ($this->classlike_storage_provider->getAll() as $class_storage) {
+
+        foreach ($this->classlike_storage_provider->getAll() as $class_storage) {
+            if ($this->config->allow_phpstorm_generics) {
                 foreach ($class_storage->properties as $property_storage) {
                     if ($property_storage->type) {
                         $this->convertPhpStormGenericToPsalmGeneric($property_storage->type, true);
@@ -113,6 +114,49 @@ class Populator
                 }
             }
 
+            if ($class_storage->aliases) {
+                foreach ($class_storage->public_class_constant_nodes as $const_name => $node) {
+                    $const_type = \Psalm\Checker\StatementsChecker::getSimpleType(
+                        $codebase,
+                        $node,
+                        $class_storage->aliases,
+                        null,
+                        null,
+                        $class_storage->name
+                    );
+
+                    $class_storage->public_class_constants[$const_name] = $const_type ?: Type::getMixed();
+                }
+
+                foreach ($class_storage->protected_class_constant_nodes as $const_name => $node) {
+                    $const_type = \Psalm\Checker\StatementsChecker::getSimpleType(
+                        $codebase,
+                        $node,
+                        $class_storage->aliases,
+                        null,
+                        null,
+                        $class_storage->name
+                    );
+
+                    $class_storage->protected_class_constants[$const_name] = $const_type ?: Type::getMixed();
+                }
+
+                foreach ($class_storage->private_class_constant_nodes as $const_name => $node) {
+                    $const_type = \Psalm\Checker\StatementsChecker::getSimpleType(
+                        $codebase,
+                        $node,
+                        $class_storage->aliases,
+                        null,
+                        null,
+                        $class_storage->name
+                    );
+
+                    $class_storage->private_class_constants[$const_name] = $const_type ?: Type::getMixed();
+                }
+            }
+        }
+
+        if ($this->config->allow_phpstorm_generics) {
             foreach ($all_file_storage as $file_storage) {
                 foreach ($file_storage->functions as $function_storage) {
                     if ($function_storage->return_type) {
@@ -532,6 +576,10 @@ class Populator
         foreach ($parent_storage->inheritable_method_ids as $method_name => $declaring_method_id) {
             if (!$parent_storage->is_trait) {
                 $storage->overridden_method_ids[$method_name][] = $declaring_method_id;
+
+                if (isset($storage->methods[$method_name])) {
+                    $storage->methods[$method_name]->overridden_somewhere = true;
+                }
             }
 
             $aliased_method_names = [$method_name];
@@ -570,6 +618,7 @@ class Populator
 
                     // tell the declaring class it's overridden downstream
                     $declaring_class_storage->methods[strtolower($declaring_method_name)]->overridden_downstream = true;
+                    $declaring_class_storage->methods[strtolower($declaring_method_name)]->overridden_somewhere = true;
                 }
             }
         }
@@ -603,7 +652,7 @@ class Populator
         }
 
         // register where they're declared
-        foreach ($parent_storage->declaring_property_ids as $property_name => $declaring_property_id) {
+        foreach ($parent_storage->declaring_property_ids as $property_name => $declaring_property_class) {
             if (isset($storage->declaring_property_ids[$property_name])) {
                 continue;
             }
@@ -615,7 +664,7 @@ class Populator
                 continue;
             }
 
-            $storage->declaring_property_ids[$property_name] = $declaring_property_id;
+            $storage->declaring_property_ids[$property_name] = $declaring_property_class;
         }
 
         // register where they're declared

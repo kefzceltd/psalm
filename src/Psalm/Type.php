@@ -172,8 +172,11 @@ abstract class Type
      *
      * @return  Atomic|TArray|TGenericObject|ObjectLike|Union
      */
-    private static function getTypeFromTree(ParseTree $parse_tree, $php_compatible, array $template_type_names)
-    {
+    public static function getTypeFromTree(
+        ParseTree $parse_tree,
+        $php_compatible = false,
+        array $template_type_names = []
+    ) {
         if ($parse_tree instanceof ParseTree\GenericTree) {
             $generic_type = $parse_tree->value;
 
@@ -221,10 +224,12 @@ abstract class Type
                     $atomic_type = self::getTypeFromTree($child_tree, false, $template_type_names);
                 }
 
-                if (!$atomic_type instanceof Atomic) {
-                    throw new \UnexpectedValueException(
-                        'Was expecting an atomic type, got ' . get_class($atomic_type)
-                    );
+                if ($atomic_type instanceof Union) {
+                    foreach ($atomic_type->getTypes() as $type) {
+                        $atomic_types[] = $type;
+                    }
+
+                    continue;
                 }
 
                 $atomic_types[] = $atomic_type;
@@ -571,13 +576,15 @@ abstract class Type
      * @param  string                       $string_type
      * @param  Aliases                      $aliases
      * @param  array<string, string>|null   $template_type_names
+     * @param  array<string, array<int, string>>|null   $type_aliases
      *
      * @return array<int, string>
      */
     public static function fixUpLocalType(
         $string_type,
         Aliases $aliases,
-        array $template_type_names = null
+        array $template_type_names = null,
+        array $type_aliases = null
     ) {
         $type_tokens = self::tokenize($string_type);
 
@@ -633,10 +640,23 @@ abstract class Type
                 continue;
             }
 
-            $type_tokens[$i] = self::getFQCLNFromString(
-                $string_type_token,
-                $aliases
-            );
+            if (isset($type_aliases[$string_type_token])) {
+                $replacement_tokens = $type_aliases[$string_type_token];
+
+                $diff = count($replacement_tokens) - 1;
+
+                for ($j = 0; $j < $diff + 1; $j++) {
+                    $type_tokens[$i + $j] = $replacement_tokens[$j];
+                }
+
+                $i += $diff;
+                $l += $diff;
+            } else {
+                $type_tokens[$i] = self::getFQCLNFromString(
+                    $string_type_token,
+                    $aliases
+                );
+            }
         }
 
         return $type_tokens;
@@ -921,6 +941,10 @@ abstract class Type
 
             if (!$type_1->initialized || !$type_2->initialized) {
                 $combined_type->initialized = false;
+            }
+
+            if ($type_1->possibly_undefined_from_try || $type_2->possibly_undefined_from_try) {
+                $combined_type->possibly_undefined_from_try = true;
             }
 
             if ($type_1->from_docblock || $type_2->from_docblock) {

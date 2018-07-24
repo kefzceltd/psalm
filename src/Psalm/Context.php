@@ -474,7 +474,7 @@ class Context
         foreach ($clauses as $clause) {
             \Psalm\Type\Algebra::calculateNegation($clause);
 
-            $quoted_remove_var_id = preg_quote($remove_var_id);
+            $quoted_remove_var_id = preg_quote($remove_var_id, '/');
 
             foreach ($clause->possibilities as $var_id => $_) {
                 if (preg_match('/' . $quoted_remove_var_id . '[\]\[\-]/', $var_id)) {
@@ -583,7 +583,7 @@ class Context
         $vars_to_remove = [];
 
         foreach ($this->vars_in_scope as $var_id => $_) {
-            if (preg_match('/' . preg_quote($remove_var_id, DIRECTORY_SEPARATOR) . '[\]\[\-]/', $var_id)) {
+            if (preg_match('/' . preg_quote($remove_var_id, '/') . '[\]\[\-]/', $var_id)) {
                 $vars_to_remove[] = $var_id;
             }
         }
@@ -692,7 +692,7 @@ class Context
 
         $stripped_var = preg_replace('/(->|\[).*$/', '', $var_name);
 
-        if ($stripped_var[0] === '$' && $stripped_var !== '$this') {
+        if ($stripped_var[0] === '$' && ($stripped_var !== '$this' || $var_name !== $stripped_var)) {
             $this->referenced_var_ids[$var_name] = true;
 
             if ($this->collect_references && $statements_checker) {

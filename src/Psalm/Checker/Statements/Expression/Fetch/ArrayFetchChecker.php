@@ -418,7 +418,10 @@ class ArrayFetchChecker
                         );
                     }
 
-                    if ($array_access_type->isEmpty() && !$in_assignment) {
+                    if ($array_access_type->isEmpty()
+                        && !$in_assignment
+                        && !$inside_isset
+                    ) {
                         if (IssueBuffer::accepts(
                             new EmptyArrayAccess(
                                 'Cannot access value on empty array variable ' . $array_var_id,
@@ -635,8 +638,12 @@ class ArrayFetchChecker
 
             if ($type instanceof TNamedObject) {
                 if (strtolower($type->value) !== 'simplexmlelement'
-                    && $codebase->classExists($type->value)
-                    && !$codebase->classImplements($type->value, 'ArrayAccess')
+                    && strtolower($type->value) !== 'arrayaccess'
+                    && (($codebase->classExists($type->value)
+                            && !$codebase->classImplements($type->value, 'ArrayAccess'))
+                        || ($codebase->interfaceExists($type->value)
+                            && !$codebase->interfaceExtends($type->value, 'ArrayAccess'))
+                    )
                 ) {
                     $non_array_types[] = (string)$type;
                 } else {

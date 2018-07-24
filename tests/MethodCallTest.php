@@ -85,7 +85,7 @@ class MethodCallTest extends TestCase
             'magicCall' => [
                 '<?php
                     class A {
-                        public function __call(string $method_name) {}
+                        public function __call(string $method_name, array $args) {}
                     }
 
                     $a = new A;
@@ -94,7 +94,7 @@ class MethodCallTest extends TestCase
             'canBeCalledOnMagic' => [
                 '<?php
                     class A {
-                      public function __call(string $method) {}
+                      public function __call(string $method, array $args) {}
                     }
 
                     class B {}
@@ -154,6 +154,29 @@ class MethodCallTest extends TestCase
                     if (false !== $formatted) {}
                     function takesString(string $s) : void {}
                     takesString($formatted);'
+            ],
+            'domElement' => [
+                '<?php
+                    function foo(DOMElement $e) : ?string {
+                        $a = $e->getElementsByTagName("bar");
+                        $b = $a->item(0);
+                        if (!$b) {
+                            return null;
+                        }
+                        return $b->getAttribute("bat");
+                    }',
+            ],
+            'reflectionParameter' => [
+                '<?php
+                    function getTypeName(ReflectionParameter $parameter): string {
+                        $type = $parameter->getType();
+
+                        if ($type === null) {
+                            return "mixed";
+                        }
+
+                        return $type->getName();
+                    }'
             ],
         ];
     }
@@ -346,6 +369,27 @@ class MethodCallTest extends TestCase
                     }
                     (new A)->__invoke(1);',
                 'error_message' => 'InvalidScalarArgument',
+            ],
+            'undefinedMethodPassedAsArg' => [
+                '<?php
+                    class A {
+                        public function __call(string $method, array $args) {}
+                    }
+
+                    $q = new A;
+                    $q->foo(bar());',
+                'error_message' => 'UndefinedFunction'
+            ],
+            'noIntersectionMethod' => [
+                '<?php
+                    interface A {}
+                    interface B {}
+
+                    /** @param B&A $p */
+                    function f($p): void {
+                        $p->zugzug();
+                    }',
+                'error_message' => 'UndefinedMethod - src/somefile.php:7 - Method (B&A)::zugzug does not exist'
             ],
         ];
     }

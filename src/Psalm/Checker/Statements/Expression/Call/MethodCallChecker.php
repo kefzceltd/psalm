@@ -75,7 +75,7 @@ class MethodCallChecker extends \Psalm\Checker\Statements\Expression\CallChecker
             }
         }
 
-        $var_id = ExpressionChecker::getVarId(
+        $var_id = ExpressionChecker::getArrayVarId(
             $stmt->var,
             $statements_checker->getFQCLN(),
             $statements_checker
@@ -93,7 +93,19 @@ class MethodCallChecker extends \Psalm\Checker\Statements\Expression\CallChecker
 
         $source = $statements_checker->getSource();
 
+        $args = $stmt->args;
+
         if (!$context->check_methods || !$context->check_classes) {
+            if (self::checkFunctionArguments(
+                $statements_checker,
+                $args,
+                null,
+                null,
+                $context
+            ) === false) {
+                return false;
+            }
+
             return null;
         }
 
@@ -156,15 +168,18 @@ class MethodCallChecker extends \Psalm\Checker\Statements\Expression\CallChecker
         $has_valid_method_call_type = false;
 
         $code_location = new CodeLocation($source, $stmt);
+        $name_code_location = new CodeLocation($source, $stmt->name);
 
         $returns_by_ref = false;
 
         if ($class_type) {
             $return_type = null;
 
-            foreach ($class_type->getTypes() as $class_type_part) {
-                if (!$class_type_part instanceof TNamedObject) {
-                    switch (get_class($class_type_part)) {
+            $lhs_types = $class_type->getTypes();
+
+            foreach ($lhs_types as $lhs_type_part) {
+                if (!$lhs_type_part instanceof TNamedObject) {
+                    switch (get_class($lhs_type_part)) {
                         case Type\Atomic\TNull::class:
                         case Type\Atomic\TFalse::class:
                             // handled above
@@ -184,7 +199,7 @@ class MethodCallChecker extends \Psalm\Checker\Statements\Expression\CallChecker
                         case Type\Atomic\TNumericString::class:
                         case Type\Atomic\TClassString::class:
                         case Type\Atomic\TEmptyMixed::class:
-                            $invalid_method_call_types[] = (string)$class_type_part;
+                            $invalid_method_call_types[] = (string)$lhs_type_part;
                             break;
 
                         case Type\Atomic\TMixed::class:
@@ -195,7 +210,7 @@ class MethodCallChecker extends \Psalm\Checker\Statements\Expression\CallChecker
                             if (IssueBuffer::accepts(
                                 new MixedMethodCall(
                                     'Cannot call method on a mixed variable ' . $var_id,
-                                    $code_location
+                                    $name_code_location
                                 ),
                                 $statements_checker->getSuppressedIssues()
                             )) {
@@ -204,7 +219,7 @@ class MethodCallChecker extends \Psalm\Checker\Statements\Expression\CallChecker
 
                             if (self::checkFunctionArguments(
                                 $statements_checker,
-                                $stmt->args,
+                                $args,
                                 null,
                                 null,
                                 $context
@@ -223,9 +238,9 @@ class MethodCallChecker extends \Psalm\Checker\Statements\Expression\CallChecker
 
                 $has_valid_method_call_type = true;
 
-                $fq_class_name = $class_type_part->value;
+                $fq_class_name = $lhs_type_part->value;
 
-                $intersection_types = $class_type_part->getIntersectionTypes();
+                $intersection_types = $lhs_type_part->getIntersectionTypes();
 
                 $is_mock = ExpressionChecker::isMock($fq_class_name);
 
@@ -248,7 +263,7 @@ class MethodCallChecker extends \Psalm\Checker\Statements\Expression\CallChecker
                     $does_class_exist = ClassLikeChecker::checkFullyQualifiedClassLikeName(
                         $statements_checker,
                         $fq_class_name,
-                        $code_location,
+                        new CodeLocation($source, $stmt->var),
                         $statements_checker->getSuppressedIssues()
                     );
                 }
@@ -261,7 +276,7 @@ class MethodCallChecker extends \Psalm\Checker\Statements\Expression\CallChecker
                     if (IssueBuffer::accepts(
                         new UndefinedMethod(
                             $fq_class_name . ' has no defined methods',
-                            $code_location,
+                            new CodeLocation($source, $stmt->var),
                             $fq_class_name . '::'
                                 . (!$stmt->name instanceof PhpParser\Node\Identifier ? '$method' : $stmt->name->name)
                         ),
@@ -282,6 +297,10 @@ class MethodCallChecker extends \Psalm\Checker\Statements\Expression\CallChecker
 
                 $method_id = $fq_class_name . '::' . $method_name_lc;
 
+                $intersection_method_id = $intersection_types
+                    ? '(' . $lhs_type_part . ')'  . '::' . $stmt->name->name
+                    : null;
+
                 if ($codebase->methodExists($fq_class_name . '::__call')) {
                     if (!$codebase->methodExists($method_id)
                         || !MethodChecker::isMethodVisible(
@@ -301,7 +320,7 @@ class MethodCallChecker extends \Psalm\Checker\Statements\Expression\CallChecker
 
                                 if (self::checkFunctionArguments(
                                     $statements_checker,
-                                    $stmt->args,
+                                    $args,
                                     $pseudo_method_storage->params,
                                     $method_id,
                                     $context
@@ -313,7 +332,7 @@ class MethodCallChecker extends \Psalm\Checker\Statements\Expression\CallChecker
 
                                 if (self::checkFunctionLikeArgumentsMatch(
                                     $statements_checker,
-                                    $stmt->args,
+                                    $args,
                                     null,
                                     $pseudo_method_storage->params,
                                     $pseudo_method_storage,
@@ -336,17 +355,43 @@ class MethodCallChecker extends \Psalm\Checker\Statements\Expression\CallChecker
 
                                     continue;
                                 }
-                            } elseif ($class_storage->sealed_methods) {
-                                $non_existent_method_ids[] = $method_id;
-                                continue;
+                            } else {
+                                if (self::checkFunctionArguments(
+                                    $statements_checker,
+                                    $args,
+                                    null,
+                                    null,
+                                    $context
+                                ) === false) {
+                                    return false;
+                                }
+
+                                if ($class_storage->sealed_methods) {
+                                    $non_existent_method_ids[] = $method_id;
+                                    continue;
+                                }
                             }
                         }
 
                         $has_valid_method_call_type = true;
                         $existent_method_ids[] = $method_id;
 
-                        $return_type = Type::getMixed();
-                        continue;
+                        $array_values = array_map(
+                            /**
+                             * @return PhpParser\Node\Expr\ArrayItem
+                             */
+                            function (PhpParser\Node\Arg $arg) {
+                                return new PhpParser\Node\Expr\ArrayItem($arg->value);
+                            },
+                            $args
+                        );
+
+                        $args = [
+                            new PhpParser\Node\Arg(new PhpParser\Node\Scalar\String_($method_name_lc)),
+                            new PhpParser\Node\Arg(new PhpParser\Node\Expr\Array_($array_values)),
+                        ];
+
+                        $method_id = $fq_class_name . '::__call';
                     }
                 }
 
@@ -395,7 +440,7 @@ class MethodCallChecker extends \Psalm\Checker\Statements\Expression\CallChecker
 
                             if (self::checkFunctionArguments(
                                 $statements_checker,
-                                $stmt->args,
+                                $args,
                                 $pseudo_method_storage->params,
                                 $method_id,
                                 $context
@@ -407,7 +452,7 @@ class MethodCallChecker extends \Psalm\Checker\Statements\Expression\CallChecker
 
                             if (self::checkFunctionLikeArgumentsMatch(
                                 $statements_checker,
-                                $stmt->args,
+                                $args,
                                 null,
                                 $pseudo_method_storage->params,
                                 $pseudo_method_storage,
@@ -437,7 +482,7 @@ class MethodCallChecker extends \Psalm\Checker\Statements\Expression\CallChecker
                         }
                     }
 
-                    $non_existent_method_ids[] = $method_id;
+                    $non_existent_method_ids[] = $intersection_method_id ?: $method_id;
                     continue;
                 }
 
@@ -458,15 +503,15 @@ class MethodCallChecker extends \Psalm\Checker\Statements\Expression\CallChecker
                 if ($class_storage->template_types) {
                     $class_template_params = [];
 
-                    if ($class_type_part instanceof TGenericObject) {
+                    if ($lhs_type_part instanceof TGenericObject) {
                         $reversed_class_template_types = array_reverse(array_keys($class_storage->template_types));
 
-                        $provided_type_param_count = count($class_type_part->type_params);
+                        $provided_type_param_count = count($lhs_type_part->type_params);
 
                         foreach ($reversed_class_template_types as $i => $type_name) {
-                            if (isset($class_type_part->type_params[$provided_type_param_count - 1 - $i])) {
+                            if (isset($lhs_type_part->type_params[$provided_type_param_count - 1 - $i])) {
                                 $class_template_params[$type_name] =
-                                    $class_type_part->type_params[$provided_type_param_count - 1 - $i];
+                                    $lhs_type_part->type_params[$provided_type_param_count - 1 - $i];
                             } else {
                                 $class_template_params[$type_name] = Type::getMixed();
                             }
@@ -484,7 +529,7 @@ class MethodCallChecker extends \Psalm\Checker\Statements\Expression\CallChecker
 
                 if (self::checkMethodArgs(
                     $method_id,
-                    $stmt->args,
+                    $args,
                     $class_template_params,
                     $context,
                     $code_location,
@@ -496,7 +541,7 @@ class MethodCallChecker extends \Psalm\Checker\Statements\Expression\CallChecker
                 switch (strtolower($stmt->name->name)) {
                     case '__tostring':
                         $return_type = Type::getString();
-                        continue;
+                        continue 2;
                 }
 
                 $call_map_id = strtolower(
@@ -506,23 +551,25 @@ class MethodCallChecker extends \Psalm\Checker\Statements\Expression\CallChecker
                 if ($method_name_lc === '__tostring') {
                     $return_type_candidate = Type::getString();
                 } elseif ($call_map_id && CallMap::inCallMap($call_map_id)) {
-                    if ($class_template_params
+                    if (($class_template_params || $class_storage->stubbed)
                         && isset($class_storage->methods[$method_name_lc])
                         && ($method_storage = $class_storage->methods[$method_name_lc])
                         && $method_storage->return_type
                     ) {
                         $return_type_candidate = clone $method_storage->return_type;
 
-                        $return_type_candidate->replaceTemplateTypesWithArgTypes(
-                            $class_template_params
-                        );
+                        if ($class_template_params) {
+                            $return_type_candidate->replaceTemplateTypesWithArgTypes(
+                                $class_template_params
+                            );
+                        }
                     } else {
                         if ($call_map_id === 'domnode::appendchild'
-                            && isset($stmt->args[0]->value->inferredType)
-                            && $stmt->args[0]->value->inferredType->hasObjectType()
+                            && isset($args[0]->value->inferredType)
+                            && $args[0]->value->inferredType->hasObjectType()
                         ) {
-                            $return_type_candidate = clone $stmt->args[0]->value->inferredType;
-                        } elseif ($call_map_id === 'simplexmlelement::asxml' && !count($stmt->args)) {
+                            $return_type_candidate = clone $args[0]->value->inferredType;
+                        } elseif ($call_map_id === 'simplexmlelement::asxml' && !count($args)) {
                             $return_type_candidate = Type::parseString('string|false');
                         } else {
                             $return_type_candidate = CallMap::getReturnTypeFromCallMap($call_map_id);
@@ -543,7 +590,7 @@ class MethodCallChecker extends \Psalm\Checker\Statements\Expression\CallChecker
                         $method_id,
                         $context->self,
                         $statements_checker->getSource(),
-                        $code_location,
+                        $name_code_location,
                         $statements_checker->getSuppressedIssues()
                     ) === false) {
                         return false;
@@ -552,7 +599,7 @@ class MethodCallChecker extends \Psalm\Checker\Statements\Expression\CallChecker
                     if (MethodChecker::checkMethodNotDeprecated(
                         $project_checker,
                         $method_id,
-                        $code_location,
+                        $name_code_location,
                         $statements_checker->getSuppressedIssues()
                     ) === false) {
                         return false;
@@ -572,7 +619,7 @@ class MethodCallChecker extends \Psalm\Checker\Statements\Expression\CallChecker
                     $return_type_candidate = $codebase->methods->getMethodReturnType(
                         $method_id,
                         $self_fq_class_name,
-                        $stmt->args
+                        $args
                     );
 
                     if (isset($stmt->inferredType)) {
@@ -619,21 +666,29 @@ class MethodCallChecker extends \Psalm\Checker\Statements\Expression\CallChecker
                                 || $codebase->methods->getMethodReturnsByRef($method_id);
                     }
 
-                    if (strpos($stmt->name->name, 'assert') === 0) {
-                        $assertions = $codebase->methods->getMethodAssertions($method_id);
+                    if (count($lhs_types) === 1) {
+                        $method_storage = $codebase->methods->getUserMethodStorage($method_id);
 
-                        if ($assertions) {
+                        if ($method_storage->assertions) {
                             self::applyAssertionsToContext(
-                                $assertions,
-                                $stmt->args,
+                                $method_storage->assertions,
+                                $args,
                                 $context,
                                 $statements_checker
                             );
                         }
+
+                        if ($method_storage->if_true_assertions) {
+                            $stmt->ifTrueAssertions = $method_storage->if_true_assertions;
+                        }
+
+                        if ($method_storage->if_false_assertions) {
+                            $stmt->ifFalseAssertions = $method_storage->if_false_assertions;
+                        }
                     }
                 }
 
-                if (!$stmt->args && $var_id) {
+                if (!$args && $var_id) {
                     if ($config->memoize_method_calls) {
                         $method_var_id = $var_id . '->' . $method_name_lc . '()';
 
@@ -658,7 +713,7 @@ class MethodCallChecker extends \Psalm\Checker\Statements\Expression\CallChecker
                             $appearing_method_id,
                             $declaring_method_id,
                             $var_id,
-                            $stmt->args,
+                            $args,
                             $code_location,
                             $context,
                             $file_manipulations,
@@ -690,7 +745,7 @@ class MethodCallChecker extends \Psalm\Checker\Statements\Expression\CallChecker
                     if (IssueBuffer::accepts(
                         new PossiblyInvalidMethodCall(
                             'Cannot call method on possible ' . $invalid_class_type . ' variable ' . $var_id,
-                            $code_location
+                            $name_code_location
                         ),
                         $statements_checker->getSuppressedIssues()
                     )) {
@@ -700,7 +755,7 @@ class MethodCallChecker extends \Psalm\Checker\Statements\Expression\CallChecker
                     if (IssueBuffer::accepts(
                         new InvalidMethodCall(
                             'Cannot call method on ' . $invalid_class_type . ' variable ' . $var_id,
-                            $code_location
+                            $name_code_location
                         ),
                         $statements_checker->getSuppressedIssues()
                     )) {
@@ -714,7 +769,7 @@ class MethodCallChecker extends \Psalm\Checker\Statements\Expression\CallChecker
                     if (IssueBuffer::accepts(
                         new PossiblyUndefinedMethod(
                             'Method ' . $non_existent_method_ids[0] . ' does not exist',
-                            $code_location,
+                            $name_code_location,
                             $non_existent_method_ids[0]
                         ),
                         $statements_checker->getSuppressedIssues()
@@ -725,7 +780,7 @@ class MethodCallChecker extends \Psalm\Checker\Statements\Expression\CallChecker
                     if (IssueBuffer::accepts(
                         new UndefinedMethod(
                             'Method ' . $non_existent_method_ids[0] . ' does not exist',
-                            $code_location,
+                            $name_code_location,
                             $non_existent_method_ids[0]
                         ),
                         $statements_checker->getSuppressedIssues()
@@ -751,7 +806,7 @@ class MethodCallChecker extends \Psalm\Checker\Statements\Expression\CallChecker
         if ($method_id === null) {
             return self::checkMethodArgs(
                 $method_id,
-                $stmt->args,
+                $args,
                 $found_generic_params,
                 $context,
                 new CodeLocation($statements_checker->getSource(), $stmt),

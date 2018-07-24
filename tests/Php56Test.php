@@ -222,6 +222,24 @@ class Php56Test extends TestCase
                         }
                     }',
             ],
+            'argumentUnpackingWithoutChangingRef' => [
+                '<?php
+                    function foo(int ...$is) : void {}
+
+                    $arr = [1, 2, 3, 4];
+                    foo(...$arr);
+                    foo(...$arr);',
+            ],
+            'iterableSplat' => [
+                '<?php
+                    function foo(iterable $args): int {
+                        return intval(...$args);
+                    }
+
+                    function foo(ArrayIterator $args): int {
+                        return intval(...$args);
+                    }',
+            ],
         ];
     }
 
@@ -240,6 +258,26 @@ class Php56Test extends TestCase
 
                     array_push($a, ...$b);',
                 'error_message' => 'InvalidArgument',
+            ],
+            'shouldWarnAboutNoGeneratorReturn' => [
+                '<?php
+                    function generator2() : Generator {
+                        if (rand(0,1)) {
+                            return;
+                        }
+                        yield 2;
+                    }
+
+                    /**
+                     * @psalm-suppress InvalidNullableReturnType
+                     */
+                    function notagenerator() : Generator {
+                        if (rand(0, 1)) {
+                            return;
+                        }
+                        return generator2();
+                    }',
+                'error_message' => 'InvalidReturnStatement',
             ],
         ];
     }

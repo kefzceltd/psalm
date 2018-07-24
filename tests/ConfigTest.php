@@ -196,6 +196,69 @@ class ConfigTest extends TestCase
     /**
      * @return void
      */
+    public function testIgnoreWildcardFilesInWildcardFolder()
+    {
+        $this->project_checker = $this->getProjectCheckerWithConfig(
+            Config::loadFromXML(
+                dirname(__DIR__),
+                '<?xml version="1.0"?>
+                <psalm>
+                    <projectFiles>
+                        <directory name="src" />
+                        <directory name="examples" />
+                        <ignoreFiles>
+                            <file name="src/Psalm/**/*Checker.php" />
+                            <file name="src/Psalm/**/**/*Checker.php" />
+                        </ignoreFiles>
+                    </projectFiles>
+                </psalm>'
+            )
+        );
+
+        $config = $this->project_checker->getConfig();
+
+        $this->assertTrue($config->isInProjectDirs(realpath('src/Psalm/Type.php')));
+        $this->assertTrue($config->isInProjectDirs(realpath('src/Psalm/Visitor/DependencyFinderVisitor.php')));
+        $this->assertFalse($config->isInProjectDirs(realpath('src/Psalm/Checker/FileChecker.php')));
+        $this->assertFalse($config->isInProjectDirs(realpath('src/Psalm/Checker/Statements/ReturnChecker.php')));
+        $this->assertTrue($config->isInProjectDirs(realpath('examples/StringChecker.php')));
+    }
+
+    /**
+     * @return void
+     */
+    public function testIgnoreWildcardFilesInAllPossibleWildcardFolders()
+    {
+        $this->project_checker = $this->getProjectCheckerWithConfig(
+            Config::loadFromXML(
+                dirname(__DIR__),
+                '<?xml version="1.0"?>
+                <psalm>
+                    <projectFiles>
+                        <directory name="src" />
+                        <directory name="examples" />
+                        <ignoreFiles>
+                            <file name="**/*Checker.php" />
+                            <file name="**/**/**/*Checker.php" />
+                            <file name="**/**/**/**/*Checker.php" />
+                        </ignoreFiles>
+                    </projectFiles>
+                </psalm>'
+            )
+        );
+
+        $config = $this->project_checker->getConfig();
+
+        $this->assertTrue($config->isInProjectDirs(realpath('src/Psalm/Type.php')));
+        $this->assertTrue($config->isInProjectDirs(realpath('src/Psalm/Visitor/DependencyFinderVisitor.php')));
+        $this->assertFalse($config->isInProjectDirs(realpath('src/Psalm/Checker/FileChecker.php')));
+        $this->assertFalse($config->isInProjectDirs(realpath('src/Psalm/Checker/Statements/ReturnChecker.php')));
+        $this->assertFalse($config->isInProjectDirs(realpath('examples/StringChecker.php')));
+    }
+
+    /**
+     * @return void
+     */
     public function testIssueHandler()
     {
         $this->project_checker = $this->getProjectCheckerWithConfig(
@@ -387,361 +450,6 @@ class ConfigTest extends TestCase
     }
 
     /**
-     * @expectedException        \Psalm\Exception\ConfigException
-     * @expectedExceptionMessage Cannot resolve stubfile path
-     *
-     * @return                   void
-     */
-    public function testNonexistentStubFile()
-    {
-        $this->project_checker = $this->getProjectCheckerWithConfig(
-            Config::loadFromXML(
-                dirname(__DIR__),
-                '<?xml version="1.0"?>
-                <psalm>
-                    <projectFiles>
-                        <directory name="src" />
-                    </projectFiles>
-
-                    <stubs>
-                        <file name="stubs/invalidfile.php" />
-                    </stubs>
-                </psalm>'
-            )
-        );
-    }
-
-    /**
-     * @return void
-     */
-    public function testStubFile()
-    {
-        $this->project_checker = $this->getProjectCheckerWithConfig(
-            TestConfig::loadFromXML(
-                dirname(__DIR__),
-                '<?xml version="1.0"?>
-                <psalm>
-                    <projectFiles>
-                        <directory name="src" />
-                    </projectFiles>
-
-                    <stubs>
-                        <file name="tests/stubs/systemclass.php" />
-                    </stubs>
-                </psalm>'
-            )
-        );
-
-        $file_path = getcwd() . '/src/somefile.php';
-
-        $this->addFile(
-            $file_path,
-            '<?php
-                $a = new SystemClass();
-                echo SystemClass::HELLO;
-
-                $b = $a->foo(5, "hello");
-                $c = SystemClass::bar(5, "hello");'
-        );
-
-        $this->analyzeFile($file_path, new Context());
-    }
-
-    /**
-     * @return void
-     */
-    public function testNamespacedStubClass()
-    {
-        $this->project_checker = $this->getProjectCheckerWithConfig(
-            TestConfig::loadFromXML(
-                dirname(__DIR__),
-                '<?xml version="1.0"?>
-                <psalm>
-                    <projectFiles>
-                        <directory name="src" />
-                    </projectFiles>
-
-                    <stubs>
-                        <file name="tests/stubs/namespaced_class.php" />
-                    </stubs>
-                </psalm>'
-            )
-        );
-
-        $file_path = getcwd() . '/src/somefile.php';
-
-        $this->addFile(
-            $file_path,
-            '<?php
-                $a = new Foo\SystemClass();
-                echo Foo\SystemClass::HELLO;
-
-                $b = $a->foo(5, "hello");
-                $c = Foo\SystemClass::bar(5, "hello");'
-        );
-
-        $this->analyzeFile($file_path, new Context());
-    }
-
-    /**
-     * @return void
-     */
-    public function testStubFunction()
-    {
-        $this->project_checker = $this->getProjectCheckerWithConfig(
-            TestConfig::loadFromXML(
-                dirname(__DIR__),
-                '<?xml version="1.0"?>
-                <psalm>
-                    <projectFiles>
-                        <directory name="src" />
-                    </projectFiles>
-
-                    <stubs>
-                        <file name="tests/stubs/custom_functions.php" />
-                    </stubs>
-                </psalm>'
-            )
-        );
-
-        $file_path = getcwd() . '/src/somefile.php';
-
-        $this->addFile(
-            $file_path,
-            '<?php
-                echo barBar("hello");'
-        );
-
-        $this->analyzeFile($file_path, new Context());
-    }
-
-    /**
-     * @return void
-     */
-    public function testPolyfilledFunction()
-    {
-        $this->project_checker = $this->getProjectCheckerWithConfig(
-            TestConfig::loadFromXML(
-                dirname(__DIR__),
-                '<?xml version="1.0"?>
-                <psalm>
-                    <projectFiles>
-                        <directory name="src" />
-                    </projectFiles>
-
-                    <stubs>
-                        <file name="tests/stubs/polyfill.php" />
-                    </stubs>
-                </psalm>'
-            )
-        );
-
-        $file_path = getcwd() . '/src/somefile.php';
-
-        $this->addFile(
-            $file_path,
-            '<?php
-                $a = random_bytes(16);'
-        );
-
-        $this->analyzeFile($file_path, new Context());
-    }
-
-    /**
-     * @return void
-     */
-    public function testStubFunctionWithFunctionExists()
-    {
-        $this->project_checker = $this->getProjectCheckerWithConfig(
-            TestConfig::loadFromXML(
-                dirname(__DIR__),
-                '<?xml version="1.0"?>
-                <psalm>
-                    <projectFiles>
-                        <directory name="src" />
-                    </projectFiles>
-
-                    <stubs>
-                        <file name="tests/stubs/custom_functions.php" />
-                    </stubs>
-                </psalm>'
-            )
-        );
-
-        $file_path = getcwd() . '/src/somefile.php';
-
-        $this->addFile(
-            $file_path,
-            '<?php
-                function_exists("fooBar");
-                echo barBar("hello");'
-        );
-
-        $this->analyzeFile($file_path, new Context());
-    }
-
-    /**
-     * @return void
-     */
-    public function testNamespacedStubFunctionWithFunctionExists()
-    {
-        $this->project_checker = $this->getProjectCheckerWithConfig(
-            TestConfig::loadFromXML(
-                dirname(__DIR__),
-                '<?xml version="1.0"?>
-                <psalm>
-                    <projectFiles>
-                        <directory name="src" />
-                    </projectFiles>
-
-                    <stubs>
-                        <file name="tests/stubs/custom_functions.php" />
-                    </stubs>
-                </psalm>'
-            )
-        );
-
-        $file_path = getcwd() . '/src/somefile.php';
-
-        $this->addFile(
-            $file_path,
-            '<?php
-                namespace A;
-                function_exists("fooBar");
-                echo barBar("hello");'
-        );
-
-        $this->analyzeFile($file_path, new Context());
-    }
-
-    /**
-     * @expectedException        \Psalm\Exception\CodeException
-     * @expectedExceptionMessage UndefinedFunction - /src/somefile.php:2 - Function barBar does not exist
-     *
-     * @return                   void
-     */
-    public function testNoStubFunction()
-    {
-        $this->project_checker = $this->getProjectCheckerWithConfig(
-            TestConfig::loadFromXML(
-                dirname(__DIR__),
-                '<?xml version="1.0"?>
-                <psalm>
-                    <projectFiles>
-                        <directory name="src" />
-                    </projectFiles>
-                </psalm>'
-            )
-        );
-
-        $file_path = getcwd() . '/src/somefile.php';
-
-        $this->addFile(
-            $file_path,
-            '<?php
-                echo barBar("hello");'
-        );
-
-        $this->analyzeFile($file_path, new Context());
-    }
-
-    /**
-     * @return void
-     */
-    public function testNamespacedStubFunction()
-    {
-        $this->project_checker = $this->getProjectCheckerWithConfig(
-            TestConfig::loadFromXML(
-                dirname(__DIR__),
-                '<?xml version="1.0"?>
-                <psalm>
-                    <projectFiles>
-                        <directory name="src" />
-                    </projectFiles>
-
-                    <stubs>
-                        <file name="tests/stubs/namespaced_functions.php" />
-                    </stubs>
-                </psalm>'
-            )
-        );
-
-        $file_path = getcwd() . '/src/somefile.php';
-
-        $this->addFile(
-            $file_path,
-            '<?php
-                echo Foo\barBar("hello");'
-        );
-
-        $this->analyzeFile($file_path, new Context());
-    }
-
-    /**
-     * @return void
-     */
-    public function testConditionalNamespacedStubFunction()
-    {
-        $this->project_checker = $this->getProjectCheckerWithConfig(
-            TestConfig::loadFromXML(
-                dirname(__DIR__),
-                '<?xml version="1.0"?>
-                <psalm>
-                    <projectFiles>
-                        <directory name="src" />
-                    </projectFiles>
-
-                    <stubs>
-                        <file name="tests/stubs/conditional_namespaced_functions.php" />
-                    </stubs>
-                </psalm>'
-            )
-        );
-
-        $file_path = getcwd() . '/src/somefile.php';
-
-        $this->addFile(
-            $file_path,
-            '<?php
-                echo Foo\barBar("hello");'
-        );
-
-        $this->analyzeFile($file_path, new Context());
-    }
-
-    /**
-     * @return void
-     */
-    public function testStubFileWithExistingClassDefinition()
-    {
-        $this->project_checker = $this->getProjectCheckerWithConfig(
-            TestConfig::loadFromXML(
-                dirname(__DIR__),
-                '<?xml version="1.0"?>
-                <psalm>
-                    <projectFiles>
-                        <directory name="src" />
-                    </projectFiles>
-
-                    <stubs>
-                        <file name="tests/stubs/logicexception.php" />
-                    </stubs>
-                </psalm>'
-            )
-        );
-
-        $file_path = getcwd() . '/src/somefile.php';
-
-        $this->addFile(
-            $file_path,
-            '<?php
-                $a = new LogicException(5);'
-        );
-
-        $this->analyzeFile($file_path, new Context());
-    }
-
-    /**
      * @expectedException        \Psalm\Exception\CodeException
      * @expectedExceptionMessage MissingReturnType
      *
@@ -830,13 +538,90 @@ class ConfigTest extends TestCase
                     }
                 }
                 class Foo {
-                    public function bar() : void {}
+                    function getBar() : ?Bar {
+                        return rand(0, 1) ? new Bar : null;
+                    }
+                }
+                class Bar {
+                    public function bat() : void {}
                 };
 
                 $a = new A();
 
                 if ($a->getFoo()) {
-                    $a->getFoo()->bar();
+                    if ($a->getFoo()->getBar()) {
+                        $a->getFoo()->getBar()->bat();
+                    }
+                }'
+        );
+
+        $this->analyzeFile($file_path, new Context());
+    }
+
+    /**
+     * @return void
+     */
+    public function testExitFunctions()
+    {
+        $this->project_checker = $this->getProjectCheckerWithConfig(
+            TestConfig::loadFromXML(
+                dirname(__DIR__),
+                '<?xml version="1.0"?>
+                <psalm>
+                    <exitFunctions>
+                        <function name="leave" />
+                        <function name="Foo\namespacedLeave" />
+                        <function name="Foo\Bar::staticLeave" />
+                    </exitFunctions>
+                </psalm>'
+            )
+        );
+
+        $file_path = getcwd() . '/src/somefile.php';
+
+        $this->addFile(
+            $file_path,
+            '<?php
+                namespace {
+                    function leave() : void {
+                        exit();
+                    }
+
+                    function mightLeave() : string {
+                        if (rand(0, 1)) {
+                            leave();
+                        } else {
+                            return "here";
+                        }
+                    }
+
+                    function mightLeaveWithNamespacedFunction() : string {
+                        if (rand(0, 1)) {
+                            \Foo\namespacedLeave();
+                        } else {
+                            return "here";
+                        }
+                    }
+
+                    function mightLeaveWithStaticMethod() : string {
+                        if (rand(0, 1)) {
+                            Foo\Bar::staticLeave();
+                        } else {
+                            return "here";
+                        }
+                    }
+                }
+
+                namespace Foo {
+                    function namespacedLeave() : void {
+                        exit();
+                    }
+
+                    class Bar {
+                        public static function staticLeave() : void {
+                            exit();
+                        }
+                    }
                 }'
         );
 

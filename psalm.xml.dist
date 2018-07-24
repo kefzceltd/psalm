@@ -5,7 +5,7 @@
     totallyTyped="true"
     strictBinaryOperands="false"
     rememberPropertyAssignmentsAfterCall="true"
-    checkForThrowsDocblock="true"
+    checkForThrowsDocblock="false"
     throwExceptionOnError="0"
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
     xmlns="https://getpsalm.org/schema/config"
@@ -19,6 +19,7 @@
             <file name="src/Psalm/CallMap.php" />
             <directory name="src/Psalm/Stubs" />
             <directory name="tests/stubs" />
+            <file name="vendor/phpunit/phpunit/src/Framework/TestCase.php" />
         </ignoreFiles>
     </projectFiles>
 

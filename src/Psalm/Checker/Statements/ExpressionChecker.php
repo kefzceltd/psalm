@@ -8,6 +8,7 @@ use Psalm\Checker\CommentChecker;
 use Psalm\Checker\FunctionLikeChecker;
 use Psalm\Checker\ProjectChecker;
 use Psalm\Checker\Statements\Expression\ArrayChecker;
+use Psalm\Checker\Statements\Expression\AssertionFinder;
 use Psalm\Checker\Statements\Expression\AssignmentChecker;
 use Psalm\Checker\Statements\Expression\BinaryOpChecker;
 use Psalm\Checker\Statements\Expression\Call\FunctionCallChecker;
@@ -457,8 +458,11 @@ class ExpressionChecker
                 return false;
             }
 
-            if ($stmt->class instanceof PhpParser\Node\Name &&
-                !in_array(strtolower($stmt->class->parts[0]), ['self', 'static', 'parent'], true)
+            if ($stmt->class instanceof PhpParser\Node\Expr) {
+                if (self::analyze($statements_checker, $stmt->class, $context) === false) {
+                    return false;
+                }
+            } elseif (!in_array(strtolower($stmt->class->parts[0]), ['self', 'static', 'parent'], true)
             ) {
                 if ($context->check_classes) {
                     $fq_class_name = ClassLikeChecker::getFQCLNFromNameObject(
@@ -530,6 +534,22 @@ class ExpressionChecker
             )) {
                 return false;
             }
+        }
+
+        if (!$context->inside_conditional
+            && ($stmt instanceof PhpParser\Node\Expr\BinaryOp
+                || $stmt instanceof PhpParser\Node\Expr\Instanceof_
+                || $stmt instanceof PhpParser\Node\Expr\Assign
+                || $stmt instanceof PhpParser\Node\Expr\BooleanNot
+                || $stmt instanceof PhpParser\Node\Expr\Empty_
+                || $stmt instanceof PhpParser\Node\Expr\Isset_
+                || $stmt instanceof PhpParser\Node\Expr\FuncCall)
+        ) {
+            AssertionFinder::scrapeAssertions(
+                $stmt,
+                $context->self,
+                $statements_checker
+            );
         }
 
         $project_checker = $statements_checker->getFileChecker()->project_checker;
@@ -1112,8 +1132,22 @@ class ExpressionChecker
         }
 
         if (isset($stmt->expr->inferredType)) {
+            $yield_from_type = null;
+
+            foreach ($stmt->expr->inferredType->getTypes() as $atomic_type) {
+                if ($yield_from_type === null
+                    && $atomic_type instanceof Type\Atomic\TGenericObject
+                    && strtolower($atomic_type->value) === 'generator'
+                    && isset($atomic_type->type_params[3])
+                ) {
+                    $yield_from_type = clone $atomic_type->type_params[3];
+                } else {
+                    $yield_from_type = Type::getMixed();
+                }
+            }
+
             // this should be whatever the generator above returns, but *not* the return type
-            $stmt->inferredType = Type::getMixed();
+            $stmt->inferredType = $yield_from_type ?: Type::getMixed();
         }
 
         return null;

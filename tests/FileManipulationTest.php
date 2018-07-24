@@ -33,7 +33,7 @@ class FileManipulationTest extends TestCase
      */
     public function testValidCode($input_code, $output_code, $php_version, array $issues_to_fix, $safe_types)
     {
-        $test_name = $this->getName();
+        $test_name = $this->getTestName();
         if (strpos($test_name, 'PHP7-') !== false) {
             if (version_compare(PHP_VERSION, '7.0.0dev', '<')) {
                 $this->markTestSkipped('Test case requires PHP 7.');
@@ -46,10 +46,6 @@ class FileManipulationTest extends TestCase
 
         $config = new TestConfig();
 
-        if (empty($issues_to_fix)) {
-            $config->addPluginPath('examples/ClassUnqualifier.php');
-        }
-
         $this->project_checker = new \Psalm\Checker\ProjectChecker(
             $config,
             $this->file_provider,
@@ -57,6 +53,11 @@ class FileManipulationTest extends TestCase
             new \Psalm\Provider\NoCache\NoFileStorageCacheProvider(),
             new \Psalm\Provider\NoCache\NoClassLikeStorageCacheProvider()
         );
+
+        if (empty($issues_to_fix)) {
+            $config->addPluginPath('examples/ClassUnqualifier.php');
+            $config->initializePlugins($this->project_checker);
+        }
 
         $context = new Context();
 

@@ -270,102 +270,6 @@ class AnnotationTest extends TestCase
     }
 
     /**
-     * @return void
-     */
-    public function testPhpDocMethodWhenUndefined()
-    {
-        Config::getInstance()->use_phpdoc_methods_without_call = true;
-
-        $this->addFile(
-            'somefile.php',
-            '<?php
-                /**
-                 * @method string getString()
-                 * @method  void setInteger(int $integer)
-                 * @method setString(int $integer)
-                 * @method  getBool(string $foo) : bool
-                 * @method (string|int)[] getArray() : array
-                 * @method (callable() : string) getCallable() : callable
-                 */
-                class Child {}
-
-                $child = new Child();
-
-                $a = $child->getString();
-                $child->setInteger(4);
-                /** @psalm-suppress MixedAssignment */
-                $b = $child->setString(5);
-                $c = $child->getBool("hello");
-                $d = $child->getArray();
-                $e = $child->getCallable();'
-        );
-
-        $this->analyzeFile('somefile.php', new Context());
-    }
-
-    /**
-     * @return void
-     */
-    public function testCannotOverrideParentRetunTypeWhenIgnoringPhpDocMethod()
-    {
-        Config::getInstance()->use_phpdoc_methods_without_call = false;
-
-        $this->addFile(
-            'somefile.php',
-            '<?php
-                class Parent {
-                    public static function getMe() : self {
-                        return new self();
-                    }
-                }
-
-                /**
-                 * @method getMe() : Child
-                 */
-                class Child extends Parent {}
-
-                $child = Child::getMe();'
-        );
-
-        $context = new Context();
-
-        $this->analyzeFile('somefile.php', $context);
-
-        $this->assertSame('Parent', (string) $context->vars_in_scope['$child']);
-    }
-
-    /**
-     * @return void
-     */
-    public function testOverrideParentRetunType()
-    {
-        Config::getInstance()->use_phpdoc_methods_without_call = true;
-
-        $this->addFile(
-            'somefile.php',
-            '<?php
-                class Parent {
-                    public static function getMe() : self {
-                        return new self();
-                    }
-                }
-
-                /**
-                 * @method getMe() : Child
-                 */
-                class Child extends Parent {}
-
-                $child = Child::getMe();'
-        );
-
-        $context = new Context();
-
-        $this->analyzeFile('somefile.php', $context);
-
-        $this->assertSame('Child', (string) $context->vars_in_scope['$child']);
-    }
-
-    /**
      * @expectedException        \Psalm\Exception\CodeException
      * @expectedExceptionMessage MissingThrowsDocblock
      *
@@ -1059,62 +963,6 @@ class AnnotationTest extends TestCase
 
                     $arr["a"]()',
             ],
-            'magicMethodValidAnnotations' => [
-                '<?php
-                    class Parent {
-                        public function __call() {}
-                    }
-
-                    /**
-                     * @method string getString()
-                     * @method  void setInteger(int $integer)
-                     * @method setString(int $integer)
-                     * @method  getBool(string $foo)  :   bool
-                     * @method setBool(string $foo, string|bool $bar)  :   bool
-                     * @method (string|int)[] getArray() : array with some text
-                     * @method void setArray(array $arr = array(), int $foo = 5) with some more text
-                     * @method (callable() : string) getCallable() : callable
-                     */
-                    class Child extends Parent {}
-
-                    $child = new Child();
-
-                    $a = $child->getString();
-                    $child->setInteger(4);
-                    /** @psalm-suppress MixedAssignment */
-                    $b = $child->setString(5);
-                    $c = $child->getBool("hello");
-                    $c = $child->setBool("hello", true);
-                    $c = $child->setBool("hello", "true");
-                    $d = $child->getArray();
-                    $child->setArray(["boo"])
-                    $e = $child->getCallable();',
-                'assertions' => [
-                    '$a' => 'string',
-                    '$b' => 'mixed',
-                    '$c' => 'bool',
-                    '$d' => 'array<mixed, string|int>',
-                    '$e' => 'callable():string',
-                ],
-            ],
-            'namespacedMagicMethodValidAnnotations' => [
-                '<?php
-                    namespace Foo;
-
-                    class Parent {
-                        public function __call() {}
-                    }
-
-                    /**
-                     * @method setBool(string $foo, string|bool $bar)  :   bool
-                     */
-                    class Child extends Parent {}
-
-                    $child = new Child();
-
-                    $c = $child->setBool("hello", true);
-                    $c = $child->setBool("hello", "true");',
-            ],
             'slashAfter?' => [
                 '<?php
                     namespace ns;
@@ -1153,12 +1001,131 @@ class AnnotationTest extends TestCase
                     /** @param string[] $s */
                     function foo(string ...$s) : void {}',
             ],
-            'globalMethod' => [
+            'valueReturnType' => [
                 '<?php
-                    /** @method void global() */
-                    class A {
-                        public function __call(string $s) {}
-                    }',
+                    /**
+                     * @param "a"|"b" $_p
+                     */
+                    function acceptsLiteral($_p): void {}
+
+                    /**
+                     * @return "a"|"b"
+                     */
+                    function returnsLiteral(): string {
+                        return rand(0,1) ? "a" : "b";
+                    }
+
+                    acceptsLiteral(returnsLiteral());'
+            ],
+            'typeAliasBeforeClass' => [
+                '<?php
+                    /**
+                     * @psalm-type CoolType = A|B|null
+                     */
+
+                    class A {}
+                    class B {}
+
+                    /** @return CoolType */
+                    function foo() {
+                        if (rand(0, 1)) {
+                            return new A();
+                        }
+
+                        if (rand(0, 1)) {
+                            return new B();
+                        }
+
+                        return null;
+                    }
+
+                    /** @param CoolType $a **/
+                    function bar ($a) : void { }
+
+                    bar(foo());'
+            ],
+            'typeAliasBeforeFunction' => [
+                '<?php
+                    /**
+                     * @psalm-type CoolType = A|B|null
+                     * @return CoolType
+                     */
+                    function foo() {
+                        if (rand(0, 1)) {
+                            return new A();
+                        }
+
+                        if (rand(0, 1)) {
+                            return new B();
+                        }
+
+                        return null;
+                    }
+
+                    class A {}
+                    class B {}
+
+                    /** @param CoolType $a **/
+                    function bar ($a) : void { }
+
+                    bar(foo());'
+            ],
+            'typeAliasInSeparateBlockBeforeFunction' => [
+                '<?php
+                    /**
+                     * @psalm-type CoolType = A|B|null
+                     */
+                    /**
+                     * @return CoolType
+                     */
+                    function foo() {
+                        if (rand(0, 1)) {
+                            return new A();
+                        }
+
+                        if (rand(0, 1)) {
+                            return new B();
+                        }
+
+                        return null;
+                    }
+
+                    class A {}
+                    class B {}
+
+                    /** @param CoolType $a **/
+                    function bar ($a) : void { }
+
+                    bar(foo());'
+            ],
+            'almostFreeStandingTypeAlias' => [
+                '<?php
+                    /**
+                     * @psalm-type CoolType = A|B|null
+                     */
+
+                    // this breaks up the line
+
+                    class A {}
+                    class B {}
+
+                    /** @return CoolType */
+                    function foo() {
+                        if (rand(0, 1)) {
+                            return new A();
+                        }
+
+                        if (rand(0, 1)) {
+                            return new B();
+                        }
+
+                        return null;
+                    }
+
+                    /** @param CoolType $a **/
+                    function bar ($a) : void { }
+
+                    bar(foo());'
             ],
         ];
     }
@@ -1629,63 +1596,6 @@ class AnnotationTest extends TestCase
                     }',
                 'error_message' => 'InvalidDocblock',
             ],
-            'magicMethodAnnotationWithoutCall' => [
-                '<?php
-                    /**
-                     * @method string getString()
-                     */
-                    class Child {}
-
-                    $child = new Child();
-
-                    $a = $child->getString();',
-                'error_message' => 'UndefinedMethod',
-            ],
-            'magicMethodAnnotationWithBadDocblock' => [
-                '<?php
-                    class Parent {
-                        public function __call() {}
-                    }
-
-                    /**
-                     * @method string getString(\)
-                     */
-                    class Child extends Parent {}',
-                'error_message' => 'InvalidDocblock',
-            ],
-            'magicMethodAnnotationWithSealed' => [
-                '<?php
-                    class Parent {
-                        public function __call() {}
-                    }
-
-                    /**
-                     * @method string getString()
-                     * @psalm-seal-methods
-                     */
-                    class Child extends Parent {}
-
-                    $child = new Child();
-                    $child->getString();
-                    $child->foo();',
-                'error_message' => 'UndefinedMethod - src/somefile.php:14 - Method Child::foo does not exist',
-            ],
-            'magicMethodAnnotationInvalidArg' => [
-                '<?php
-                    class Parent {
-                        public function __call() {}
-                    }
-
-                    /**
-                     * @method setString(int $integer)
-                     */
-                    class Child extends Parent {}
-
-                    $child = new Child();
-
-                    $child->setString("five");',
-                'error_message' => 'InvalidScalarArgument',
-            ],
             'hyphenInType' => [
                 '<?php
                     /**
@@ -1702,6 +1612,15 @@ class AnnotationTest extends TestCase
                     function foo() : array {
                         return [];
                     }',
+                'error_message' => 'InvalidDocblock',
+            ],
+            'invalidTypeAlias' => [
+                '<?php
+                    /**
+                     * @psalm-type CoolType = A|B>
+                     */
+
+                    class A {}',
                 'error_message' => 'InvalidDocblock',
             ],
         ];

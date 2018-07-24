@@ -383,7 +383,8 @@ class ClassChecker extends ClassLikeChecker
         }
 
         $constructor_checker = null;
-        $property_stmts = [];
+        $constructor_appearing_fqcln = $fq_class_name;
+        $member_stmts = [];
 
         foreach ($class->stmts as $stmt) {
             if ($stmt instanceof PhpParser\Node\Stmt\ClassMethod) {
@@ -413,15 +414,17 @@ class ClassChecker extends ClassLikeChecker
             } elseif ($stmt instanceof PhpParser\Node\Stmt\Property) {
                 foreach ($stmt->props as $prop) {
                     if ($prop->default) {
-                        $property_stmts[] = $stmt;
+                        $member_stmts[] = $stmt;
                         break;
                     }
                 }
+            } elseif ($stmt instanceof PhpParser\Node\Stmt\ClassConst) {
+                $member_stmts[] = $stmt;
             }
         }
 
         $statements_checker = new StatementsChecker($this);
-        $statements_checker->analyze($property_stmts, $class_context, $global_context, true);
+        $statements_checker->analyze($member_stmts, $class_context, $global_context, true);
 
         $config = Config::getInstance();
 
@@ -445,27 +448,6 @@ class ClassChecker extends ClassLikeChecker
                     continue;
                 }
 
-                $constructor_class_storage = null;
-
-                if (isset($storage->methods['__construct'])) {
-                    $constructor_class_storage = $storage;
-                } elseif (isset($property_class_storage->methods['__construct'])
-                    && $property_class_storage !== $storage
-                ) {
-                    $constructor_class_storage = $property_class_storage;
-                } elseif (!empty($property_class_storage->overridden_method_ids['__construct'])) {
-                    list($construct_fqcln) =
-                        explode('::', $property_class_storage->overridden_method_ids['__construct'][0]);
-                    $constructor_class_storage = $classlike_storage_provider->get($construct_fqcln);
-                }
-
-                if ($constructor_class_storage
-                    && $constructor_class_storage->all_properties_set_in_constructor
-                    && $constructor_class_storage->methods['__construct']->visibility !== self::VISIBILITY_PRIVATE
-                ) {
-                    continue;
-                }
-
                 $uninitialized_variables[] = '$this->' . $property_name;
                 $uninitialized_properties[$property_name] = $property;
             }
@@ -476,9 +458,10 @@ class ClassChecker extends ClassLikeChecker
                     && isset($storage->declaring_method_ids['__construct'])
                     && $class->extends
                 ) {
-                    list($construct_fqcln) = explode('::', $storage->declaring_method_ids['__construct']);
+                    list($constructor_declaring_fqcln) = explode('::', $storage->declaring_method_ids['__construct']);
+                    list($constructor_appearing_fqcln) = explode('::', $storage->appearing_method_ids['__construct']);
 
-                    $constructor_class_storage = $classlike_storage_provider->get($construct_fqcln);
+                    $constructor_class_storage = $classlike_storage_provider->get($constructor_declaring_fqcln);
 
                     // ignore oldstyle constructors and classes without any declared properties
                     if ($constructor_class_storage->user_defined
@@ -548,35 +531,47 @@ class ClassChecker extends ClassLikeChecker
                 if ($constructor_checker) {
                     $method_context = clone $class_context;
                     $method_context->collect_initializations = true;
+                    $method_context->self = $fq_class_name;
                     $method_context->vars_in_scope['$this'] = Type::parseString($fq_class_name);
                     $method_context->vars_possibly_in_scope['$this'] = true;
 
                     $constructor_checker->analyze($method_context, $global_context, true);
 
-                    $all_properties_set_in_constructor = true;
-
-                    foreach ($uninitialized_properties as $property_name => $property) {
+                    foreach ($uninitialized_properties as $property_name => $property_storage) {
                         if (!isset($method_context->vars_in_scope['$this->' . $property_name])) {
                             throw new \UnexpectedValueException('$this->' . $property_name . ' should be in scope');
                         }
 
                         $end_type = $method_context->vars_in_scope['$this->' . $property_name];
 
-                        if (!$end_type->initialized) {
-                            $all_properties_set_in_constructor = false;
+                        $property_id = $constructor_appearing_fqcln . '::$' . $property_name;
+
+                        $constructor_class_property_storage = $property_storage;
+
+                        if ($fq_class_name !== $constructor_appearing_fqcln) {
+                            $a_class_storage = $classlike_storage_provider->get($constructor_appearing_fqcln);
+
+                            if (!isset($a_class_storage->declaring_property_ids[$property_name])) {
+                                $constructor_class_property_storage = null;
+                            } else {
+                                $declaring_property_class = $a_class_storage->declaring_property_ids[$property_name];
+                                $constructor_class_property_storage = $classlike_storage_provider
+                                    ->get($declaring_property_class)
+                                    ->properties[$property_name];
+                            }
                         }
 
-                        if (!$end_type->initialized && $property->location) {
-                            $property_id = $this->fq_class_name . '::$' . $property_name;
-
+                        if ($property_storage->location
+                            && (!$end_type->initialized || $property_storage !== $constructor_class_property_storage)
+                        ) {
                             if (!$config->reportIssueInFile(
                                 'PropertyNotSetInConstructor',
-                                $property->location->file_path
+                                $property_storage->location->file_path
                             ) && $class->extends
                             ) {
                                 $error_location = new CodeLocation($this, $class->extends);
                             } else {
-                                $error_location = $property->location;
+                                $error_location = $property_storage->location;
                             }
 
                             if (IssueBuffer::accepts(
@@ -591,8 +586,6 @@ class ClassChecker extends ClassLikeChecker
                             }
                         }
                     }
-
-                    $storage->all_properties_set_in_constructor = $all_properties_set_in_constructor;
                 } elseif (!$storage->abstract) {
                     $first_uninitialized_property = array_shift($uninitialized_properties);
 
@@ -703,6 +696,13 @@ class ClassChecker extends ClassLikeChecker
 
                 foreach ($trait_node->stmts as $trait_stmt) {
                     if ($trait_stmt instanceof PhpParser\Node\Stmt\ClassMethod) {
+                        if ($trait_stmt->stmts) {
+                            $traverser = new PhpParser\NodeTraverser;
+
+                            $traverser->addVisitor(new \Psalm\Visitor\NodeCleanerVisitor());
+                            $traverser->traverse($trait_stmt->stmts);
+                        }
+
                         $trait_method_checker = $this->analyzeClassMethod(
                             $trait_stmt,
                             $storage,
